@@ -1,0 +1,66 @@
+"""Health endpoint against a real PostgreSQL instance."""
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+
+from app.config import API_PREFIX
+from app.db import get_db
+from app.main import create_app
+from app.services import health as health_service
+
+
+@pytest.mark.integration
+def test_health_reports_ok_when_the_database_answers(client: TestClient) -> None:
+    response = client.get(f"{API_PREFIX}/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"]["status"] == "ok"
+    assert "PostgreSQL" in body["database"]["version"]
+    assert body["api_version"] == health_service.API_VERSION
+    assert body["environment"] in {"local", "aws"}
+
+
+@pytest.mark.integration
+def test_openapi_is_served_under_the_api_prefix(client: TestClient) -> None:
+    """CloudFront only forwards `/api/v1*`, so the schema must live there too."""
+    response = client.get(f"{API_PREFIX}/openapi.json")
+
+    assert response.status_code == 200
+    assert f"{API_PREFIX}/health" in response.json()["paths"]
+
+
+@pytest.mark.integration
+def test_unprefixed_health_is_not_served(client: TestClient) -> None:
+    """A route outside `/api/v1` would be unreachable once deployed."""
+    assert client.get("/health").status_code == 404
+
+
+def test_health_reports_degraded_when_the_database_is_unreachable() -> None:
+    """A database outage degrades the report; it does not crash the endpoint."""
+    application = create_app()
+    application.dependency_overrides[get_db] = _unreachable_session
+
+    with TestClient(application) as client:
+        response = client.get(f"{API_PREFIX}/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["database"] == {"status": "error", "version": None, "detail": "OperationalError"}
+
+
+class _BrokenSession:
+    """Stands in for a session whose connection attempt fails."""
+
+    def execute(self, *args: object, **kwargs: object) -> None:
+        raise OperationalError("SELECT version()", {}, Exception("connection refused"))
+
+    def close(self) -> None:
+        return None
+
+
+def _unreachable_session() -> _BrokenSession:
+    return _BrokenSession()

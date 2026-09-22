@@ -1,0 +1,44 @@
+# Tooling configuration for the ACME incident management backend.
+# This file is configuration only — the Lambda package is built from
+# requirements.txt by Terraform, not from a Python project definition.
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv", "alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "N",    # PEP 8 naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehension clarity
+    "SIM",  # simplification
+    "D",    # docstrings on public members
+    "ANN",  # type annotations
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "D203",  # conflicts with D211 (no blank line before class docstring)
+    "D213",  # conflicts with D212 (summary on the first line)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests document themselves through their names; __init__ files are markers.
+"tests/**" = ["D100", "D103", "D104"]
+"**/__init__.py" = ["D104"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: exercises a real PostgreSQL database",
+]

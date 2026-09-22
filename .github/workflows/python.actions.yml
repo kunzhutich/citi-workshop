@@ -23,5 +23,7 @@ jobs:
       - name: Install Bandit
         run: pip3 install bandit
 
+      # --ini .bandit excludes the local virtualenv and the pytest suite; see
+      # .bandit at the repository root. Application code is scanned in full.
       - name: Run Bandit
-        run: bandit -r ./backend
+        run: bandit --ini .bandit -r ./backend
