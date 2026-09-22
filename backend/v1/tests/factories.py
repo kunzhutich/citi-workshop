@@ -15,6 +15,7 @@ from app.models.category import Category
 from app.models.engineer_profile import EngineerProfile
 from app.models.enums import (
     AvailabilityStatus,
+    BlockedReasonType,
     EngineerLevel,
     IncidentStatus,
     LocationDetail,
@@ -190,6 +191,10 @@ def make_incident(
     Only the columns the M3 tests care about are exposed — enough to make a
     facility or category "referenced", and enough to give an engineer an active
     ticket count. The full creation path arrives with the incident service in M4.
+
+    A BLOCKED incident is given a reason automatically: the table's CHECK
+    constraint requires one, and a test about workload counts should not have
+    to know that.
     """
     incident = Incident(
         title=title,
@@ -201,6 +206,9 @@ def make_incident(
         reporter_id=reporter.id,
         assignee_id=assignee.id if assignee is not None else None,
         status=status,
+        blocked_reason_type=(
+            BlockedReasonType.WAITING_ON_PARTS if status == IncidentStatus.BLOCKED else None
+        ),
     )
     session.add(incident)
     session.flush()
