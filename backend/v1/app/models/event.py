@@ -51,10 +51,14 @@ class IncidentEvent(UUIDPrimaryKeyMixin, Base):
     from_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     to_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # `clock_timestamp()`, not `now()`. PostgreSQL's `now()` is the
+    # transaction start time, so every event written by one request would carry
+    # the same value and the timeline's ORDER BY would fall back to comparing
+    # random UUIDs. See revision 0003.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=func.now(),
+        server_default=func.clock_timestamp(),
     )
 
     incident: Mapped["Incident"] = relationship(back_populates="events")
