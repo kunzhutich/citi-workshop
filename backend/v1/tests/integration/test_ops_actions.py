@@ -8,10 +8,12 @@ that differs in the cloud is which database it reaches.
 
 from typing import Any
 
+from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 import function
+from app.migrations import build_alembic_config
 from app.models.category import Category
 from app.models.enums import UserRole
 from app.models.user import User
@@ -22,6 +24,11 @@ from app.security.passwords import verify_password
 def invoke(payload: dict[str, Any]) -> dict[str, Any]:
     """Call the Lambda handler exactly as a direct invoke would."""
     return function.handler(payload, None)
+
+
+def head_revision() -> str:
+    """Return the newest revision id in alembic/versions."""
+    return ScriptDirectory.from_config(build_alembic_config()).get_current_head() or ""
 
 
 # --- migrate ---------------------------------------------------------------
@@ -53,7 +60,9 @@ def test_migrate_leaves_the_database_usable(_migrated_database: Engine) -> None:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
 
     assert groups == 5
-    assert revision == "0001"
+    # Compared against the script directory's head rather than a literal, so
+    # adding a revision does not mean editing this test to agree with it.
+    assert revision == head_revision()
 
 
 def test_migrate_is_idempotent(_migrated_database: Engine, db_session: Session) -> None:
