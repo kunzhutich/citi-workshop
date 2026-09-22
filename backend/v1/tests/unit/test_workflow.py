@@ -79,8 +79,7 @@ def satisfying_incident(transition: Transition, *, actor_id: uuid.UUID) -> Incid
 def ids(transition: Transition) -> str:
     """Readable parametrisation id: 'OPEN->CLOSED (Cancel ticket)'."""
     return (
-        f"{transition.from_status.value}->{transition.to_status.value} "
-        f"({transition.action_label})"
+        f"{transition.from_status.value}->{transition.to_status.value} ({transition.action_label})"
     )
 
 

@@ -14,9 +14,10 @@ parent_id = ...)`. A subquery keeps the `ix_incidents_category_id` index usable
 and keeps the eager-loading options below independent of the filters.
 
 **Every list is eager-loaded.** A ticket row shows its category, its group, its
-building, floor, seat, reporter and assignee. Without the loaders below, a page
-of 25 rows is 150 extra round trips, and on Aurora that is the whole response
-time.
+building, floor, seat, reporter and assignee — seven relationships, counting the
+group as a second hop off the category. With the loaders below a page costs nine
+statements whatever its size; without them a page of 25 costs 1 + 25 * 7 = 176,
+and on Aurora that is the whole response time.
 """
 
 import re
@@ -41,6 +42,7 @@ TICKET_NUMBER_PATTERN = re.compile(r"^(?:INC-?)?(\d+)$", re.IGNORECASE)
 #: names and the language the UI is written in; it also drives the stemming
 #: that makes "flickering" find "flicker".
 SEARCH_CONFIG = "english"
+
 
 def _list_loaders() -> tuple[Any, ...]:
     """Return the eager-loading options every incident query uses."""
@@ -91,9 +93,25 @@ def get_bare(session: Session, incident_id: uuid.UUID) -> Incident | None:
 
 
 def reload(session: Session, incident: Incident) -> Incident:
-    """Re-read an incident with the detail loaders after it has been written to."""
+    """Re-read an incident with the detail loaders after it has been written to.
+
+    `populate_existing` is what makes this do anything. Without it, the query
+    finds the object already in the session's identity map and hands it back
+    untouched, **including relationships that were loaded before the write**.
+    Setting `incident.assignee_id` does not update `incident.assignee`, so a
+    response built from the returned object would say the ticket is still
+    unassigned immediately after assigning it — and the same for `escalator`
+    after an escalation and `duplicate_of` after closing as a duplicate.
+    """
     session.flush()
-    loaded = get(session, incident.id)
+
+    statement = (
+        select(Incident)
+        .where(Incident.id == incident.id)
+        .options(*_detail_loaders())
+        .execution_options(populate_existing=True)
+    )
+    loaded = session.scalars(statement).one_or_none()
     if loaded is None:  # pragma: no cover - the row was just written in this session
         raise RuntimeError("An incident disappeared between writing and reading it back.")
     return loaded
@@ -226,12 +244,6 @@ def _subcategory_ids_in(group_ids: Sequence[uuid.UUID]) -> Select[tuple[uuid.UUI
     return select(Category.id).where(Category.parent_id.in_(group_ids))
 
 
-def count_open_in_category(session: Session, category_id: uuid.UUID) -> int:
-    """Return how many incidents reference one subcategory."""
-    statement = select(func.count(Incident.id)).where(Incident.category_id == category_id)
-    return session.scalars(statement).one()
-
-
 # --- Events ------------------------------------------------------------------
 
 
@@ -295,11 +307,6 @@ def list_notes(session: Session, visible: Select[Any]) -> Sequence[IncidentNote]
         IncidentNote.created_at, IncidentNote.id
     )
     return session.scalars(statement).unique().all()
-
-
-def count_notes(session: Session, visible: Select[Any]) -> int:
-    """Return how many notes a visibility-filtered statement matches."""
-    return session.scalars(select(func.count()).select_from(visible.subquery())).one()
 
 
 def add_note(session: Session, note: IncidentNote) -> IncidentNote:

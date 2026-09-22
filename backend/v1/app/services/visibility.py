@@ -20,18 +20,6 @@ from app.models.note import IncidentNote
 from app.models.user import User
 
 
-def visible_note_visibilities(user: User) -> tuple[NoteVisibility, ...]:
-    """Return the note visibilities this user may read.
-
-    Employees see PUBLIC only. Engineers and admins see both — INTERNAL notes
-    are how staff talk to each other about a ticket without the reporter
-    reading along.
-    """
-    if user.is_staff:
-        return (NoteVisibility.PUBLIC, NoteVisibility.INTERNAL)
-    return (NoteVisibility.PUBLIC,)
-
-
 def apply_note_visibility(statement: Select[Any], user: User) -> Select[Any]:
     """Restrict a note query to the notes this user may read.
 

@@ -74,9 +74,7 @@ def seat(db_session: Session, floor: Floor) -> Seat:
 @pytest.fixture
 def subcategory(db_session: Session) -> Category:
     """Return a FLOOR-precision subcategory: building and floor required, seat optional."""
-    group = make_category(
-        db_session, name="Building & Facilities", location_detail=LocationDetail.FLOOR
-    )
+    group = make_category(db_session, location_detail=LocationDetail.FLOOR)
     return make_category(db_session, name="Lighting", parent=group)
 
 
@@ -126,7 +124,7 @@ def test_reporting_an_incident_returns_it_with_a_ticket_number(
     assert body["reporter"]["full_name"] == "Ada Reporter"
     assert body["assignee"] is None
     assert body["category"]["name"] == "Lighting"
-    assert body["category"]["group_name"] == "Building & Facilities"
+    assert body["category"]["group_name"] == subcategory.parent.name
     assert body["location"]["path"] == path_of("SFO-1", "Level 3")
 
 
@@ -180,9 +178,7 @@ def test_reporting_remembers_the_location_for_next_time(
     """`users.last_*_id` pre-fills the next report form."""
     client.post(
         "/api/v1/incidents",
-        json=report_body(
-            subcategory, building, floor_id=str(floor.id), seat_id=str(seat.id)
-        ),
+        json=report_body(subcategory, building, floor_id=str(floor.id), seat_id=str(seat.id)),
         headers=employee_headers,
     )
     db_session.refresh(employee)
@@ -199,8 +195,8 @@ def test_a_category_group_cannot_be_reported_against(
     building: Building,
     floor: Floor,
 ) -> None:
-    """"Hardware" is the question in step 1, not an answer."""
-    group = make_category(db_session, name="Hardware", location_detail=LocationDetail.FLOOR)
+    """A group such as Hardware is the question in step 1, not an answer."""
+    group = make_category(db_session, location_detail=LocationDetail.FLOOR)
 
     response = client.post(
         "/api/v1/incidents",
@@ -279,7 +275,7 @@ def test_a_building_level_group_needs_only_a_building(
     employee_headers: dict[str, str],
     building: Building,
 ) -> None:
-    group = make_category(db_session, name="Software", location_detail=LocationDetail.BUILDING)
+    group = make_category(db_session, location_detail=LocationDetail.BUILDING)
     subcategory = make_category(db_session, name="Email/Calendar", parent=group)
 
     response = client.post(
@@ -325,9 +321,7 @@ def test_a_seat_on_another_floor_is_refused(
 
     response = client.post(
         "/api/v1/incidents",
-        json=report_body(
-            subcategory, building, floor_id=str(floor.id), seat_id=str(other_seat.id)
-        ),
+        json=report_body(subcategory, building, floor_id=str(floor.id), seat_id=str(other_seat.id)),
         headers=employee_headers,
     )
 
@@ -343,14 +337,12 @@ def test_a_meeting_room_reads_back_as_a_seat_with_its_type(
     floor: Floor,
 ) -> None:
     room = make_seat(db_session, floor, code="Room Redwood", seat_type=SeatType.MEETING_ROOM)
-    group = make_category(db_session, name="Meeting Rooms", location_detail=LocationDetail.SEAT)
+    group = make_category(db_session, location_detail=LocationDetail.SEAT)
     subcategory = make_category(db_session, name="Display/Projector", parent=group)
 
     response = client.post(
         "/api/v1/incidents",
-        json=report_body(
-            subcategory, building, floor_id=str(floor.id), seat_id=str(room.id)
-        ),
+        json=report_body(subcategory, building, floor_id=str(floor.id), seat_id=str(room.id)),
         headers=employee_headers,
     )
 
@@ -417,9 +409,7 @@ def test_a_reporter_sees_their_own_permissions(
     subcategory: Category,
     building: Building,
 ) -> None:
-    incident = make_incident(
-        db_session, reporter=employee, category=subcategory, building=building
-    )
+    incident = make_incident(db_session, reporter=employee, category=subcategory, building=building)
 
     body = client.get(f"/api/v1/incidents/{incident.id}", headers=employee_headers).json()
 
@@ -431,9 +421,7 @@ def test_a_reporter_sees_their_own_permissions(
     assert body["can_assign"] is False
 
 
-def test_a_missing_incident_is_a_404(
-    client: TestClient, employee_headers: dict[str, str]
-) -> None:
+def test_a_missing_incident_is_a_404(client: TestClient, employee_headers: dict[str, str]) -> None:
     response = client.get(f"/api/v1/incidents/{uuid.uuid4()}", headers=employee_headers)
 
     assert response.status_code == 404
@@ -455,9 +443,7 @@ def test_a_reporter_can_edit_their_open_unassigned_ticket(
     subcategory: Category,
     building: Building,
 ) -> None:
-    incident = make_incident(
-        db_session, reporter=employee, category=subcategory, building=building
-    )
+    incident = make_incident(db_session, reporter=employee, category=subcategory, building=building)
 
     response = client.patch(
         f"/api/v1/incidents/{incident.id}",
@@ -505,7 +491,7 @@ def test_a_reporter_can_still_raise_the_priority_after_assignment(
     subcategory: Category,
     building: Building,
 ) -> None:
-    """"This got worse" is worth hearing after work has started."""
+    """Hearing that it got worse is useful even after work has started."""
     engineer = make_engineer(db_session, level=EngineerLevel.SENIOR)
     incident = make_incident(
         db_session,
@@ -533,9 +519,7 @@ def test_a_priority_change_is_recorded(
     subcategory: Category,
     building: Building,
 ) -> None:
-    incident = make_incident(
-        db_session, reporter=employee, category=subcategory, building=building
-    )
+    incident = make_incident(db_session, reporter=employee, category=subcategory, building=building)
 
     client.patch(
         f"/api/v1/incidents/{incident.id}",
@@ -854,7 +838,7 @@ def test_specialty_filter_uses_the_callers_own_groups(
     floor: Floor,
     subcategory: Category,
 ) -> None:
-    other_group = make_category(db_session, name="Network & Access")
+    other_group = make_category(db_session)
     other_subcategory = make_category(db_session, name="Wi-Fi", parent=other_group)
 
     make_incident(
@@ -937,9 +921,29 @@ def test_created_from_and_to_bound_the_list(
     assert total(created_from=yesterday, created_to=tomorrow) == len(reported_tickets)
 
 
-def test_paging_caps_the_page_size(
-    client: TestClient, employee_headers: dict[str, str]
-) -> None:
+def test_paging_caps_the_page_size(client: TestClient, employee_headers: dict[str, str]) -> None:
     response = client.get("/api/v1/incidents?page_size=101", headers=employee_headers)
 
     assert response.status_code == 422
+
+
+def test_timestamps_come_back_in_utc(
+    client: TestClient,
+    employee_headers: dict[str, str],
+    subcategory: Category,
+    building: Building,
+    floor: Floor,
+) -> None:
+    """The database session is pinned to UTC, so local and deployed agree.
+
+    Without that pin a `timestamptz` renders in the server's own zone — UTC on
+    the Lambda, whatever the developer machine is set to locally — and the
+    difference only shows up after a deploy.
+    """
+    created = client.post(
+        "/api/v1/incidents",
+        json=report_body(subcategory, building, floor_id=str(floor.id)),
+        headers=employee_headers,
+    ).json()
+
+    assert created["created_at"].endswith("Z") or created["created_at"].endswith("+00:00")

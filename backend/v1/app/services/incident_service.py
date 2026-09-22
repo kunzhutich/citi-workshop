@@ -174,8 +174,7 @@ def _resolve_specialties(query: IncidentQuery, user: User) -> list[uuid.UUID] | 
     profile = user.engineer_profile
     if user.role != UserRole.ENGINEER or profile is None:
         raise ValidationError(
-            "'specialty' filters by the caller's own specialty groups, which only "
-            "engineers have.",
+            "'specialty' filters by the caller's own specialty groups, which only engineers have.",
             code="SPECIALTY_NOT_APPLICABLE",
             field="specialty",
         )
@@ -645,12 +644,22 @@ def _describe(
     actors: frozenset[workflow.Actor],
     now: datetime,
 ) -> list[dict[str, object]]:
-    """Render the moves still available, for the body of a 409."""
+    """Render the moves still available, for the body of a 409.
+
+    Deliberately the same shape as `AllowedTransitionRead`, so a client that
+    recovers from a refusal can feed this straight into whatever renders the
+    action buttons rather than re-requesting `/allowed-transitions`.
+    """
     return [
         {
             "to_status": transition.to_status.value,
             "action_label": transition.action_label,
             "required_fields": list(transition.required_fields),
+            "close_reason_choices": (
+                sorted(reason.value for reason in transition.close_reasons)
+                if transition.caller_picks_close_reason
+                else []
+            ),
         }
         for transition in workflow.available_transitions(incident, actors, now)
     ]

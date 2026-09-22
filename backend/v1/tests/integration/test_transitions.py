@@ -78,7 +78,7 @@ def cast(db_session: Session) -> dict[str, User]:
 @pytest.fixture
 def place(db_session: Session) -> tuple[Category, Building]:
     """Return a subcategory and a building to hang tickets on."""
-    group = make_category(db_session, name="Building & Facilities")
+    group = make_category(db_session)
     return make_category(db_session, name="Lighting", parent=group), make_building(db_session)
 
 
@@ -97,9 +97,7 @@ def ticket_in(
     category, building = place
     defaults: dict[str, object] = {
         "assignee": cast["assignee"],
-        "acknowledged_at": NOW - timedelta(hours=2)
-        if status != IncidentStatus.OPEN
-        else None,
+        "acknowledged_at": NOW - timedelta(hours=2) if status != IncidentStatus.OPEN else None,
     }
     if status == IncidentStatus.CLOSED:
         defaults["closed_at"] = NOW - timedelta(days=1)
@@ -136,8 +134,7 @@ def payload_for(transition: Transition) -> TransitionRequest:
 def row_id(transition: Transition) -> str:
     """Readable parametrisation id."""
     return (
-        f"{transition.from_status.value}->{transition.to_status.value} "
-        f"({transition.action_label})"
+        f"{transition.from_status.value}->{transition.to_status.value} ({transition.action_label})"
     )
 
 
@@ -158,9 +155,7 @@ def test_every_transition_admits_and_refuses_exactly_who_the_table_says(
     incident = ticket_in(db_session, place, cast, transition.from_status)
 
     actors = workflow.resolve_actors(incident, user)
-    expected = workflow.select_transition(
-        transition.from_status, transition.to_status, actors
-    )
+    expected = workflow.select_transition(transition.from_status, transition.to_status, actors)
 
     if expected is None:
         with pytest.raises(ApiError) as refused:
@@ -430,9 +425,7 @@ def test_the_reopen_window_closes_after_seven_days(
     reopenable: bool,
 ) -> None:
     """`now` is injected, so this is the real boundary rather than an approximation."""
-    incident = ticket_in(
-        db_session, place, cast, IncidentStatus.CLOSED, closed_at=NOW - age
-    )
+    incident = ticket_in(db_session, place, cast, IncidentStatus.CLOSED, closed_at=NOW - age)
     payload = TransitionRequest(
         to_status=IncidentStatus.IN_PROGRESS, reason="The fault has come back."
     )

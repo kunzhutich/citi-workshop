@@ -38,7 +38,7 @@ from tests.factories import (
 @pytest.fixture
 def place(db_session: Session) -> tuple[Category, Building]:
     """Return a subcategory and a building to hang tickets on."""
-    group = make_category(db_session, name="Hardware")
+    group = make_category(db_session)
     return make_category(db_session, name="Monitor", parent=group), make_building(db_session)
 
 
@@ -48,17 +48,13 @@ def reporter(db_session: Session) -> User:
 
 
 @pytest.fixture
-def ticket(
-    db_session: Session, reporter: User, place: tuple[Category, Building]
-) -> Incident:
+def ticket(db_session: Session, reporter: User, place: tuple[Category, Building]) -> Incident:
     """Return an unassigned, open ticket — the state a freshly reported one is in."""
     category, building = place
     return make_incident(db_session, reporter=reporter, category=category, building=building)
 
 
-def assign(
-    client: TestClient, incident: Incident, actor: User, assignee: User | None
-) -> object:
+def assign(client: TestClient, incident: Incident, actor: User, assignee: User | None) -> object:
     """Call the assign endpoint as `actor`."""
     return client.post(
         f"/api/v1/incidents/{incident.id}/assign",
@@ -492,9 +488,7 @@ def test_an_admin_can_clear_an_escalation_and_reprioritise_at_once(
     assert body["escalation_reason"] is None
     assert body["priority"] == "HIGH"
 
-    activity = client.get(
-        f"/api/v1/incidents/{escalated.id}/activity", headers=headers
-    ).json()
+    activity = client.get(f"/api/v1/incidents/{escalated.id}/activity", headers=headers).json()
     types = [entry["event_type"] for entry in activity]
     assert EventType.ESCALATION_CLEARED.value in types
     assert EventType.PRIORITY_CHANGED.value in types

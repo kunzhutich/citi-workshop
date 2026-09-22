@@ -55,12 +55,19 @@ def _clean_settings_cache() -> Generator[None]:
 def _migrated_database() -> Generator[Engine]:
     """Create the test database, migrate it to head, and yield an engine for it."""
     from app.config import get_settings
+    from app.db import build_connect_args
 
     settings = get_settings()
     _recreate_database(settings.database_url)
     _upgrade_to_head()
 
-    engine = create_engine(settings.database_url, poolclass=None)
+    # Same connect args as `app/db.py`, so the suite sees the same session
+    # time zone the application does and timestamps serialise identically.
+    engine = create_engine(
+        settings.database_url,
+        connect_args=build_connect_args(),
+        poolclass=None,
+    )
     yield engine
     engine.dispose()
 
@@ -73,10 +80,21 @@ def db_session(_migrated_database: Engine) -> Generator[Session]:
     ``join_transaction_mode="create_savepoint"`` means a ``commit()`` inside the
     code under test releases a savepoint instead of ending the outer
     transaction, so service code can commit normally and still be undone here.
+
+    ``expire_on_commit=False`` matches ``app/db.py``'s session factory and is
+    not a detail. With the default ``True``, every object is reloaded from the
+    database after a commit, which silently repairs a stale relationship that
+    the real application would serialise as it stood — and a route that
+    returned ``"assignee": null`` right after a successful assignment would
+    pass here and fail in production.
     """
     connection = _migrated_database.connect()
     transaction = connection.begin()
-    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    session = Session(
+        bind=connection,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
     try:
         yield session
     finally:

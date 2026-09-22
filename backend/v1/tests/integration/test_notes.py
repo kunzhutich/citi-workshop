@@ -40,7 +40,7 @@ NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 @pytest.fixture
 def place(db_session: Session) -> tuple[Category, Building]:
     """Return a subcategory and a building to hang tickets on."""
-    group = make_category(db_session, name="Hardware")
+    group = make_category(db_session)
     return make_category(db_session, name="Monitor", parent=group), make_building(db_session)
 
 
@@ -166,9 +166,7 @@ def test_nobody_writes_on_a_closed_ticket(
 def test_an_employee_cannot_write_an_internal_note(
     client: TestClient, ticket: Incident, reporter: User
 ) -> None:
-    response = post_note(
-        client, ticket, reporter, "Something private.", visibility="INTERNAL"
-    )
+    response = post_note(client, ticket, reporter, "Something private.", visibility="INTERNAL")
 
     assert response.status_code == 403
     assert response.json()["code"] == "INTERNAL_NOTE_NOT_PERMITTED"
@@ -475,17 +473,13 @@ def test_timeline_entries_name_who_did_it(
     assert activity[0]["actor"]["full_name"] == "Ada Reporter"
 
 
-def test_a_blank_note_is_refused(
-    client: TestClient, ticket: Incident, reporter: User
-) -> None:
+def test_a_blank_note_is_refused(client: TestClient, ticket: Incident, reporter: User) -> None:
     response = post_note(client, ticket, reporter, "   ")
 
     assert response.status_code == 422
 
 
-def test_notes_on_a_missing_ticket_are_a_404(
-    client: TestClient, reporter: User
-) -> None:
+def test_notes_on_a_missing_ticket_are_a_404(client: TestClient, reporter: User) -> None:
     response = client.get(
         f"/api/v1/incidents/{uuid.uuid4()}/notes",
         headers=auth_header(login(client, reporter.email)),

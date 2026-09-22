@@ -101,11 +101,20 @@ The backend suite needs the same PostgreSQL server. It creates its own database
 run**, so never point that at a database you care about; `tests/conftest.py` refuses to
 drop `postgres`. Your `acme_incidents_dev` data is untouched.
 
+Because that drop uses `WITH (FORCE)`, **only one suite can use a given database at a
+time** — a second run terminates the first one's connections mid-test. If you need two at
+once, give the second its own:
+
+```sh
+POSTGRES_TEST_NAME=acme_incidents_mine .venv/bin/python -m pytest
+```
+
 ### Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
 | `relation "users" does not exist` | `POSTGRES_NAME` still points at `postgres`. Copy `.env.example` to `.env` (step 2). |
+| `AdminShutdown: terminating connection due to administrator command`, from a test fixture | Another `pytest` is using the same test database and dropped it. Check with `ps -eo pid,etime,cmd \| grep '[p]ytest'`, then re-run with your own `POSTGRES_TEST_NAME`. |
 | `/api/v1/health` healthy but every other call 500s | Same cause: the connection works, the schema is elsewhere. |
 | `password authentication failed for user "postgres"` | Step 1's `ALTER USER` was skipped, or `POSTGRES_PASS` does not match. |
 | `database "acme_incidents_dev" does not exist` | Step 1's `createdb` was skipped. |

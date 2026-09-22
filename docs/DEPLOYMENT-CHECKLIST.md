@@ -457,6 +457,194 @@ Lambda's `memory_size` is the 512 MB M1 set, not the default 128.
 
 ---
 
+## M4 — Incidents and workflow
+
+### 4.1 Revisions 0002 and 0003 apply to Aurora
+
+**Why it needs the cloud.** Both are `ALTER TABLE`s against tables revision 0001 already
+created, and both are the kind of statement that behaves differently on a table with rows
+in it. 0002 rewrites seven columns from `timestamp` to `timestamptz`; 0003 changes two
+column defaults. Locally they run against a database the test suite drops and recreates,
+so "it worked" proves the SQL is valid, not that it applies cleanly to a populated Aurora
+table.
+
+```sh
+aws lambda invoke --function-name "coding-workshop-v1-${PARTICIPANT_ID}" \
+  --payload '{"action":"migrate"}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+✅ **Correct result:** `"schema": "upgraded to head"`, and re-running it is a no-op —
+both revisions are idempotent in the sense that Alembic will not replay them.
+
+❌ A lock timeout means something is holding the `incidents` table. Aurora Serverless v2
+with `min_capacity = 0` can also time the invoke out while it wakes; re-run rather than
+assuming failure, and check `alembic_version` before doing anything else:
+
+```sh
+# There is no psql path to Aurora from the VDI, so read it through the API instead:
+curl -s "https://${CLOUDFRONT_DOMAIN}/api/v1/health"
+```
+
+⚠️ `ALTER COLUMN ... TYPE` rewrites the table and takes an `ACCESS EXCLUSIVE` lock. On our
+row counts this is instant. If `seed_demo` has already run in M7, run it in a quiet window.
+
+### 4.2 Timestamps serialise as UTC from the Lambda
+
+**Why it needs the cloud.** `build_connect_args()` pins the session time zone to UTC so
+that development and production agree. The Lambda's own environment is already UTC, so
+locally we can prove the *pin* works but not that the deployed value is what we think.
+
+```sh
+TOKEN=...   # any access token
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?page_size=1" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["created_at"])'
+```
+
+✅ **Correct result:** a value ending in `Z` or `+00:00`.
+
+❌ Any other offset means the connection option did not take. Everything still works, but
+the frontend will render times wrong by that offset, and M7's duration arithmetic will be
+off by it too.
+
+### 4.3 Full-text search works on Aurora's `english` configuration
+
+**Why it needs the cloud.** `search_vector` is a *generated stored* column whose
+expression names `to_tsvector('english', ...)`. Aurora ships the same dictionaries as
+stock PostgreSQL 17, but the column was generated at `CREATE TABLE` time in revision 0001
+and has never been exercised against Aurora rows.
+
+```sh
+TOKEN=...
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+
+# Report something with a distinctive, stemmable word first.
+curl -s -X POST "$BASE/incidents" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "title": "Ceiling light flickering badly",
+    "description": "The light above my desk has flickered since Monday morning.",
+    "category_id": "<a subcategory id>", "building_id": "<a building id>",
+    "floor_id": "<a floor id>"
+  }' | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["reference"])'
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?q=flicker"   | head -c 200; echo
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?q=INC-000001" | head -c 200; echo
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?q=%26%26%21"  | head -c 200; echo
+```
+
+✅ **Correct result:** the first finds the ticket by stem (`flicker` matches
+`flickering`), the second finds exactly one by number, and the third returns
+`"total": 0` — `websearch_to_tsquery` swallowed the punctuation instead of raising.
+
+❌ A 500 on the third means something is calling `to_tsquery` rather than
+`websearch_to_tsquery`. A 500 on the first means the GIN index or the generated column
+did not survive the migration.
+
+### 4.4 Repeatable query parameters survive CloudFront
+
+**Why it needs the cloud.** `?status=OPEN&status=BLOCKED` sends the same key twice, and
+`?assignee_id=unassigned` is a sentinel rather than a UUID. 3.2 proved query strings reach
+the Lambda at all; this proves a *repeated* key is not collapsed to one value by the cache
+policy, which would silently narrow every multi-select filter in the UI.
+
+```sh
+TOKEN=...
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?status=OPEN" \
+  | python3 -c 'import json,sys; print("one status:", json.load(sys.stdin)["total"])'
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?status=OPEN&status=CLOSED" \
+  | python3 -c 'import json,sys; print("two statuses:", json.load(sys.stdin)["total"])'
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?assignee_id=unassigned" \
+  | python3 -c 'import json,sys; print("unassigned:", json.load(sys.stdin)["total"])'
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents?assignee_id=nobody" | head -c 200; echo
+```
+
+✅ **Correct result:** the two-status total is greater than or equal to the one-status
+total, and the last call returns 422 with `INVALID_ASSIGNEE_FILTER` — proving the raw
+string reached the parser rather than being rewritten.
+
+❌ Identical totals for one and two statuses means CloudFront is forwarding only the first
+occurrence. Fix it in the cache policy's query-string configuration, not in the API.
+
+### 4.5 A refused transition keeps its 409 and its body
+
+**Why it needs the cloud.** 3.3 proved 404 and 409 survive CloudFront. This one is
+narrower: the 409 from a refused transition carries an extra top-level key,
+`allowed_transitions`, which the frontend reads to recover. A distribution that rewrites
+error bodies would leave the status intact and the recovery path broken.
+
+```sh
+TOKEN=...   # the reporter of $INC, an employee
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+INC=...     # an OPEN incident id they reported
+
+curl -s -o /dev/stdout -w '\n%{http_code}\n' -X POST "$BASE/incidents/$INC/transitions" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"to_status":"RESOLVED","resolution_summary":"I fixed it myself."}'
+```
+
+✅ **Correct result:** `409`, with a body carrying `"code": "TRANSITION_NOT_ALLOWED"` and
+an `allowed_transitions` array containing `{"to_status": "CLOSED", "action_label":
+"Cancel ticket", ...}`.
+
+❌ A 200 with `/index.html` means the SPA error mapping from M1 has come back — see 1.4.
+
+### 4.6 Event ordering under real, separate transactions
+
+**Why it needs the cloud.** Revision 0003 exists because `now()` is the transaction start
+time. The test suite runs every request inside one transaction, which is the pathological
+case; the Lambda runs each request in its own, which is the normal one. Both should now
+produce the same order, and only the cloud exercises the second.
+
+```sh
+TOKEN=...   # an admin
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+INC=...     # an escalated incident
+
+curl -s -X POST "$BASE/incidents/$INC/clear-escalation" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"note":"Agreed, raising this.","priority":"HIGH"}' > /dev/null
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/incidents/$INC/activity" \
+  | python3 -c 'import json,sys; [print(e["kind"], e.get("event_type")) for e in json.load(sys.stdin)]'
+```
+
+✅ **Correct result:** `ESCALATION_CLEARED` appears immediately before `PRIORITY_CHANGED`.
+Those two rows are written by one request, so this is the case revision 0003 fixes.
+
+❌ The reverse order means the column default did not apply — check 4.1 actually ran
+revision 0003.
+
+### 4.7 Aurora's plan for the incident list
+
+**Why it needs the cloud.** `GET /incidents` is the busiest endpoint in the application:
+a filtered count, a filtered page, and six `selectinload` follow-ups. Locally it runs
+against tens of rows. Aurora with M7's ~300 incidents is the first realistic test, and
+Serverless v2 waking from `min_capacity = 0` will dominate the first call either way.
+
+```sh
+TOKEN=...
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+
+time curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/incidents?page_size=25"
+time curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/incidents?page_size=25"
+time curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/incidents?q=light&sort=-priority"
+```
+
+✅ **Correct result:** the first call may take 15–20 seconds after an idle period; the
+rest should be well under a second.
+
+❌ A consistently slow *second* call, especially on the search, is worth a look at
+`ix_incidents_search_vector` — a GIN index that failed to build would still return
+correct answers, just by sequential scan.
+
+⚠️ Re-run this after M7's `seed_demo`. Until then there are not enough rows for the
+numbers to mean much.
+
+---
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
@@ -467,3 +655,7 @@ These are out of scope until the phase that introduces them:
 - The admin screens for facilities, categories, engineers and users — M6. M3 ships the
   endpoints they call; until then the checks above are the only way to exercise them
   against the deployed stack.
+- The report questionnaire, the incident detail page and `WorkflowStepper` — M6. M4 ships
+  the endpoints behind them, including `allowed-transitions`, which is the one the UI is
+  required to render its buttons from. 4.5 is the only way to exercise the workflow
+  against the deployed stack until then.
