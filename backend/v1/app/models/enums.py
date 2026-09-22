@@ -38,6 +38,16 @@ class IncidentStatus(StrEnum):
     CLOSED = "CLOSED"
 
 
+#: The statuses that count as live work. An engineer's `active_ticket_count`
+#: and the capacity warnings in `services/assignment.py` are both defined in
+#: terms of this, so "active" means one thing across the whole application.
+ACTIVE_INCIDENT_STATUSES: tuple[IncidentStatus, ...] = (
+    IncidentStatus.OPEN,
+    IncidentStatus.IN_PROGRESS,
+    IncidentStatus.BLOCKED,
+)
+
+
 class IncidentPriority(StrEnum):
     """How urgent an incident is. Ordered least to most urgent."""
 

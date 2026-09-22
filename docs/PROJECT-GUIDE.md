@@ -871,3 +871,468 @@ refresh token is not attached to ordinary API calls.
 **FastAPI dependency** — a function FastAPI calls before the route, whose return value is
 injected. Dependencies compose, which is how `require_roles` builds on `get_current_user`
 which builds on `get_authenticated_user`.
+
+---
+
+## Phase M3 — Facilities, categories, engineers and users
+
+M2 built the schema and the front door. M3 fills the reference data an incident
+needs before it can exist: somewhere it happened (buildings → floors → seats), what
+kind of problem it is (the category tree), who can be given it (engineers), and who
+is who (users). Four resources, thirty-one endpoints, no frontend — the React shell
+arrives in M5, and building admin screens before there is a login page would mean
+building them twice.
+
+**Everything here was verified against local PostgreSQL only**, as in M2: through the
+294-test suite, and once end to end over HTTP against a throwaway database with a real
+uvicorn server. What remains unproven in the cloud is in
+[docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+This section also covers two carry-overs from M2 that were fixed first.
+
+### 0. The two carry-overs
+
+#### The JWT secret could silently fall back to a public string
+
+`app/config.py` gave `jwt_secret` a default of `local-development-secret-change-me`
+so that a fresh clone runs with no setup. The danger was in how that default could be
+reached in production. `infra/lambda.tf` filters the environment map:
+
+```hcl
+environment_variables = {
+  for key, value in local.env_vars :
+  key => trimspace(value) if try(trimspace(value), "") != ""
+}
+```
+
+A `JWT_SECRET` that failed to apply therefore does not arrive as an empty string — it
+does not arrive at all, `Settings` falls back to the default, and real sessions are
+signed with a value published in this repository. Nothing looks wrong: tokens verify,
+logins succeed, and anyone who has read the repo can mint an admin token.
+
+The fix is a Pydantic `model_validator` that refuses to *build* the settings object:
+
+```python
+@model_validator(mode="after")
+def _reject_a_weak_deployed_secret(self) -> Self:
+    if self.is_local:
+        return self
+    if self.jwt_secret == DEVELOPMENT_JWT_SECRET:
+        raise ValueError("JWT_SECRET is still the development default. ...")
+    if len(self.jwt_secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
+        raise ValueError("JWT_SECRET must be at least 32 bytes outside local development; ...")
+    return self
+```
+
+Startup rather than per-request, because a check that runs on every request either
+costs something on every request or gets cached into the same silence. A Lambda that
+cannot initialise is loud, immediate, and fixed by re-applying Terraform.
+
+Why 32 bytes: RFC 7518 §3.2 requires an HS256 key at least as long as the hash output,
+and SHA-256 produces 32 bytes. PyJWT only *warns* below that. The length is measured in
+bytes, not characters — `len("é" * 16)` is 16 characters but 32 bytes, and it is the
+bytes that go into the HMAC. `tests/unit/test_config.py` covers both refusals, both
+acceptances, and the multibyte case.
+
+#### A fresh clone pointed at an empty database
+
+`postgres_name` defaults to `postgres`, the cluster's maintenance database, which is
+the right default for the deployed case and a trap locally: the API starts,
+`/api/v1/health` reports healthy because it only proves a *connection*, and every real
+query then fails on a missing table.
+
+Fixed with documentation rather than a different default, because the default is
+correct for the environment it is written for:
+
+- [backend/v1/.env.example](../backend/v1/.env.example) — every field on `Settings`,
+  each with its default, plus the test-only `POSTGRES_TEST_NAME`. Committed, which
+  needed a `!.env.example` line in `.gitignore`: the repo ignores `.env.*` wholesale
+  and previously un-ignored only `.env.sample`.
+- [README.md](../README.md) — a **Local development** section taking an empty
+  PostgreSQL install to a running stack in five steps, with a troubleshooting table
+  keyed by *symptom* (`relation "users" does not exist`) rather than by cause.
+- This guide — see [§5, "Set up a local database from a fresh clone"](#5-how-to-change-it-2).
+
+### 1. What was built
+
+#### Schemas — `app/schemas/`
+
+| File | Responsibility |
+| --- | --- |
+| [common.py](../backend/v1/app/schemas/common.py) | `Page[T]`, `PageParams`, the `Paging` dependency and `DeleteResult`. The paging contract lives here once instead of in five routers. |
+| [facility.py](../backend/v1/app/schemas/facility.py) | Building, floor and seat create/update/read, the bulk-seat request and result, and the nested tree nodes. |
+| [category.py](../backend/v1/app/schemas/category.py) | Category create/update/read plus `CategoryNode`, a group carrying its children. |
+| [engineer.py](../backend/v1/app/schemas/engineer.py) | `EngineerCreate`, `EngineerUpdate`, `EngineerSelfUpdate` (deliberately smaller), `EngineerRead` with `active_ticket_count`, and `EngineerCreated` with the one-time password. |
+| [user.py](../backend/v1/app/schemas/user.py) | Extended with `UserUpdate` — name, role, active flag; no email, no password. |
+
+#### Repositories — `app/repositories/`
+
+| File | Responsibility |
+| --- | --- |
+| [facilities.py](../backend/v1/app/repositories/facilities.py) | Paged lists per level, uniqueness lookups, the eager-loading tree query, and the three `count_incidents_*` reference checks. |
+| [categories.py](../backend/v1/app/repositories/categories.py) | The two-level tree query, sibling-name lookup, child count, reference count, and the write that pushes a group's `location_detail` onto its children. |
+| [engineers.py](../backend/v1/app/repositories/engineers.py) | The `User ⋈ EngineerProfile` join with `active_ticket_count` as a correlated subquery, plus its filters. |
+| [users.py](../backend/v1/app/repositories/users.py) | Gained `search()` — role filter, `ILIKE` on name or email with wildcards escaped. Lost `count_by_role`, which M2 wrote and nothing called. |
+
+#### Services — `app/services/`
+
+| File | The rules it owns |
+| --- | --- |
+| [facilities.py](../backend/v1/app/services/facilities.py) | Uniqueness per level, building-code normalisation, delete-versus-409, and the rule that deactivation does not cascade. |
+| [categories.py](../backend/v1/app/services/categories.py) | Two-level depth, group-only fields, inheritance of `location_detail`, sibling names, delete-versus-deactivate. |
+| [engineers.py](../backend/v1/app/services/engineers.py) | Account and profile created together, generated one-time password, specialties must be groups, deactivate rather than delete. |
+| [users.py](../backend/v1/app/services/users.py) | The self-edit guard, profile creation on promotion, session revocation on deactivation. |
+
+#### Routers — `app/routers/`
+
+[facilities.py](../backend/v1/app/routers/facilities.py) (17 routes),
+[categories.py](../backend/v1/app/routers/categories.py) (5),
+[engineers.py](../backend/v1/app/routers/engineers.py) (6) and
+[users.py](../backend/v1/app/routers/users.py) (3), all mounted under `/api/v1` by
+[main.py](../backend/v1/app/main.py).
+
+#### Shared plumbing
+
+- [errors.py](../backend/v1/app/errors.py) — added `NotFoundError` (404).
+- [security/dependencies.py](../backend/v1/app/security/dependencies.py) — added
+  `get_include_inactive` and the `SIGNED_IN` / `ADMIN_ONLY` / `STAFF_ONLY` /
+  `AdminUser` / `StaffUser` aliases.
+- [models/enums.py](../backend/v1/app/models/enums.py) — added
+  `ACTIVE_INCIDENT_STATUSES`, the single definition of "live work".
+- [models/building.py](../backend/v1/app/models/building.py),
+  [models/floor.py](../backend/v1/app/models/floor.py) — `order_by` on the `floors`
+  and `seats` relationships, so the tree is deterministically ordered.
+
+**No migration.** Every table M3 uses was created by `0001_initial_schema.py`; this
+phase adds endpoints over an existing schema.
+
+#### Tests — 294 total, up from 155
+
+| File | Covers |
+| --- | --- |
+| `tests/integration/test_facilities.py` (41) | CRUD at three levels, uniqueness, paging bounds, bulk create with repeats, the tree's filtering and ordering, referenced-delete 409s, permissions. |
+| `tests/integration/test_categories.py` (29) | Depth refusal, inheritance and its rewrite, group-only field refusals, sibling uniqueness including two groups, delete-versus-deactivate. |
+| `tests/integration/test_engineers.py` (35) | Creation and the password gate, `active_ticket_count` by status and by owner, every filter, self-service limits, deactivation and session revocation. |
+| `tests/integration/test_users.py` (28) | Search including escaped wildcards, promotion creating a profile, demotion keeping one, the self-edit guard, deactivation. |
+| `tests/unit/test_config.py` (+6) | The JWT secret validator, both branches and the byte-versus-character case. |
+| `tests/factories.py` | Gained `make_admin`, `make_building`, `make_floor`, `make_seat`, `make_category`, `make_incident`. |
+
+### 2. Why it is shaped this way
+
+**A facility delete is a 409; a category delete is a deactivation.** These look
+inconsistent and are not. Deleting a building an incident was filed in would make that
+ticket's location unreadable, and an admin who typed the wrong id deserves to be
+stopped — so the API refuses and says how many tickets are involved, and the UI can
+offer "deactivate instead". Retiring a category is routine curation: an admin who
+removes "Fax machine" means "stop offering this", not "and tell me about the 40 tickets
+from 2019". So that one succeeds and reports what it did. `DeleteResult` carries
+`deleted` and `deactivated` so the caller never has to infer which happened.
+**Rejected:** one uniform rule. It would have made one of the two endpoints wrong.
+
+**Deactivation does not cascade.** Deactivating a building leaves its floors and seats
+with `is_active = true`; they simply never appear, because the tree query filters at
+every level and never reaches them. The alternative — writing `false` down the subtree —
+makes reactivation lossy: you cannot tell which floors were *already* closed before the
+building was. The cost is that a floor can be "active" under an inactive building, which
+is invisible in every read path.
+
+**`include_inactive=true` is refused for non-admins, not ignored.** Quietly dropping a
+flag means answering a different question than the one asked. Refusing with
+`INCLUDE_INACTIVE_NOT_PERMITTED` is one line in
+[`get_include_inactive`](../backend/v1/app/security/dependencies.py) and is testable.
+
+**Permissions are declared in the route decorator.** `dependencies=[ADMIN_ONLY]` rather
+than an `admin: AdminUser` parameter the handler never reads. Routes that genuinely need
+the caller — `PATCH /users/{id}`, whose self-edit guard must know who is acting — take
+it as a parameter instead. Both forms were already in `require_roles`'s docstring from
+M2; M3 picks per route rather than per codebase.
+
+**`active_ticket_count` is a correlated subquery, not a loop.**
+
+```python
+select(func.count(Incident.id))
+    .where(Incident.assignee_id == User.id, Incident.status.in_(ACTIVE_INCIDENT_STATUSES))
+    .correlate(User)
+    .scalar_subquery()
+```
+
+Selected alongside `User` and `EngineerProfile`, so a page of twenty engineers is one
+statement. **Rejected:** a `GROUP BY` join, which drops engineers with no tickets unless
+written as an outer join, and a Python `len()` per engineer, which is the N+1 the build
+plan forbids. "Active" means `OPEN`, `IN_PROGRESS` or `BLOCKED`, defined once in
+`models/enums.py` because M4's capacity warnings must agree with this number.
+
+**Uniqueness is checked in the service, then enforced by the database.** The pre-check
+exists to produce a 409 naming the field, which is what a form needs; the constraint
+exists because the pre-check has a race between its `SELECT` and its `INSERT`. Two
+admins creating the same building code in the same instant get one 409 and one 500 —
+see [§6](#6-gotchas).
+
+**Names are compared case-insensitively even where the column is not.** `buildings.name`
+is `TEXT`, so PostgreSQL would happily hold "SF HQ" and "sf hq". `func.lower(...) == ...`
+in the repository closes that. `users.email` needs no such help — it is `CITEXT`.
+
+**`EngineerSelfUpdate` is a separate, smaller model.** An engineer may set availability
+and phone. Rather than checking fields at runtime, the self-service endpoint parses a
+model that *has* no `level`, so `{"level": "LEAD"}` cannot be obeyed — there is nothing
+to obey it with. The same trick keeps email out of `UserUpdate`.
+
+**The engineer's password is generated, never chosen.** A password an admin types is one
+an admin knows; `secrets.token_urlsafe(16)` plus `must_change_password` means the value
+that appeared on an admin's screen stops working at first sign-in.
+
+**An admin cannot demote or deactivate themselves.** That single rule is what makes the
+last facility admin unremovable: removing an admin requires being a *different* admin,
+so one always remains. **Rejected:** counting remaining admins on every write — more
+code, and two admins demoting each other simultaneously could still slip through it.
+
+**Promotion to ENGINEER creates a profile; demotion keeps it.** An `ENGINEER` with no
+profile passes `require_roles(ENGINEER)` and then fails every `require_engineer_levels`
+check — half-created and confusing. Keeping the row on demotion means a re-promotion
+restores the level and specialties instead of silently resetting a LEAD to JUNIOR. The
+row is inert while the role is not ENGINEER: `get_engineer` filters on the role, so a
+demoted user is absent from `/engineers` entirely.
+
+**Specialties must be top-level groups.** A group covers its subcategories by
+definition, so accepting a subcategory id would promise a precision the assignment rules
+in M4 do not implement.
+
+### 3. How the pieces connect
+
+One request, hop by hop — an admin pasting a floor plan into the bulk-seat dialog:
+
+```
+POST /api/v1/floors/{id}/seats/bulk   {"codes": ["3-A-01", "3-A-01", "3-A-02"], "seat_type": "DESK"}
+  │
+  ├─ main.py                     router mounted at /api/v1, so the path CloudFront
+  │                              forwards unchanged matches as-is
+  ├─ routers/facilities.py       dependencies=[ADMIN_ONLY]  →
+  │      security/dependencies.py    require_roles(FACILITY_ADMIN)
+  │        → get_current_user         → password-change gate
+  │          → get_authenticated_user  → bearer token → decode_access_token
+  │            → repositories/users.py get_by_id  (role read from the DB, not the token)
+  ├─ schemas/facility.py         SeatBulkCreate: 1–500 codes, each 1–40 chars, trimmed
+  ├─ services/facilities.py      bulk_create_seats
+  │      ├─ get_floor(...)                   → 404 if the floor is unknown
+  │      ├─ _deduplicate(codes)              → ["3-A-01", "3-A-02"], first occurrence wins
+  │      ├─ repositories/facilities.py       existing_seat_codes  — ONE query for the batch
+  │      └─ session.add(Seat(...)) per new code, then flush
+  ├─ routers/facilities.py       session.commit()
+  └─ SeatBulkResult              {created: [...], skipped_codes: [...], counts}
+```
+
+Two things to notice. The permission chain is three dependencies deep and every one of
+them is the same code the auth endpoints use — M3 added no new authentication. And the
+existence check is one `IN (...)` query rather than one per pasted line, which is the
+difference between 2 statements and 41 for a forty-desk floor.
+
+The tree read is the mirror image:
+
+```
+GET /api/v1/facilities/tree
+  → services/facilities.py load_tree
+    → repositories/facilities.py load_tree
+        selectinload(Building.floors.and_(Floor.is_active))
+          .selectinload(Floor.seats.and_(Seat.is_active))
+      = 3 statements total: buildings, then all their floors, then all their seats
+  → routers/facilities.py _to_building_node / _to_floor_node
+      walk the already-loaded relationships — no further queries
+```
+
+`.and_()` on a `selectinload` is what keeps the filtering in SQL. Written as a plain
+`selectinload` plus a Python comprehension, every inactive seat in the company would be
+fetched and then discarded.
+
+### 4. Where the rules live
+
+| Rule | File | Detail |
+| --- | --- | --- |
+| Deployed JWT secret must be real | [config.py](../backend/v1/app/config.py) | `_reject_a_weak_deployed_secret`, `MIN_JWT_SECRET_BYTES` |
+| Which settings exist and their defaults | [config.py](../backend/v1/app/config.py) + [.env.example](../backend/v1/.env.example) | `Settings` fields |
+| Page size default and maximum | [schemas/common.py](../backend/v1/app/schemas/common.py) | `DEFAULT_PAGE_SIZE`, `MAX_PAGE_SIZE` |
+| Who may see deactivated rows | [security/dependencies.py](../backend/v1/app/security/dependencies.py) | `get_include_inactive` |
+| Building name and code uniqueness | [services/facilities.py](../backend/v1/app/services/facilities.py) | `_require_free_building_name`, `_require_free_building_code` |
+| Building codes are uppercased | [services/facilities.py](../backend/v1/app/services/facilities.py) | `_normalise_code` |
+| Floor level unique per building | [services/facilities.py](../backend/v1/app/services/facilities.py) | `_require_free_floor_level` |
+| Seat code unique per floor | [services/facilities.py](../backend/v1/app/services/facilities.py) | `_require_free_seat_code` |
+| A referenced facility cannot be deleted | [services/facilities.py](../backend/v1/app/services/facilities.py) | `delete_building` / `delete_floor` / `delete_seat` |
+| What "referenced" means for a facility | [repositories/facilities.py](../backend/v1/app/repositories/facilities.py) | `count_incidents_in_building` and siblings |
+| Bulk seats: dedupe and skip | [services/facilities.py](../backend/v1/app/services/facilities.py) | `bulk_create_seats`, `_deduplicate` |
+| Category tree is two levels | [services/categories.py](../backend/v1/app/services/categories.py) | `_resolve_parent` |
+| Group-only fields | [services/categories.py](../backend/v1/app/services/categories.py) | `GROUP_ONLY_FIELDS` |
+| Subcategories inherit `location_detail` | [services/categories.py](../backend/v1/app/services/categories.py) | `update_category` → `set_children_location_detail` |
+| Sibling category names | [services/categories.py](../backend/v1/app/services/categories.py) | `_require_free_name` |
+| A referenced category is deactivated | [services/categories.py](../backend/v1/app/services/categories.py) | `delete_category` |
+| Engineer creation and temp password | [services/engineers.py](../backend/v1/app/services/engineers.py) | `create_engineer`, `TEMPORARY_PASSWORD_BYTES` |
+| Specialties must be groups | [services/engineers.py](../backend/v1/app/services/engineers.py) | `_require_group_ids` |
+| What an engineer may change alone | [schemas/engineer.py](../backend/v1/app/schemas/engineer.py) | `EngineerSelfUpdate` |
+| What "active ticket" means | [models/enums.py](../backend/v1/app/models/enums.py) | `ACTIVE_INCIDENT_STATUSES` |
+| Engineers are deactivated, not deleted | [services/engineers.py](../backend/v1/app/services/engineers.py) | `deactivate_engineer` |
+| An admin cannot demote themselves | [services/users.py](../backend/v1/app/services/users.py) | `_reject_self_change` |
+| Promotion creates an engineer profile | [services/users.py](../backend/v1/app/services/users.py) | `_apply_role_change` |
+| Deactivation ends sessions | [services/users.py](../backend/v1/app/services/users.py), [services/engineers.py](../backend/v1/app/services/engineers.py) | `revoke_all_refresh_tokens` |
+| Search wildcards are escaped | [repositories/users.py](../backend/v1/app/repositories/users.py) | `_escape_like` |
+
+### 5. How to change it
+
+**Set up a local database from a fresh clone.** The API never creates its own database.
+
+```sh
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres123';"
+sudo -u postgres createdb acme_incidents_dev
+
+cd backend/v1
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env          # the important line is POSTGRES_NAME=acme_incidents_dev
+
+.venv/bin/python -c "from function import handler; print(handler({'action': 'migrate'}, None))"
+.venv/bin/python -c "from function import handler; print(handler({'action': 'seed_admin', 'email': 'admin@acme.inc', 'full_name': 'Facility Admin'}, None))"
+```
+
+`migrate` upgrades the schema and seeds the categories; both halves are idempotent.
+`seed_admin` prints a temporary password **once** — the account is flagged
+`must_change_password`, so every endpoint outside `/auth` returns 403 with
+`PASSWORD_CHANGE_REQUIRED` until it is changed. Self-registration only ever produces
+an EMPLOYEE, so this is the only way to get an admin.
+
+The test suite uses a *different* database (`acme_incidents_test`, from
+`POSTGRES_TEST_NAME`) and drops and recreates it on every run. Never point that at
+`acme_incidents_dev`.
+
+**Add a field to a facility, category or engineer.** Five files, in this order:
+1. `app/models/<thing>.py` — the column.
+2. `alembic/` — a migration (see the M2 recipe; read what autogenerate produces).
+3. `app/schemas/<domain>.py` — add it to the `*Create`, `*Update` and `*Read` models.
+   Leaving it out of `*Update` is how a field is made read-only after creation.
+4. `app/services/<domain>.py` — only if it has a rule. `update_*` applies
+   `model_dump(exclude_unset=True)` generically, so a plain field needs no code.
+5. `tests/integration/test_<domain>.py` — one test that it round-trips, one that a
+   PATCH without it leaves it alone.
+
+**Add an endpoint to an existing resource.**
+```python
+@router.post("/things/{thing_id}/action", response_model=ThingRead, dependencies=[ADMIN_ONLY])
+def do_the_thing(thing_id: uuid.UUID, payload: ThingAction, session: DbSession) -> ThingRead:
+    thing = service.do_the_thing(session, thing_id, payload)
+    session.commit()
+    return ThingRead.model_validate(thing)
+```
+The router validates shapes, names the permission and commits. It decides nothing:
+every refusal comes from the service as an `ApiError` subclass.
+`session.commit()` belongs in the router because one request is one transaction —
+services `flush()` so their writes are visible to later queries in the same request,
+but only the router ends it.
+
+**Add a list endpoint with paging.** Take `paging: Paging`, pass
+`limit=paging.page_size, offset=paging.offset` to the repository, count with the same
+filtered statement (`_count` wraps it as a subquery so the filters cannot drift), and
+return `build_page(items, total=total, params=paging)`.
+
+**Make a resource admin-only.** `dependencies=[ADMIN_ONLY]` on the decorator. If the
+service needs to know *which* admin, take `admin: AdminUser` as a parameter instead.
+Never use `get_authenticated_user` outside `/auth` — it skips the password-change gate.
+
+**Add a category group.** `POST /api/v1/categories` with `name`, `hint`, `icon` (a
+Material UI icon name) and `location_detail`, then post its subcategories with
+`parent_id`. Editing `CATEGORY_GROUPS` in `app/seed/categories.py` also works and is
+what the seed replays, but a rename there creates a *new* row rather than renaming the
+old one — the seed matches on `(parent_id, name)`.
+
+**Change what counts as an engineer's workload.** Edit `ACTIVE_INCIDENT_STATUSES` in
+`app/models/enums.py`. Both `active_ticket_count` and M4's capacity warnings read it.
+
+### 6. Gotchas
+
+**Route order decides what `/engineers/me` means.** FastAPI matches in declaration
+order, so `PATCH /engineers/me` is declared *before* `PATCH /engineers/{user_id}`. The
+other way round, `me` is parsed as a UUID and the request fails with a validation error
+that says nothing about routing. The same trap waits for any future literal path
+segment under a parameterised one.
+
+**`PATCH` semantics come from `exclude_unset=True`, not from `None`.** Every update
+service does `payload.model_dump(exclude_unset=True)`, so a field that was *absent* is
+untouched and a field explicitly sent as `null` is applied. `{"address": null}` clears
+an address; `{}` changes nothing. Any new update path must use the same call, or
+"leave it alone" and "set it to null" collapse into each other.
+
+**The uniqueness pre-check has a race.** `_require_free_building_code` does a `SELECT`,
+then the `INSERT` happens. Two admins submitting the same code in the same instant get
+one 409 and one `IntegrityError` rendered as a 500. The data stays correct — the unique
+constraint is the real guarantee — and for admin reference data the window is
+theoretical. Closing it would mean catching `IntegrityError` and mapping unique
+violations back to fields, which is worth doing if these ever become high-traffic
+endpoints.
+
+**Deleting a building deletes its floors and seats.** The foreign keys cascade. This is
+only reachable when *no* incident references anything in the subtree, which the 409
+check proves first, but a single DELETE can still remove hundreds of rows. The UI should
+confirm.
+
+**A demoted engineer keeps an `engineer_profiles` row.** It is deliberate (see §2) and
+invisible: `/engineers` filters on `role = ENGINEER`. If you query
+`engineer_profiles` directly, join `users` and filter by role or you will count people
+who are not engineers any more.
+
+**`count_by_role` is gone.** M2 wrote it and nothing ever called it; the paged user
+search counts with the same filters as the page. Mentioned only because it may appear
+in an older reading of `repositories/users.py`.
+
+**A blocked incident needs a blocked reason, even in tests.** `incidents` carries
+`CHECK (status <> 'BLOCKED' OR blocked_reason_type IS NOT NULL)`. `make_incident` fills
+one in automatically for `BLOCKED`; hand-written inserts must too.
+
+**`sslmode` is not the only cloud difference in `Settings`.** `is_local` now also drives
+the JWT secret check. A test that constructs `Settings(is_local=False, ...)` must pass a
+real-looking `jwt_secret` or it will fail to build — `tests/unit/test_config.py` defines
+`STRONG_JWT_SECRET` for exactly that.
+
+### 7. Glossary
+
+**Correlated subquery** — a subquery that refers to a column of the outer query, so the
+database evaluates it once per outer row. `active_ticket_count` is one: it counts
+incidents where `assignee_id` equals *this* row's user id.
+
+**N+1 query** — fetching a list (1 query) and then issuing one more query per row (N).
+Twenty engineers would mean twenty-one round trips. `selectinload` and correlated
+subqueries are the two ways this phase avoids it.
+
+**`selectinload`** — SQLAlchemy's eager-loading strategy that fetches a relationship for
+a whole batch of parents in one extra `SELECT ... WHERE parent_id IN (...)`, rather than
+one query per parent (`lazy`) or a row-multiplying `JOIN` (`joinedload`).
+
+**`relationship.and_()`** — an extra condition attached to an eager load, so the filter
+runs in SQL. `selectinload(Building.floors.and_(Floor.is_active))` loads only the active
+floors instead of loading all of them and discarding some in Python.
+
+**`ILIKE`** — PostgreSQL's case-insensitive `LIKE`. `%` matches any run of characters and
+`_` matches exactly one, which is why user input has to be escaped before it is pasted
+into a pattern.
+
+**Soft delete / deactivation** — keeping a row and marking it inactive instead of
+removing it, so the things that point at it still make sense. Used here for facilities,
+categories and engineer accounts.
+
+**Cascade delete** — `ON DELETE CASCADE` on a foreign key: removing the parent removes
+the children automatically, inside the database rather than in application code.
+
+**`ON DELETE SET NULL`** — the gentler variant: removing the parent nulls the reference.
+`users.last_building_id` uses it, which is why deleting a building is not blocked by
+someone's remembered location.
+
+**Pagination envelope** — the `{items, total, page, page_size}` shape every list returns.
+`total` counts every matching row, not the rows on this page, so a UI can render
+"showing 25 of 312" without a second request.
+
+**Pydantic `model_validator(mode="after")`** — a check that runs once the model's fields
+are parsed, so it can compare them with each other. Raising inside it turns the
+construction itself into an error, which is how the JWT secret check stops startup.
+
+**`exclude_unset`** — a Pydantic dump option that omits fields the caller never sent,
+which is what distinguishes "leave this alone" from "set this to null" in a PATCH.
+
+**Temporary password** — a generated credential handed over once, paired with
+`must_change_password` so it cannot outlive the first sign-in.
+
+**RFC 7518 §3.2** — the JWT specification's rule that an HMAC key must be at least as
+long as the hash output: 32 bytes for HS256.

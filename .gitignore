@@ -212,6 +212,8 @@ yarn-error.log*
 .env
 .env.*
 !.env.sample
+# Committed on purpose: it documents the settings, and contains no values.
+!.env.example
 ENVIRONMENT.config
 
 # Logs

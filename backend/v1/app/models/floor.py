@@ -34,4 +34,5 @@ class Floor(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     seats: Mapped[list["Seat"]] = relationship(
         back_populates="floor",
         cascade="all, delete-orphan",
+        order_by="Seat.code",
     )

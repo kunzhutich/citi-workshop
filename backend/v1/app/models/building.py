@@ -24,4 +24,7 @@ class Building(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     floors: Mapped[list["Floor"]] = relationship(
         back_populates="building",
         cascade="all, delete-orphan",
+        # Lowest storey first, so `GET /facilities/tree` and every other
+        # consumer of this relationship agree on the order.
+        order_by="Floor.level_number",
     )

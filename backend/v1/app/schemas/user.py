@@ -1,11 +1,14 @@
-"""Response models for users and engineer profiles."""
+"""Request and response models for users and engineer profiles."""
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from app.models.enums import AvailabilityStatus, EngineerLevel, UserRole
+
+UserFullName = Annotated[str, StringConstraints(min_length=1, max_length=120)]
 
 
 class EngineerProfileRead(BaseModel):
@@ -47,3 +50,37 @@ class CurrentUserRead(UserRead):
         default=None,
         description="Present only for ENGINEER users.",
     )
+
+
+class UserUpdate(BaseModel):
+    """What an admin may change about another account.
+
+    Email is absent on purpose: it is the sign-in identity and the key every
+    audit trail is read by, so changing it is an account migration rather than
+    an edit. Password is absent because only its owner can set one — see
+    `POST /auth/change-password`.
+    """
+
+    full_name: UserFullName | None = None
+    role: UserRole | None = Field(
+        default=None,
+        description=(
+            "Promoting to ENGINEER creates a default JUNIOR profile if the "
+            "account has none, so the new role is usable immediately."
+        ),
+    )
+    is_active: bool | None = Field(
+        default=None,
+        description="Set false to deactivate; the account's sessions are revoked.",
+    )
+
+    @field_validator("full_name")
+    @classmethod
+    def _strip_name(cls, value: str | None) -> str | None:
+        """Trim the name, rejecting an explicit blank."""
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped

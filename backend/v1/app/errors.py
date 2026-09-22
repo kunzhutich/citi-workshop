@@ -65,6 +65,20 @@ class AuthorizationError(ApiError):
         super().__init__(status.HTTP_403_FORBIDDEN, detail, code=code)
 
 
+class NotFoundError(ApiError):
+    """The addressed resource does not exist. Renders as 404.
+
+    Used for a genuinely missing row only. A row the caller may not touch is a
+    403 from ``require_roles``, not a 404 — this API does not hide the
+    existence of resources, and keeping the two apart makes the tests
+    unambiguous.
+    """
+
+    def __init__(self, detail: str, *, code: str | None = None) -> None:
+        """Create a 404 error."""
+        super().__init__(status.HTTP_404_NOT_FOUND, detail, code=code)
+
+
 class ConflictError(ApiError):
     """The request conflicts with existing state. Renders as 409."""
 

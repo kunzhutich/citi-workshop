@@ -8,9 +8,9 @@ never present in the Lambda package.
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -21,6 +21,17 @@ from sqlalchemy import URL
 #: application itself must own the full `/api/v1` path. The Vite dev proxy
 #: forwards `/api` unchanged for the same reason.
 API_PREFIX = "/api/v1"
+
+#: The signing key used when nothing injects one. It exists so that a fresh
+#: clone runs with no setup; it is public, so a deployed environment that still
+#: carries it must refuse to start. `Settings._reject_a_weak_deployed_secret`
+#: is what enforces that.
+DEVELOPMENT_JWT_SECRET = "local-development-secret-change-me"  # nosec B105 - a placeholder
+
+#: Shortest HS256 key we accept outside local development. RFC 7518 section 3.2
+#: requires a key at least as long as the hash output, which for SHA-256 is 32
+#: bytes; PyJWT warns below that length rather than refusing.
+MIN_JWT_SECRET_BYTES = 32
 
 
 class Settings(BaseSettings):
@@ -56,9 +67,41 @@ class Settings(BaseSettings):
 
     # --- Security -------------------------------------------------------------
     jwt_secret: str = Field(
-        default="local-development-secret-change-me",
+        default=DEVELOPMENT_JWT_SECRET,
         description="HS256 signing key for access tokens. Injected as JWT_SECRET in the cloud.",
     )
+
+    @model_validator(mode="after")
+    def _reject_a_weak_deployed_secret(self) -> Self:
+        """Refuse to start a deployed environment with a guessable signing key.
+
+        This is a startup check rather than a runtime one because the failure it
+        prevents is silent: `infra/lambda.tf` filters out environment variables
+        whose value is empty, so a `JWT_SECRET` that failed to apply does not
+        arrive as an empty string — it does not arrive at all, and the field
+        falls back to `DEVELOPMENT_JWT_SECRET`. Tokens would then be signed with
+        a value published in this repository, and every session would look
+        perfectly healthy.
+
+        Failing here turns that into a Lambda that cannot initialise, which is
+        loud, immediate, and fixed by re-applying Terraform.
+        """
+        if self.is_local:
+            return self
+
+        if self.jwt_secret == DEVELOPMENT_JWT_SECRET:
+            raise ValueError(
+                "JWT_SECRET is still the development default. Set a real signing key "
+                "on the Lambda (infra/locals.tf injects random_password.jwt_secret)."
+            )
+
+        if len(self.jwt_secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
+            raise ValueError(
+                f"JWT_SECRET must be at least {MIN_JWT_SECRET_BYTES} bytes outside local "
+                "development; HS256 keys shorter than the hash output weaken the signature."
+            )
+
+        return self
 
     @property
     def environment_name(self) -> Literal["local", "aws"]:

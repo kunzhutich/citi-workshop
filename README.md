@@ -8,6 +8,109 @@ solves a theoretical business problem.
 
 Navigate to [Coding Workshop - Main Guide](./docs/README.md) to get started.
 
+## Local development
+
+> This section covers the ACME Facility Incident Management application built in this
+> repository. [CLAUDE.md](./CLAUDE.md) holds the scaffold constraints,
+> [docs/BUILD-PLAN.md](./docs/BUILD-PLAN.md) the specification, and
+> [docs/PROJECT-GUIDE.md](./docs/PROJECT-GUIDE.md) a deep explanation of how it works.
+
+### Prerequisites
+
+PostgreSQL 17 and Python 3.13 installed on the host, and Node 22 for the frontend. There
+is no `docker-compose.yml` and no LocalStack — the database runs natively.
+
+### 1. Set up the database
+
+The application never creates its own database; the first step is making one and pointing
+the API at it.
+
+```sh
+# A role and a database for local work. `postgres123` matches the defaults in
+# app/config.py, which are the values infra/locals.tf injects for the local case.
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres123';"
+sudo -u postgres createdb acme_incidents_dev
+```
+
+The database must exist and be **empty**; the schema comes from Alembic in step 3.
+
+### 2. Configure the backend
+
+```sh
+cd backend/v1
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env
+```
+
+**Do not skip the `.env` copy.** `app/config.py` defaults `POSTGRES_NAME` to `postgres` —
+the cluster's empty maintenance database — because that is the name the deployed
+environment would use if Terraform injected nothing. With the default in place the API
+starts, `/api/v1/health` reports healthy (it only proves the connection works), and then
+every real query fails on a missing table.
+[`.env.example`](./backend/v1/.env.example) documents every overridable setting; the only
+one you normally need is `POSTGRES_NAME=acme_incidents_dev`.
+
+`.env` is gitignored. It never reaches the Lambda either: `infra/locals.tf` excludes
+dot-prefixed files from the deployment package, and injects the same variable names
+directly instead.
+
+### 3. Create the schema and the first admin
+
+Both run through the ops actions in `app/services/ops.py` — the same code path the
+deployed Lambda uses, invoked locally here:
+
+```sh
+cd backend/v1
+.venv/bin/python -c "from function import handler; print(handler({'action': 'migrate'}, None))"
+.venv/bin/python -c "from function import handler; print(handler({'action': 'seed_admin', 'email': 'admin@acme.inc', 'full_name': 'Facility Admin'}, None))"
+```
+
+`migrate` upgrades the schema to head and seeds the category reference data; both halves
+are idempotent, so re-running is safe. `seed_admin` prints a temporary password **once** —
+the account is flagged `must_change_password`, so the first sign-in has to change it.
+Self-registration always produces an EMPLOYEE, so this is the only way to get an admin.
+
+### 4. Run it
+
+```sh
+# terminal 1 — API on :8000
+cd backend/v1 && .venv/bin/uvicorn app.main:app --reload --port 8000
+
+# terminal 2 — UI on :3000, proxying /api to :8000 with the path unchanged
+cd frontend && npm install && npm run dev
+```
+
+Browse to <http://localhost:3000>. Interactive API docs are at
+<http://localhost:8000/api/v1/docs> — note the `/api/v1` prefix, which the application
+owns in both environments because CloudFront forwards the full path to the Lambda.
+
+### 5. Run the checks
+
+```sh
+cd backend/v1
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/python -m pytest
+
+cd ../frontend
+npm run lint && npm test
+```
+
+The backend suite needs the same PostgreSQL server. It creates its own database
+(`acme_incidents_test`, from `POSTGRES_TEST_NAME`) and **drops and recreates it on every
+run**, so never point that at a database you care about; `tests/conftest.py` refuses to
+drop `postgres`. Your `acme_incidents_dev` data is untouched.
+
+### Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| `relation "users" does not exist` | `POSTGRES_NAME` still points at `postgres`. Copy `.env.example` to `.env` (step 2). |
+| `/api/v1/health` healthy but every other call 500s | Same cause: the connection works, the schema is elsewhere. |
+| `password authentication failed for user "postgres"` | Step 1's `ALTER USER` was skipped, or `POSTGRES_PASS` does not match. |
+| `database "acme_incidents_dev" does not exist` | Step 1's `createdb` was skipped. |
+| Login succeeds, then every request 403s with `PASSWORD_CHANGE_REQUIRED` | Working as designed for a seeded account. Call `POST /api/v1/auth/change-password`. |
+
 ## Coding Workshop Example
 
 Coding workshop organizer(s) will provide instructions to follow by email. Here
