@@ -144,6 +144,23 @@ functions, early returns, no deeply nested comprehensions.
 PropTypes guidance; keep the camelCase/PascalCase and Airbnb-style conventions. Material
 UI for components, `react-responsive` for layout switching.
 
+**Styling — no `.css` files.** Build the UI out of Material UI components and style them
+in place:
+
+- `sx={{ ... }}` for one-off layout, spacing and colour on a specific instance.
+- `styled()` when the same treatment is reused, or when a plain element needs theming.
+- `theme.ts` for anything global — palette, typography, shape, component default props
+  and variants. `CssBaseline` is the only reset we need.
+
+Hand-written stylesheets, CSS modules and utility-class frameworks are out. Prefer theme
+tokens (`theme.palette.*`, `theme.spacing()`) over literal values so the look stays
+consistent.
+
+Exceptions exist — `@keyframes`, a third-party library that ships or demands a
+stylesheet, a `<style>` block that genuinely has no MUI equivalent. **Judging those is
+Claude's call:** take the exception when it is clearly right, keep it as small and local
+as possible, and note it in the phase summary rather than stopping to ask.
+
 **Terraform** — snake_case, comment every resource we add, `terraform validate` before
 committing.
 
