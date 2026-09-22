@@ -80,11 +80,24 @@ class NotFoundError(ApiError):
 
 
 class ConflictError(ApiError):
-    """The request conflicts with existing state. Renders as 409."""
+    """The request conflicts with existing state. Renders as 409.
 
-    def __init__(self, detail: str, *, code: str | None = None, field: str | None = None) -> None:
-        """Create a 409 error."""
-        super().__init__(status.HTTP_409_CONFLICT, detail, code=code, field=field)
+    `extra` is merged into the response body. A refused workflow transition
+    uses it to return `allowed_transitions`, so a client that asked for an
+    impossible move is told what *is* possible in the same response rather
+    than having to make a second request to find out.
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        code: str | None = None,
+        field: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Create a 409 error, optionally carrying extra body fields."""
+        super().__init__(status.HTTP_409_CONFLICT, detail, code=code, field=field, extra=extra)
 
 
 async def api_error_handler(request: Request, exc: Exception) -> JSONResponse:

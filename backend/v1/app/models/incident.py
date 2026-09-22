@@ -190,6 +190,10 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     seat: Mapped["Seat | None"] = relationship()
     reporter: Mapped["User"] = relationship(foreign_keys=[reporter_id])
     assignee: Mapped["User | None"] = relationship(foreign_keys=[assignee_id])
+    # Named `escalator` rather than `escalated_by`, which is the column. Three
+    # relationships point at `users` from this table, so each one has to name
+    # its foreign key explicitly.
+    escalator: Mapped["User | None"] = relationship(foreign_keys=[escalated_by])
     duplicate_of: Mapped["Incident | None"] = relationship(
         remote_side="Incident.id",
         foreign_keys=[duplicate_of_id],
