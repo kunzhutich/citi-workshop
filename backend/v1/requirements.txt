@@ -1,0 +1,12 @@
+# Runtime dependencies for the ACME incident management Lambda.
+#
+# Terraform discovers this file (infra/locals.tf globs backend/*/requirements.txt)
+# and pip-installs it into the deployment package, so it must contain runtime
+# dependencies ONLY. Development and test tooling lives in requirements-dev.txt,
+# which Terraform ignores.
+fastapi==0.141.1
+mangum==0.22.0
+psycopg[binary]==3.3.6
+pydantic==2.13.5
+pydantic-settings==2.15.0
+sqlalchemy==2.0.54

@@ -1,0 +1,11 @@
+# Bandit configuration for the Security Check - Python workflow.
+#
+# Bandit does not auto-discover this file, so .github/workflows/python.actions.yml
+# passes it with `--ini .bandit`.
+#
+# exclude: the project virtualenv (never committed, never deployed) and the test
+#   suite (never packaged into the Lambda, and full of `assert`, which bandit
+#   flags as B101 on every line). Application code is scanned in full, with no
+#   rules skipped.
+[bandit]
+exclude = ./backend/v1/.venv,./backend/v1/tests

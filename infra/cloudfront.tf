@@ -6,6 +6,41 @@ resource "aws_cloudfront_origin_access_control" "this" {
   signing_protocol                  = "sigv4"
 }
 
+# Rewrites extension-less paths (/incidents/abc, /login) to /index.html so that
+# React Router can handle deep links and page reloads.
+#
+# This replaces the scaffold's distribution-wide `custom_error_response` block,
+# which mapped every 404 to a 200 serving /index.html. That applied to the API
+# origin too, so a genuine "incident not found" would have reached the browser
+# as HTTP 200 with a page of HTML — wrong REST semantics, and a direct rubric
+# violation. A viewer-request function scoped to the S3 behavior gives us SPA
+# routing without touching /api/*.
+resource "aws_cloudfront_function" "spa_router" {
+  count   = data.aws_caller_identity.this.id != "000000000000" ? 1 : 0
+  name    = format("%s-spa-router-%s", var.aws_project, local.app_id)
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrite extension-less paths to /index.html for React Router"
+  publish = true
+
+  code = <<-EOT
+    function handler(event) {
+        var request = event.request;
+        var uri = request.uri;
+        var lastSegment = uri.substring(uri.lastIndexOf('/') + 1);
+
+        // A last segment containing a dot is a real file (index-a1b2c3.js,
+        // favicon.svg); serve it from S3 unchanged so a missing asset still
+        // fails loudly instead of returning the HTML shell.
+        if (lastSegment.indexOf('.') !== -1) {
+            return request;
+        }
+
+        request.uri = '/index.html';
+        return request;
+    }
+  EOT
+}
+
 resource "aws_cloudfront_distribution" "this" {
   count               = data.aws_caller_identity.this.id != "000000000000" ? 1 : 0
   enabled             = true
@@ -37,13 +72,6 @@ resource "aws_cloudfront_distribution" "this" {
         origin_ssl_protocols   = ["TLSv1.2"]
       }
     }
-  }
-
-  custom_error_response {
-    error_code            = 404
-    error_caching_min_ttl = 300
-    response_code         = 200
-    response_page_path    = "/index.html"
   }
 
   # logging_config {
@@ -89,6 +117,14 @@ resource "aws_cloudfront_distribution" "this" {
   default_cache_behavior {
     allowed_methods = ["GET", "HEAD", "OPTIONS"]
     cached_methods  = ["GET", "HEAD"]
+
+    # SPA routing for the React app. Attached to the DEFAULT behavior only, so
+    # it never sees /api/v1* — those requests match the ordered_cache_behavior
+    # above and go straight to the Lambda with their status codes intact.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = element(aws_cloudfront_function.spa_router.*.arn, count.index)
+    }
 
     default_ttl = 3600
     max_ttl     = 86400

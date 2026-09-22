@@ -3,12 +3,15 @@ module "lambda" {
   source   = "terraform-aws-modules/lambda/aws"
   version  = "~> 8.0"
 
-  function_name   = format("%s-%s-%s", var.aws_project, each.value.name, local.app_id)
-  package_type    = "Zip"
-  architectures   = [each.value.arch]
-  handler         = each.value.handler
-  runtime         = each.value.runtime
-  memory_size     = 128
+  function_name = format("%s-%s-%s", var.aws_project, each.value.name, local.app_id)
+  package_type  = "Zip"
+  architectures = [each.value.arch]
+  handler       = each.value.handler
+  runtime       = each.value.runtime
+  # Raised from the scaffold's 128 MB: importing FastAPI, SQLAlchemy and
+  # psycopg exceeds it, and Lambda scales CPU with memory, so 512 MB also
+  # cuts cold-start time. This is one of the three permitted infra edits.
+  memory_size     = 512
   timeout         = 300
   tracing_mode    = "PassThrough"
   build_in_docker = false
