@@ -457,3 +457,417 @@ array of config objects, replacing the older `.eslintrc` cascade.
 
 **Conventional commits** — commit messages prefixed with a type (`feat:`, `fix:`,
 `test:`, `infra:`, `docs:`) so history is scannable.
+
+---
+
+## Phase M2 — Data model, auth and RBAC
+
+M1 proved a request could travel from the browser to PostgreSQL and back. M2 gives it
+something to say: the full schema, accounts that can sign in, and the rules about who may
+do what.
+
+**Everything in this phase was verified against local PostgreSQL only** — AWS credentials
+did not exist yet. What that leaves unproven is recorded, item by item with the exact
+command to run, in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). Read that
+before the first cloud deploy.
+
+### 1. What was built
+
+#### The schema — `app/models/`
+
+| File | Responsibility |
+| --- | --- |
+| [base.py](../backend/v1/app/models/base.py) | `Base`, the constraint naming convention, the UUID-primary-key and timestamp mixins, and `pg_enum()`. |
+| [enums.py](../backend/v1/app/models/enums.py) | All eleven domain enums as `StrEnum`, plus `ENUM_TYPES` — the one list the migration creates types from. |
+| [building.py](../backend/v1/app/models/building.py) · [floor.py](../backend/v1/app/models/floor.py) · [seat.py](../backend/v1/app/models/seat.py) | The facility hierarchy. Meeting rooms are seats with `seat_type = MEETING_ROOM`. |
+| [user.py](../backend/v1/app/models/user.py) | Accounts. `email` is `CITEXT`. `last_*_id` pre-fills the report form. |
+| [engineer_profile.py](../backend/v1/app/models/engineer_profile.py) | Engineer-only attributes, keyed *by* `user_id` — no separate identity. |
+| [category.py](../backend/v1/app/models/category.py) | The two-level tree. Self-referencing `parent_id`. |
+| [incident.py](../backend/v1/app/models/incident.py) | The ticket. Ticket sequence, generated `search_vector`, lifecycle timestamps. |
+| [note.py](../backend/v1/app/models/note.py) · [event.py](../backend/v1/app/models/event.py) | Comments (soft-deleted) and the append-only audit log. |
+| [refresh_token.py](../backend/v1/app/models/refresh_token.py) | Issued tokens, stored hashed. |
+
+#### Migration — `alembic/`
+
+[alembic/versions/0001_initial_schema.py](../backend/v1/alembic/versions/0001_initial_schema.py)
+builds everything in four ordered steps: extensions, enum types, the ticket sequence,
+then tables. [alembic/env.py](../backend/v1/alembic/env.py) takes its URL from
+`app.config.Settings`, so migrations can never connect somewhere the API does not.
+[app/migrations.py](../backend/v1/app/migrations.py) pins the script path absolutely.
+
+#### Reference data — `app/seed/categories.py`
+
+Five groups, 32 subcategories, as a frozen dataclass table plus an idempotent
+`seed_categories(session)`.
+
+#### Security — `app/security/`
+
+| File | Responsibility |
+| --- | --- |
+| [passwords.py](../backend/v1/app/security/passwords.py) | bcrypt cost 12, with a SHA-256 pre-hash. |
+| [tokens.py](../backend/v1/app/security/tokens.py) | Access JWTs and opaque refresh tokens. |
+| [dependencies.py](../backend/v1/app/security/dependencies.py) | `get_current_user`, `require_roles`, `require_engineer_levels`, the password-change gate, cookie constants. |
+
+#### Auth — router, service, repository, schemas
+
+[routers/auth.py](../backend/v1/app/routers/auth.py) (six endpoints) →
+[services/auth_service.py](../backend/v1/app/services/auth_service.py) (every rule) →
+[repositories/users.py](../backend/v1/app/repositories/users.py) (every query).
+[errors.py](../backend/v1/app/errors.py) defines the one error shape.
+
+#### Ops — `app/services/ops.py`
+
+`migrate` and `seed_admin` joined `health` on the existing registry.
+
+#### Tests — 155 total, up from 19
+
+| File | Covers |
+| --- | --- |
+| `tests/unit/test_email_validation.py` | 32 cases: lookalikes, homographs, multiple `@`. |
+| `tests/unit/test_passwords.py` | Long and multibyte passwords, salting, cost, fail-closed. |
+| `tests/unit/test_tokens.py` | Expiry, forged keys, `alg=none`, wrong token type. |
+| `tests/integration/test_auth.py` | All six endpoints, rotation, reuse detection. |
+| `tests/integration/test_rbac.py` | The role × level × gate matrix. |
+| `tests/integration/test_migration.py` | The schema Postgres actually built. |
+| `tests/integration/test_seed_categories.py` | Idempotency and admin-edit survival. |
+| `tests/integration/test_ops_actions.py` | Both actions through `function.handler`. |
+
+### 2. Why it is shaped this way
+
+**Enum types are created up front, and every column says `create_type=False`.**
+SQLAlchemy will happily create a PostgreSQL enum type as a side effect of creating the
+first table that uses it. That works right up until a second table uses the same type,
+at which point the migration dies with "type already exists". Creating all eleven from
+`ENUM_TYPES` at the top of the migration removes the trap before it can appear.
+
+*Consequence:* `Base.metadata.create_all()` can no longer build this schema. That is
+fine, and arguably better — the tests build their database with the real migrations
+instead, so every test run is also a migration rehearsal.
+
+**`UNIQUE (parent_id, name) NULLS NOT DISTINCT` on categories.** In SQL, `NULL != NULL`,
+so a plain unique constraint on `(parent_id, name)` would silently never apply to
+*groups* — whose `parent_id` is NULL — and two groups could both be called "Hardware".
+`NULLS NOT DISTINCT` (PostgreSQL 15+) makes NULLs collide, which is what we want.
+**Rejected:** a partial unique index on `(name) WHERE parent_id IS NULL`, which needs two
+constraints to express one rule. That fallback is noted in the checklist in case Aurora
+surprises us.
+
+**`search_vector` is a generated column, not a trigger or an application field.**
+PostgreSQL recomputes it from `title` and `description` on every write, so it cannot
+drift. A trigger would do the same but lives outside the schema definition; an
+application-maintained column drifts the first time anything writes SQL directly.
+
+**Ticket numbers come from a sequence.** `COUNT(*) + 1` races under concurrency and
+reuses numbers after deletes. A UUID is unreadable over the phone. A sequence gives
+stable, never-reused integers; gaps after a rollback are harmless.
+
+**bcrypt is fed a SHA-256 digest, not the password.** bcrypt 5.x *raises* on inputs over
+72 bytes — it does not truncate. Our policy allows 128 characters, and a single emoji is
+four bytes, so long passwords would simply fail. Reducing to a base64 SHA-256 digest
+gives a constant 44 ASCII bytes with no entropy lost. This is what passlib calls
+`bcrypt_sha256`. **The digest step can never be removed or reordered** — doing so
+invalidates every stored hash.
+
+**Two token mechanisms.** A stateless JWT is cheap to verify but cannot be revoked; an
+opaque database-backed token can be revoked but costs a query. Using a short-lived JWT
+for requests and a long-lived opaque token for renewal gets both properties: fifteen
+minutes of exposure if an access token leaks, immediate revocation for everything else.
+
+**Refresh tokens are SHA-256, not bcrypt.** A refresh token is 32 bytes of
+cryptographic randomness, not a guessable human secret, so there is nothing for a slow
+hash to defend against — and lookup has to be an indexed equality match, which a salted
+hash cannot do.
+
+**Refresh-token reuse revokes every session.** Presenting a token that was already
+rotated away means either the cookie was stolen and replayed, or the legitimate client
+raced itself. There is no way to tell them apart, and ending all sessions is safe in both
+cases: the honest user signs in again, and the thief is locked out. Without this, a
+stolen cookie is usable indefinitely as long as the thief refreshes it first.
+
+**The password-change gate is two dependencies, not middleware.** The rule is "every
+endpoint except `/auth/*` returns 403 while `must_change_password` is set". A middleware
+would have to pattern-match URLs — fragile, and invisible from the route it governs.
+Instead `get_authenticated_user` does authentication only and `get_current_user` adds
+the gate; `/auth/*` uses the first, everything else uses the second. A route's
+dependency says which it is, and the change-password endpoint stays reachable, which it
+must be or the gate would be a trap with no exit.
+
+**Role and engineer level are read from the database on every request.** The access
+token carries `role` for convenience, but nothing authorises from it. An admin demoting
+someone takes effect on their very next request, not fifteen minutes later. Both
+directions are tested.
+
+**Login is deliberately uninformative.** One message for unknown email, wrong password
+and deactivated account — otherwise the endpoint is an account-existence oracle. The
+password is verified against a dummy hash even when no user was found, so the *timing*
+does not answer the question either.
+
+**Category seeding lives in `migrate`, not in a separate action.** The questionnaire
+cannot render without categories, so a migrated-but-unseeded database is not a usable
+one. One command produces a working database. **Rejected:** rows in the migration —
+categories are admin-editable, and a frozen migration is the wrong home for data that is
+expected to change.
+
+**`seed_admin` always sets `must_change_password`.** A password that has travelled
+through an invoke payload and a terminal is not a password to keep, even one the caller
+chose.
+
+**Exceptions are named `...Error`.** `ValidationFailed` read better, but ruff's `N818`
+enforces the PEP 8 convention and the house style follows the linter.
+
+### 3. How the pieces connect
+
+**Signing in**, hop by hop:
+
+```
+POST /api/v1/auth/login  {"email": "...", "password": "..."}
+  ▼
+routers/auth.py :: login
+  │  LoginRequest validates shapes only — no business rules here
+  ▼
+services/auth_service.py :: authenticate
+  ├─ repositories/users.py :: get_by_email     → SELECT ... WHERE email = :e   (CITEXT)
+  ├─ security/passwords.py :: verify_password  → bcrypt(sha256(password))
+  │     no user? verify against _DUMMY_HASH anyway, then fail identically
+  └─ user.last_login_at = now()
+  ▼
+services/auth_service.py :: issue_session
+  ├─ security/tokens.py :: create_access_token   → JWT, 15 min, HS256
+  ├─ security/tokens.py :: generate_refresh_token → (raw, sha256)
+  └─ repositories/users.py :: add_refresh_token  → INSERT (hash only)
+  ▼
+routers/auth.py :: _set_refresh_cookie
+  │  HttpOnly; SameSite=strict; Path=/api/v1/auth; Secure ← Settings.cookie_secure
+  ▼
+{"access_token": "...", "token_type": "bearer", "user": {...}}
+```
+
+**A later authorised request:**
+
+```
+GET /api/v1/<anything>   Authorization: Bearer <jwt>
+  ▼
+security/dependencies.py :: get_bearer_token      → split the header
+  ▼
+security/tokens.py :: decode_access_token         → verify signature, exp, type
+  ▼
+repositories/users.py :: get_by_id                → SELECT user + engineer_profile
+  │  role and level come from HERE, never from the token
+  ▼
+security/dependencies.py :: get_current_user      → 403 if must_change_password
+  ▼
+security/dependencies.py :: require_roles(...)    → 403 if role not allowed
+  ▼
+the route
+```
+
+**The ops path**, unchanged from M1 in shape:
+
+```
+aws lambda invoke --payload '{"action":"migrate"}'
+  ▼
+function.py :: handler        sees "action" → never touches the ASGI app
+  ▼
+services/ops.py :: run_ops → ACTIONS["migrate"] → _op_migrate
+  ├─ app/migrations.py :: upgrade_to_head    → alembic upgrade head
+  └─ app/seed/categories.py :: seed_categories → idempotent INSERTs
+  ▼
+{"ok": true, "result": {"schema": "...", "categories": {...}}}
+```
+
+### 4. Where the rules live
+
+| Rule | File | Detail |
+| --- | --- | --- |
+| Who may register | [services/auth_service.py](../backend/v1/app/services/auth_service.py) | `normalise_email`, `ALLOWED_EMAIL_DOMAIN` |
+| Password length policy | [security/passwords.py](../backend/v1/app/security/passwords.py) | `MIN/MAX_PASSWORD_LENGTH`, mirrored by `schemas/auth.py` |
+| Password hashing | [security/passwords.py](../backend/v1/app/security/passwords.py) | `BCRYPT_ROUNDS`, `_prehash` |
+| Token lifetimes | [security/tokens.py](../backend/v1/app/security/tokens.py) | `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL` |
+| Refresh rotation and reuse response | [services/auth_service.py](../backend/v1/app/services/auth_service.py) | `rotate_session` |
+| Cookie flags and path | [routers/auth.py](../backend/v1/app/routers/auth.py) + [security/dependencies.py](../backend/v1/app/security/dependencies.py) | `_set_refresh_cookie`, `REFRESH_COOKIE_PATH` |
+| Password-change gate | [security/dependencies.py](../backend/v1/app/security/dependencies.py) | `get_current_user` |
+| Role permissions | [security/dependencies.py](../backend/v1/app/security/dependencies.py) | `require_roles`, `require_engineer_levels` |
+| New accounts are EMPLOYEE | [services/auth_service.py](../backend/v1/app/services/auth_service.py) | `register_employee` hardcodes the role |
+| Error response shape | [errors.py](../backend/v1/app/errors.py) | `api_error_handler` |
+| Which enum types exist | [models/enums.py](../backend/v1/app/models/enums.py) | `ENUM_TYPES` |
+| Blocked needs a reason | [models/incident.py](../backend/v1/app/models/incident.py) | `CheckConstraint`, enforced by the database |
+| Category tree contents | [seed/categories.py](../backend/v1/app/seed/categories.py) | `CATEGORY_GROUPS` |
+| Which ops actions exist | [services/ops.py](../backend/v1/app/services/ops.py) | `ACTIONS` |
+
+### 5. How to change it
+
+**Add a column to an existing table.**
+1. Add the `mapped_column` to the model in `app/models/`.
+2. `cd backend/v1 && POSTGRES_NAME=acme_incidents_dev .venv/bin/alembic revision --autogenerate -m "describe it"`.
+3. **Read the generated file.** Autogenerate misses enum creation, generated columns and
+   index methods — compare against `0001_initial_schema.py` for how those are written.
+4. `alembic upgrade head`, then `alembic downgrade -1 && alembic upgrade head` to prove
+   the round trip.
+5. Add it to the matching schema in `app/schemas/`.
+6. `pytest tests/integration/test_migration.py` — `test_models_and_migration_do_not_drift`
+   catches a model changed without a migration.
+
+**Add a new enum type.**
+1. Add the `StrEnum` to `app/models/enums.py` **and** register it in `ENUM_TYPES`.
+2. In the migration, `op.execute("CREATE TYPE ...")` before any table uses it, and add
+   the matching `DROP TYPE` to `downgrade()`.
+3. Use `pg_enum(YourEnum, "your_type_name")` on the column.
+
+**Protect a new endpoint.**
+```python
+from app.security.dependencies import CurrentUser, require_roles
+
+@router.get("/things")
+def list_things(user: CurrentUser) -> ...:          # any signed-in user, gate applied
+    ...
+
+@router.post("/things")
+def create_thing(
+    admin: Annotated[User, Depends(require_roles(UserRole.FACILITY_ADMIN))],
+) -> ...:
+    ...
+```
+Never use `get_authenticated_user` outside `/auth` — it skips the password-change gate.
+
+**Add an ops action.** `def _op_name(event) -> dict`, register it in `ACTIONS`, add a
+test in `tests/integration/test_ops_actions.py`, and add a checklist entry in
+`docs/DEPLOYMENT-CHECKLIST.md` for whatever about it can only be proven in the cloud.
+
+**Change the category tree.** Edit `CATEGORY_GROUPS` in `app/seed/categories.py`, then
+re-run `migrate`. Additions appear; renames create a *new* row and leave the old one, so
+rename through the admin UI (M6) rather than here.
+
+**Run the backend checks:**
+```sh
+cd backend/v1
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/python -m pytest
+cd .. && backend/v1/.venv/bin/bandit --ini .bandit -r ./backend
+```
+
+### 6. Gotchas
+
+**`Base.metadata.create_all()` cannot build this schema.** The enums use
+`create_type=False`, and the extensions and sequence exist only in the migration. Use
+`alembic upgrade head` — which is what the test fixtures do.
+
+**The test database is dropped and recreated on every run.** Most tests roll their writes
+back, but the ops-action tests go through `function.handler`, which owns its own session
+and genuinely commits. Without the drop, `seed_admin creates an account` would pass once
+and fail forever after. The name comes from `POSTGRES_TEST_NAME` (default
+`acme_incidents_test`) and `_recreate_database` refuses to drop the `postgres`
+maintenance database.
+
+**A test that reads committed state needs to clear it first.** For the same reason,
+`test_seed_categories.py` deletes all categories in an autouse fixture — otherwise it
+sees the rows the ops tests committed. The delete is rolled back with the test.
+
+**ruff's isort thinks `alembic` is first-party** because there is a local `alembic/`
+directory. `known-third-party = ["alembic"]` in `pyproject.toml` fixes the import
+grouping; without it `ruff check` and `ruff format` disagree with each other forever.
+
+**`:table::regclass` breaks in a SQLAlchemy `text()`.** The `::` cast confuses bind
+parameter parsing. Join `pg_class` instead — see `test_check_constraints_exist`.
+
+**Bandit flags three constants as hardcoded passwords.** `PASSWORD_CHANGE_REQUIRED`,
+`ACCESS_TOKEN_TYPE` and a `must_change_password` dict key all match its name heuristic.
+Each carries an inline `# nosec B105` with the reason. Do not widen the `.bandit` config
+to silence these — the point is that a *real* finding would still show up.
+
+**Local PostgreSQL is 18.6; Aurora is 17.7.** Every feature used is PostgreSQL 15 or
+earlier, so this should not matter, but it is unverified. See checklist item 2.3.
+
+**`CREATE EXTENSION` on Aurora is the biggest open risk in the project.** The migration
+creates `pgcrypto` and `citext`, and every table depends on both. Aurora's master user
+holds `rds_superuser`, not superuser. Both extensions are on the RDS-supported list, so
+it is expected to work — but if it does not, nothing gets created. Checklist item 2.1,
+with a recovery plan.
+
+**`must_change_password` blocks *everything* outside `/auth`.** If a deployed account
+seems unable to do anything and every response is a 403 with
+`code: "PASSWORD_CHANGE_REQUIRED"`, that is the gate working, not a bug. Change the
+password.
+
+**The temporary password from `seed_admin` is shown once.** It is stored only as a bcrypt
+hash. Lose it and the fix is to seed a different admin email.
+
+### 7. Glossary
+
+**Alembic** — the migration tool for SQLAlchemy. Each migration is a Python file with
+`upgrade()` and `downgrade()`; a table called `alembic_version` records which have run.
+
+**Autogenerate** — Alembic comparing your models against a live database and writing a
+migration for the difference. A starting point, not an answer: it misses enum creation,
+generated columns and index methods.
+
+**Migration head / `downgrade base`** — "head" is the newest revision; `base` is before
+the first. `upgrade head` applies everything, `downgrade base` undoes everything.
+
+**Extension** — an installable PostgreSQL add-on. `pgcrypto` provides
+`gen_random_uuid()`; `citext` provides a case-insensitive text type.
+
+**CITEXT** — text that compares case-insensitively. `users.email` uses it so
+`Ada@acme.inc` and `ada@acme.inc` are the same row, enforced by the database rather than
+by every caller remembering to lowercase.
+
+**Generated column** — a column PostgreSQL computes from other columns. `STORED` means
+the result is written to disk and can be indexed.
+
+**`tsvector` / `to_tsvector` / `setweight`** — PostgreSQL's full-text search types.
+A `tsvector` is a document reduced to normalised search terms; `setweight` tags terms
+with an importance class (`'A'` beats `'B'`) so title matches outrank description matches.
+
+**GIN index** — Generalised Inverted Index. Maps each term to the rows containing it,
+which is what makes `tsvector` search fast. The right index type for "many values inside
+one column".
+
+**Sequence** — a database counter. `nextval()` is atomic and never returns the same
+number twice, even under concurrency.
+
+**`NULLS NOT DISTINCT`** — a PostgreSQL 15+ option making a unique constraint treat NULLs
+as equal. Without it, rows with a NULL in the constrained column never collide.
+
+**Enum type** — a PostgreSQL column type restricted to a fixed list of labels. Stricter
+than a `CHECK`, and the labels have a defined sort order.
+
+**`StrEnum`** — a Python enum whose members *are* strings, so `UserRole.EMPLOYEE ==
+"EMPLOYEE"` is true. Values from the database, from JSON and from tests all behave
+identically.
+
+**ORM session / flush / commit** — a `Session` is a unit of work. `flush()` sends pending
+SQL so the database assigns defaults and ids, but stays inside the transaction;
+`commit()` ends the transaction and makes it permanent.
+
+**Savepoint** — a named point inside a transaction you can roll back to. The test
+fixtures use one so code under test can call `commit()` normally and still be undone.
+
+**bcrypt / cost factor / salt** — a deliberately slow password hash. The cost factor is a
+power of two (12 → 4,096 iterations); the salt is random per-hash, so identical passwords
+produce different hashes and one precomputed table cannot attack them all.
+
+**JWT** — JSON Web Token: base64 JSON with a signature. Anyone can *read* it; only the
+key holder can *forge* it. Never put a secret in one.
+
+**HS256** — HMAC-SHA256, a symmetric JWT signature. One key both signs and verifies,
+which suits a single service. **`alg=none`** is the classic JWT attack — a token claiming
+to need no signature — which is why `decode_access_token` pins the algorithm.
+
+**Claims** — the fields inside a JWT. `sub` (subject), `iat` (issued at) and `exp`
+(expires) are standard; `role` and `type` are ours.
+
+**Refresh-token rotation** — issuing a brand-new refresh token every time one is used and
+revoking the old one, so a stolen token is useful only until the real user refreshes.
+**Reuse detection** is noticing a revoked one come back and ending every session.
+
+**`HttpOnly` / `Secure` / `SameSite=Strict`** — cookie flags. `HttpOnly` hides it from
+JavaScript; `Secure` sends it over HTTPS only; `SameSite=Strict` withholds it from
+requests originating on another site, which is what blocks CSRF.
+
+**Cookie `Path`** — the URL prefix a cookie is sent for. Ours is `/api/v1/auth`, so the
+refresh token is not attached to ordinary API calls.
+
+**RBAC** — Role-Based Access Control: permissions attach to roles, and users hold a role.
+
+**FastAPI dependency** — a function FastAPI calls before the route, whose return value is
+injected. Dependencies compose, which is how `require_roles` builds on `get_current_user`
+which builds on `get_authenticated_user`.

@@ -8,7 +8,8 @@ that prefix would be unreachable in the deployed environment.
 from fastapi import FastAPI
 
 from app.config import API_PREFIX
-from app.routers import health
+from app.errors import ApiError, api_error_handler
+from app.routers import auth, health
 from app.services.health import API_VERSION
 
 DESCRIPTION = (
@@ -27,7 +28,12 @@ def create_app() -> FastAPI:
         openapi_url=f"{API_PREFIX}/openapi.json",
         redoc_url=None,
     )
+
+    # One handler renders every deliberate error as {detail, code?, field?}.
+    application.add_exception_handler(ApiError, api_error_handler)
+
     application.include_router(health.router, prefix=API_PREFIX)
+    application.include_router(auth.router, prefix=API_PREFIX)
     return application
 
 
