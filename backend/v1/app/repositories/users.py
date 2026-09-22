@@ -1,11 +1,13 @@
 """Queries over users and their refresh tokens."""
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.enums import UserRole
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 
@@ -31,9 +33,44 @@ def email_exists(session: Session, email: str) -> bool:
     return session.scalars(select(User.id).where(User.email == email).limit(1)).first() is not None
 
 
-def count_by_role(session: Session, role: str) -> int:
-    """Return how many users hold this role."""
-    return len(list(session.scalars(select(User.id).where(User.role == role))))
+def search(
+    session: Session,
+    *,
+    role: UserRole | None,
+    query: str | None,
+    include_inactive: bool,
+    limit: int,
+    offset: int,
+) -> tuple[Sequence[User], int]:
+    """Return one page of users ordered by name, and the total count.
+
+    `query` matches the name or the email. `ILIKE` rather than the full-text
+    index the incidents table carries: this is a short admin list, and an
+    admin typing "nin" expects to find "Nina" — a prefix a tsquery would not
+    match without extra configuration.
+    """
+    statement = select(User)
+
+    if role is not None:
+        statement = statement.where(User.role == role)
+    if not include_inactive:
+        statement = statement.where(User.is_active)
+    if query:
+        pattern = f"%{_escape_like(query)}%"
+        statement = statement.where(or_(User.full_name.ilike(pattern), User.email.ilike(pattern)))
+
+    total = session.scalars(select(func.count()).select_from(statement.subquery())).one()
+    rows = session.scalars(statement.order_by(User.full_name).limit(limit).offset(offset)).all()
+    return rows, total
+
+
+def _escape_like(value: str) -> str:
+    """Neutralise the wildcards a user may type into a search box.
+
+    Without this, a search for "100%" matches every row, and one for "_" matches
+    every single-character name.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def add_refresh_token(
