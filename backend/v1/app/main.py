@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from app.config import API_PREFIX
 from app.errors import ApiError, api_error_handler
-from app.routers import auth, health
+from app.routers import auth, facilities, health
 from app.services.health import API_VERSION
 
 DESCRIPTION = (
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
 
     application.include_router(health.router, prefix=API_PREFIX)
     application.include_router(auth.router, prefix=API_PREFIX)
+    application.include_router(facilities.router, prefix=API_PREFIX)
     return application
 
 

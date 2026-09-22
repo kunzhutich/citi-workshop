@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -144,6 +144,28 @@ def require_engineer_levels(*levels: EngineerLevel) -> Callable[[User], User]:
     return dependency
 
 
+def get_include_inactive(
+    user: Annotated[User, Depends(get_current_user)],
+    include_inactive: Annotated[
+        bool,
+        Query(description="Include deactivated records. Facility admins only."),
+    ] = False,
+) -> bool:
+    """Resolve the `include_inactive` query flag, refusing it to non-admins.
+
+    Deactivated buildings, floors, seats and categories exist only for the
+    admin screens that reactivate them; everyone else sees the live facility.
+    Refusing the flag rather than quietly ignoring it means a caller is never
+    told "here is everything" and handed something else.
+    """
+    if include_inactive and user.role != UserRole.FACILITY_ADMIN:
+        raise AuthorizationError(
+            "Only facility admins may list deactivated records.",
+            code="INCLUDE_INACTIVE_NOT_PERMITTED",
+        )
+    return include_inactive
+
+
 def get_refresh_token_from_cookie(request: Request) -> str | None:
     """Return the raw refresh token from the request cookie, if present."""
     return request.cookies.get(REFRESH_COOKIE_NAME)
@@ -159,3 +181,16 @@ def current_user_id(user: User) -> uuid.UUID:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
 DbSession = Annotated[Session, Depends(get_db)]
+
+IncludeInactive = Annotated[bool, Depends(get_include_inactive)]
+
+#: Role sets, for the routes that need the *user* — `admin: AdminUser`.
+AdminUser = Annotated[User, Depends(require_roles(UserRole.FACILITY_ADMIN))]
+StaffUser = Annotated[User, Depends(require_roles(UserRole.ENGINEER, UserRole.FACILITY_ADMIN))]
+
+#: The same role sets for routes that need the *permission* but not the user,
+#: used as `@router.post(..., dependencies=[ADMIN_ONLY])`. Without this a route
+#: has to accept an argument it never reads.
+SIGNED_IN = Depends(get_current_user)
+ADMIN_ONLY = Depends(require_roles(UserRole.FACILITY_ADMIN))
+STAFF_ONLY = Depends(require_roles(UserRole.ENGINEER, UserRole.FACILITY_ADMIN))
