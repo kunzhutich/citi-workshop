@@ -378,8 +378,13 @@ Then click any KPI tile, for example **Blocked**.
   database left about eighteen more, plus deactivated `e2e.*` accounts that are visible on
   the admin **Users** screen. Harmless. If you want it pristine, drop `acme_demo` and
   re-seed.
-- **Two deactivated employees**, on purpose — an admin screen where everyone is active
-  never shows the deactivated state.
+- **No deactivated employees, although the seed means there to be two.**
+  `seed_demo` sets out to leave two accounts inactive, so that an admin screen where
+  everyone is active does not hide the deactivated state. It does not work:
+  `EMPLOYEE_NAMES` holds 36 names, the loop runs `range(30)`, and the two indices it
+  deactivates are 34 and 35 — never reached. **Do not promise a deactivated user on
+  the Users screen during a demo**; there is not one. Deactivate somebody yourself
+  beforehand if you want to show it.
 - **The ticket you create is real** and stays in the database. Run the demo twice and there
   are two. That is fine; `seed_demo` will not clear them, and it will refuse to re-seed
   over an existing demo world rather than half-merging into it.

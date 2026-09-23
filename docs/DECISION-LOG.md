@@ -1911,3 +1911,57 @@ interesting. If it is not made at all, it is TanStack Query and the fix is
 another option on that one query.
 
 **Reversible.** One line in `frontend/src/features/notifications/hooks.ts`.
+
+## D34 — The demo's two deactivated employees do not exist
+
+**Found during the final documentation pass**, while writing
+`docs/REVIEW-GUIDE.md`'s worklist for the admin screens. Recorded rather than
+fixed, because that pass changes no application code.
+
+**The claim.** `seed_demo` sets out to leave two employee accounts inactive.
+`app/seed/demo.py` says so in a comment, in the words that explain why: *"Two
+people have left. A users screen where everyone is active never shows the
+deactivated state, and the reports still count their old tickets, which is the
+behaviour worth demonstrating."* Both `docs/DEMO-SCRIPT.md` and the README
+repeated it.
+
+**What actually happens.** Nothing. The loop is
+
+```python
+for index in range(min(spec.employees, len(EMPLOYEE_NAMES))):
+    ...
+    employee.is_active = index not in (len(EMPLOYEE_NAMES) - 1, len(EMPLOYEE_NAMES) - 2)
+```
+
+`EMPLOYEE_NAMES` holds **36** names and `DemoSpec.employees` defaults to **30**,
+so the loop runs `range(30)` while the deactivated indices are computed from the
+length of the *name list* — 34 and 35. Those iterations never happen. **A freshly
+seeded `acme_demo` has thirty employees and every one of them is active.**
+
+**Why it survived.** The two constants agreed when the list was shorter, and
+nothing asserts the outcome: `tests/integration/test_seed_demo.py` checks the
+employee *count*, not how many are active. The demo script promised the state
+and no one had opened the Users screen looking for it — which is the same shape
+as [D24](#d24--a-heading-is-not-a-signal-that-the-data-arrived) and
+[D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it):
+a claim nobody could check against a list, sitting next to a test that passed
+without testing it.
+
+**Chosen.** Record it, correct every document that repeated the claim, and leave
+the code alone. The documentation pass that found it was explicitly scoped to
+documentation, and this is the project's standing habit — M8 found
+`current_user_id` and an empty `if TYPE_CHECKING: pass` the same way, recorded
+both, and S6 removed them in a phase that was allowed to.
+
+**The fix, when somebody is allowed to make it.** One line. Either key the
+condition to the loop bound rather than the name list —
+`index not in (spec.employees - 1, spec.employees - 2)` — or slice
+`EMPLOYEE_NAMES[: spec.employees]` before iterating and keep the existing
+expression. The second is better: it makes the list and the bound the same
+thing, so they cannot drift again. Worth a test that asserts **two inactive
+employees**, since the absence of one is why this lasted.
+
+**Consequence for a reviewer.** Deactivate an employee by hand before judging
+the Users screen's deactivated state. `docs/REVIEW-GUIDE.md` pass 1 says so.
+
+**Reversible.** Not applicable — nothing was changed.

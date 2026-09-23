@@ -588,7 +588,7 @@ Stated plainly, because the rubric asks for coverage figures this project does n
 
 ## Trade-offs and decisions
 
-Thirty-three decisions are recorded with their alternatives in
+Thirty-four decisions are recorded with their alternatives in
 [docs/DECISION-LOG.md](./docs/DECISION-LOG.md); three infrastructure changes in
 [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:

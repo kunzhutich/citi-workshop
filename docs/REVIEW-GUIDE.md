@@ -378,17 +378,36 @@ is first on the list.
 
 - **`/facilities`** — the building → floor → seat tree. Expand it. Create a
   building, add a floor, add seats (there is a bulk-create path — try it). Rename
-  something. Try to delete a building that has floors under it: it should refuse
-  with a 409, not fall over. This tree is named in the code as having had the
-  worst of S6's accessibility violations, which means it is the most structurally
+  something. **Deleting is where the interesting behaviour is, and it is not what
+  you would guess:** a building with only empty floors under it **deletes, and
+  takes them with it** (the foreign keys cascade). What refuses is a building that
+  **tickets have been reported inside** — a 409 `BUILDING_IN_USE` telling you to
+  deactivate instead. Try both. This tree is named in the code as having had the
+  worst of S6's accessibility violations, which makes it the most structurally
   complicated thing on any admin screen.
-- **`/categories`** — the two-level tree, 5 groups and 32 subcategories. Check the
-  two levels are actually two levels. Create a subcategory; check the location
-  detail it declares is what the report form then asks for. Delete one that is in
-  use — again, expect a refusal, not a crash.
-- **`/users`** — list, change a role, deactivate someone. **There should be two
-  deactivated employees already**, seeded on purpose so the state is visible. Check
-  the deactivated state actually looks different rather than just being absent.
+- **`/categories`** — the two-level tree, 5 groups and 32 subcategories (seeded by
+  `migrate`, not by `seed_demo`). Check the two levels are actually two levels.
+  Create a subcategory; check the location detail it declares is what the report
+  form then asks for. **Then delete one that is in use — and expect a `200`, not a
+  409.** A category with incidents against it, or a group with children, is
+  **deactivated rather than deleted**, with a message saying so, and it should stop
+  appearing in the report form. Check the screen actually tells you that happened;
+  a delete that silently turns into a deactivation is exactly the kind of thing
+  that reads as a bug when it is not.
+- **`/users`** — list, change a role, deactivate someone. Check the deactivated
+  state actually looks different rather than just being absent — an admin screen
+  where everyone is active never shows that state.
+
+  > **A real bug, found while writing this guide — please confirm it.** The
+  > seed *intends* to leave two employees deactivated so this state is visible
+  > without you making one. It does not. `EMPLOYEE_NAMES` in
+  > `backend/v1/app/seed/demo.py` holds **36** names, the loop runs
+  > `range(min(spec.employees, len(EMPLOYEE_NAMES)))` = `range(30)`, and the
+  > deactivation condition targets indices **34 and 35** — which are never
+  > reached. **A freshly seeded `acme_demo` has zero deactivated employees.**
+  > Other documents (including the demo script) still say there are two; they were
+  > describing the intent. Deactivate one yourself to review the state. The fix is
+  > one line and is out of scope for a documentation pass.
 - **`/engineers`** — full CRUD on engineer accounts. Creating one hashes a
   password inside the request; watch for it being slow.
 - **`/team`, as `grace.lin@acme.inc` (LEAD)** — whatever it shows, you are the
@@ -626,7 +645,9 @@ report; all of them are recorded choices or acknowledged limits.**
   D25's proof harness. `acme_demo` is unaffected.
 - **"Right now" numbers drift** from anything quoted in the docs — they are
   relative to today.
-- **Two deactivated employees in `acme_demo`**, on purpose.
+- **~~Two deactivated employees in `acme_demo`, on purpose.~~** This is what the
+  seed intends and **not what it does** — see the note in pass 1. There are
+  **zero**. Deactivate one yourself if you want to review that state.
 - **A change-password screen with no way past it** — that is the gate working.
 
 ---
@@ -655,7 +676,7 @@ cannot see, and the two viewports — which is most of the value.
 - **A defect** → it is a real one; nothing here is merged to `main` yet, so it can
   be fixed on its branch. `s1-notifications` is the tip and contains every phase.
 - **A judgement call you disagree with** → check [DECISION-LOG.md](DECISION-LOG.md)
-  first. Thirty-three decisions are recorded with the alternatives that were
+  first. Thirty-four decisions are recorded with the alternatives that were
   rejected and why; the ones most likely to come up on a click-through are D9 and
   D14 (the two kinds of dashboard number), D21 (the 404's status code), D26 and D30
   (notifications and polling) and D31 (what S1 deliberately does not do).
