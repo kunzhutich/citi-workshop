@@ -6,7 +6,7 @@ import Divider from '@mui/material/Divider';
 import Typography from '@mui/material/Typography';
 
 import type { AllowedTransition, CurrentUser, Incident } from '../../api/types';
-import { statusButtonColor } from '../../display/statusColor';
+import { transitionButtonColor } from '../../display/statusColor';
 
 /**
  * Everything a user may do to a ticket, and nothing else.
@@ -47,11 +47,10 @@ export function WorkflowButtons({ transitions, onTransition }: IncidentActionsPr
         <Button
           key={`${transition.to_status}-${transition.action_label}`}
           variant="contained"
-          // Coloured by where it leads, not by how it is worded. "Resolve" is
-          // the green of the Resolved chip; "Cancel ticket" is the grey of
-          // Closed, so a reporter's only available move does not read as the
-          // recommended one.
-          color={statusButtonColor(transition.to_status)}
+          // Green for Resolve and orange for Mark blocked, because those two
+          // destinations mean the same thing to everyone. Everything else is
+          // plain — see `transitionButtonColor` for why CLOSED is not grey.
+          color={transitionButtonColor(transition.to_status)}
           onClick={() => onTransition(transition)}
         >
           {transition.action_label}

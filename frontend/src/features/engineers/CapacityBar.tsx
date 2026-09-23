@@ -27,7 +27,15 @@ export function CapacityBar({ active, max }: CapacityBarProps) {
         value={Math.min(ratio, 1) * 100}
         color={colour}
         aria-label={`${active} of ${max} tickets`}
-        sx={{ height: 8, borderRadius: 1 }}
+        sx={(theme) => ({
+          height: 8,
+          borderRadius: 1,
+          // A neutral track. Material UI tints it with the bar's own colour,
+          // so an engineer with nothing assigned drew a full-width pale blue
+          // bar — which reads as "full" at exactly the moment it means
+          // "empty", and this bar exists to answer "who has room?".
+          backgroundColor: theme.palette.action.hover,
+        })}
       />
       <Typography variant="caption" color="text.secondary">
         {active} / {max} active

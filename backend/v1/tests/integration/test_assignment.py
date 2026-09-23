@@ -343,6 +343,76 @@ def test_reassigning_to_the_same_engineer_records_nothing(
     assert len(assigned) == 1
 
 
+def test_assignment_events_carry_the_names_as_well_as_the_ids(
+    client: TestClient, db_session: Session, ticket: Incident
+) -> None:
+    """The timeline shows a person, not a UUID.
+
+    ASSIGNED records the assignee's **id**, which is the right thing to store
+    — a name can change, an id cannot — and unreadable on a screen. The
+    activity feed therefore sends a resolved `to_label` alongside the raw
+    `to_value`, and the frontend prefers it.
+
+    Found by looking at the detail page, which read
+    "Assigned: f6ac2cf4-0330-415e-a327-0af55964e5d6".
+    """
+    admin = make_admin(db_session)
+    first = make_engineer(db_session, level=EngineerLevel.SENIOR, full_name="Priya Raman")
+    second = make_engineer(db_session, level=EngineerLevel.SENIOR, full_name="Marcus Webb")
+    headers = auth_header(login(client, admin.email))
+
+    assign(client, ticket, admin, first)
+    assign(client, ticket, admin, second)
+    assign(client, ticket, admin, None)
+
+    activity = client.get(f"/api/v1/incidents/{ticket.id}/activity", headers=headers).json()
+    events = [entry for entry in activity if entry["kind"] == "event"]
+
+    # First assignment: nobody before, Priya after.
+    assert events[0]["event_type"] == EventType.ASSIGNED.value
+    assert events[0]["to_value"] == str(first.id)
+    assert events[0]["to_label"] == "Priya Raman"
+    assert events[0]["from_label"] is None
+
+    # Reassignment: both ends named.
+    assert events[1]["from_label"] == "Priya Raman"
+    assert events[1]["to_label"] == "Marcus Webb"
+
+    # Unassignment records only who it was taken from.
+    assert events[2]["event_type"] == EventType.UNASSIGNED.value
+    assert events[2]["from_label"] == "Marcus Webb"
+    assert events[2]["to_label"] is None
+
+
+def test_a_status_change_has_no_labels_to_resolve(
+    client: TestClient, db_session: Session, ticket: Incident
+) -> None:
+    """Only the two events that record a user id get a label.
+
+    A status change already stores something readable, and looking every value
+    up would be a query in search of an answer.
+    """
+    admin = make_admin(db_session)
+    engineer = make_engineer(db_session, level=EngineerLevel.SENIOR)
+    headers = auth_header(login(client, admin.email))
+
+    assign(client, ticket, admin, engineer)
+    client.post(
+        f"/api/v1/incidents/{ticket.id}/transitions",
+        json={"to_status": IncidentStatus.IN_PROGRESS.value},
+        headers=headers,
+    )
+
+    activity = client.get(f"/api/v1/incidents/{ticket.id}/activity", headers=headers).json()
+    status_change = next(
+        entry for entry in activity if entry["event_type"] == EventType.STATUS_CHANGED.value
+    )
+
+    assert status_change["from_value"] == IncidentStatus.OPEN.value
+    assert status_change["from_label"] is None
+    assert status_change["to_label"] is None
+
+
 # --- Pick up -----------------------------------------------------------------
 
 

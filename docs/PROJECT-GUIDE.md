@@ -3072,11 +3072,19 @@ layout engine — they can prove what `useBreakpoint` *decides* at 375 px but no
 anything is laid out at 375 px, because nothing is laid out at all. This phase adds
 Playwright, and the first thing it found was a defect that only exists in a browser.
 
-**Verified against local PostgreSQL only.** 199 frontend tests (up from 112), 607
+**Verified against local PostgreSQL only.** 210 frontend tests (up from 112), 609
 backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
 What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
-### 0. The carry-over: a column nothing could read
+### 0. Two carry-overs, both the same shape
+
+Both are M4-era code that was correct as far as it went and stopped one layer short of
+being usable — and both stayed invisible for two phases, because the layer they stopped
+at is the one nothing existed to call until now. Neither is a wrong answer that a test
+agreed with, which is what M3's and M4's carry-overs were. These are right answers that
+never reached a screen.
+
+#### A column nothing could read
 
 [BUILD-PLAN section 7](BUILD-PLAN.md) asks the report questionnaire to pre-fill the
 location from where you last reported something, and M4 implemented the half of that
@@ -3102,11 +3110,6 @@ does not carry them, `CurrentUserRead` inherits from `UserRead`, and `/auth/me` 
 `CurrentUserRead`. Three columns were written on every report, for a feature whose only
 consumer had no way to read them.
 
-This is a different shape of miss from M3's and M4's. Those were wrong behaviour that a
-test agreed with. This was correct behaviour that stopped one layer short of being
-usable, and it stayed invisible for two phases because the layer it stopped at is the
-one nothing existed to call yet.
-
 The fix is three fields, and *where* they go is the interesting part:
 
 ```python
@@ -3131,6 +3134,57 @@ original test should have done:
 after = client.get("/api/v1/auth/me", headers=employee_headers).json()["user"]
 assert after["last_building_id"] == str(building.id)
 ```
+
+#### A timeline that printed a UUID at a person
+
+The second was found by looking at the finished detail page, where the activity read:
+
+```
+Sam Senior   5m ago
+Assigned: f6ac2cf4-0330-415e-a327-0af55964e5d6
+```
+
+`services/assignment.py` records an assignment like this, and it is right to:
+
+```python
+repository.add_event(
+    session, incident_id=incident.id, actor_id=actor.id,
+    event_type=EventType.ASSIGNED,
+    from_value=str(previous_assignee_id) if previous_assignee_id else None,
+    to_value=str(assignee.id),
+)
+```
+
+An audit row should hold the **id**. A name can change; an id cannot, and an audit trail
+that says "Assigned: Sam Senior" is ambiguous the day two people share a name or one of
+them marries. The `from_value`/`to_value` columns are `str` because most events store a
+word — `OPEN`, `HIGH` — and these two store an id.
+
+So the recorded value is correct and unreadable, and `GET /activity` had been returning
+it verbatim since M4. Nothing noticed, because until M6 nothing rendered it.
+
+The fix is a **presentation** field rather than a change to what is stored:
+
+```python
+from_label: str | None = Field(
+    default=None,
+    description="Readable form of `from_value` when it is a user id.",
+)
+```
+
+`incident_service.resolve_event_labels` collects every id the timeline refers to and
+resolves them in **one** query — a ticket reassigned six times names at most a handful
+of people, usually the same two — and the router fills the labels in alongside the raw
+values. `ActivityTimeline` prefers the label and falls back to the value, so the audit
+trail keeps its ids for anyone reading it as an audit trail.
+
+This one has an epilogue worth keeping. The first version of the resolver's helper was
+called `_as_uuid`, and `incident_service.py` already had a private `_as_uuid` two hundred
+lines further down — one that *raises* when a value is not an id, because it narrows
+something the schema has already guaranteed. Python took the later definition, and every
+call to `/activity` on an assigned ticket answered `422 INVALID_ID`. Ruff did not catch
+it: `F811` flags a redefinition of an **unused** name, and the first one had been used.
+The helper is `_parse_user_id` now, and its docstring says why it is not the other one.
 
 ### 1. What was built
 
@@ -3204,7 +3258,7 @@ repository. See the gotchas.
 | --- | --- |
 | [IncidentDetailPage.tsx](../frontend/src/features/incidents/IncidentDetailPage.tsx) | The layout, the three queries, and which dialog is open. |
 | [WorkflowStepper.tsx](../frontend/src/features/incidents/WorkflowStepper.tsx) | Where the ticket is in its life. Four steps; BLOCKED is not one of them. |
-| [ActivityTimeline.tsx](../frontend/src/features/incidents/ActivityTimeline.tsx) | Events and notes as one stream, internal notes shaded and labelled. |
+| [ActivityTimeline.tsx](../frontend/src/features/incidents/ActivityTimeline.tsx) | Events and notes as one stream, internal notes shaded and labelled, ids rendered as names. |
 | [NoteComposer.tsx](../frontend/src/features/incidents/NoteComposer.tsx) | Adding a note, with the staff-only switch when the API allows one. |
 | [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) | `WorkflowButtons`, `ContextualButtons`, and the two shapes they render in. |
 | [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) | Who, where, when, and why it is blocked or closed. |
@@ -3245,7 +3299,7 @@ repository. See the gotchas.
 At 375 px the app bar holds a title and one control, and that control is the drawer
 button — see M5's reasoning about which corner a thumb reaches.
 
-#### Tests — 199 frontend and 12 end-to-end, up from 112 and none
+#### Tests — 210 frontend and 12 end-to-end, up from 112 and none
 
 | File | Count | What it pins down |
 | --- | --- | --- |
@@ -3256,7 +3310,8 @@ button — see M5's reasoning about which corner a thumb reaches.
 | `features/incidents/LocationPicker.test.tsx` | 9 | The three precision levels, the "Room" relabelling, and the cascade that clears a stale floor or seat. |
 | `features/incidents/WorkflowStepper.test.tsx` | 9 | Four steps, blocked as an error state on the second, and the reopen count. |
 | `features/engineers/sortForAssignment.test.ts` | 6 | Specialty before load, load before name, and that someone on leave stays in the list. |
-| `display/labels.test.ts`, `display/time.test.ts` | 18 | That no raw enum reaches a screen, and that an absent timestamp renders as an em dash rather than "Invalid Date". |
+| `features/incidents/ActivityTimeline.test.tsx` | 10 | That a status change reads in words, that an assignment names a person rather than printing their id, and that an internal note is labelled. |
+| `display/labels.test.ts`, `display/time.test.ts` | 19 | That no raw enum reaches a screen, that an absent timestamp renders as an em dash rather than "Invalid Date", and which transition destinations are coloured. |
 | `e2e/lifecycle.spec.ts` | 1 × 2 widths | The acceptance criterion, end to end, in a browser. |
 | `e2e/assignment.spec.ts` | 1 | The assign-and-close branch, plus escalation. |
 | `e2e/responsive.spec.ts` | 5 × 2 widths | The geometry jsdom cannot see. |
@@ -3486,29 +3541,46 @@ them — which is two parents, since the edit dialog uses the same picker.
 `services/incident_service.py` enforces all of it again, and its 422 names the field.
 This component decides what to *ask*; it never decides what is valid.
 
-#### Workflow buttons are coloured by their outcome
+#### Two workflow buttons are coloured, and the rest deliberately are not
 
-The first working version of the detail page put a large blue "Cancel ticket" in an
-employee's actions card — because it was the only transition available to a reporter on
-their own open ticket, and every transition button was `contained` and primary. Cancel
-read as the recommended action.
+This one went through three versions, and the middle one is the instructive part.
 
-The fix reuses something that already existed. `display/statusColor.ts` holds the
-status palette the chips are drawn from, and a transition's `to_status` is in its
-response, so:
+**First**, every transition button was `contained` and primary. That put a large blue
+**Cancel ticket** in an employee's actions card, because on their own open ticket it is
+the only move `allowed-transitions` offers them. Cancel read as the recommendation.
 
-```tsx
-color={statusButtonColor(transition.to_status)}
+**Second**, the button took the colour of the status it produces, reusing the chip
+palette in `display/statusColor.ts` — so "Resolve" was the green of the Resolved chip
+and "Cancel ticket" the neutral grey of Closed. Looking at the result showed the
+problem. A reporter on a *resolved* ticket sees two buttons: **Confirm fixed** (→ CLOSED)
+and **Still broken** (→ IN_PROGRESS). Outcome colouring drew the happy path grey and
+the complaint blue. It had traded one mis-emphasis for its mirror image.
+
+**Third**, and current:
+
+```ts
+export function transitionButtonColor(toStatus: IncidentStatus): ButtonProps['color'] {
+  if (toStatus === 'RESOLVED') return 'success';
+  if (toStatus === 'BLOCKED') return 'warning';
+  return 'primary';
+}
 ```
 
-"Resolve" is the green of the Resolved chip. "Mark blocked" is the orange of Blocked.
-"Cancel ticket" and "Close ticket" are the neutral grey of Closed. The button is
-coloured like the state it produces, which is information rather than decoration, and it
-introduces no rule — the mapping was already there.
+Only two destinations mean the same thing to everyone. **Resolve** is always "I have
+fixed it"; **Mark blocked** is always "this has stalled". Those two get the colour of
+their outcome, and it is real information.
 
-The one wrinkle is that Material UI spells neutral differently for the two components:
-a chip wants `default` (a filled grey) and a button wants `inherit`. Hence two functions
-over one table rather than one function and a cast.
+CLOSED is the one that cannot be coloured, because a single (from, to) pair carries
+different meanings for different actors — `RESOLVED → CLOSED` is "Confirm fixed" to the
+reporter and "Close ticket" to the assignee, and `OPEN → CLOSED` is "Cancel ticket". A
+happy path and a discard share a destination. Telling them apart in the frontend means
+keeping a copy of `app/workflow.py` there, which is the thing this application spends
+the most effort not doing.
+
+So the ambiguous case is left plain rather than confidently mis-coloured, and the label
+— which the API supplies — does the work. `statusChipColor` stays as it was: that is the
+palette from BUILD-PLAN section 10, and it is about what a ticket *is*, not about what a
+button will do to it.
 
 #### The admin screens each take the shape of their data
 
@@ -3628,8 +3700,8 @@ Engineer presses "Resolve" on /tickets/<id>
   │     the button exists because GET /allowed-transitions returned
   │     {to_status: "RESOLVED", action_label: "Resolve",
   │      required_fields: ["resolution_summary"]}
-  │     its colour is statusButtonColor("RESOLVED") -> success, the green of
-  │     the Resolved chip
+  │     its colour is transitionButtonColor("RESOLVED") -> success, because
+  │     "Resolve" means the same thing to every actor
   │  onTransition(transition)
   │
   ├─ IncidentDetailPage        setDialog({kind: 'transition', transition})
@@ -3740,8 +3812,10 @@ User ticks "Blocked" in the status filter
 | Title and description bounds, client side | [reportSchema.ts](../frontend/src/features/incidents/reportSchema.ts) |
 | Title and description bounds, **authoritatively** | `app/schemas/incident.py` |
 | Who may read an INTERNAL note | `app/services/visibility.py`, in the query. The timeline only styles them |
+| What an audit event *records* | `app/services/assignment.py` and `incident_service.py` — ids, because a name can change |
+| What an audit event *reads as* | `incident_service.resolve_event_labels` fills `from_label`/`to_label`; `ActivityTimeline` prefers them |
 | What a status is called, and what colour it is | [display/labels.ts](../frontend/src/display/labels.ts), [display/statusColor.ts](../frontend/src/display/statusColor.ts) |
-| What colour a workflow button is | `display/statusColor.ts`, keyed on the transition's `to_status` |
+| What colour a workflow button is | `display/statusColor.ts` — `transitionButtonColor`, which colours only the two unambiguous destinations |
 | What a list is filtered by | the URL query string, read by [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts) |
 | What a list screen is *for* | the `preset` prop in [App.tsx](../frontend/src/App.tsx) |
 | Which rows a list may show at all | `app/services/visibility.py` — `apply_visibility`, before any user filter |
@@ -3909,6 +3983,14 @@ with `E2E_BASE_URL` if that matters.
 fetches. That is not waste — a disabled query issues no request — and it is what keeps
 the hook order stable when a window is resized across 900 px. A conditional hook is a
 crash, not a layout glitch.
+
+**A private helper can shadow another one two hundred lines away.** `incident_service.py`
+now has `_parse_user_id` and `_as_uuid`, which do nearly opposite things — one answers
+None for a value that is not an id, the other raises. The first version of the former was
+also called `_as_uuid`, Python took the later definition, and every call to `/activity`
+on an assigned ticket answered `422 INVALID_ID`. Ruff's `F811` did not fire, because it
+flags a redefinition of an *unused* name and the first had been used. In a module this
+size, check before naming a private helper.
 
 **The bundle has grown.** M6 adds no runtime dependency, and the JavaScript still grows
 because there are now sixty more components. Route-level `React.lazy` remains the lever,

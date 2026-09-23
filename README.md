@@ -111,7 +111,7 @@ cd ../frontend
 npm run lint && npm run typecheck && npm test
 ```
 
-As of M6: **607 backend tests** and **199 frontend tests**, all passing. The backend
+As of M6: **609 backend tests** and **210 frontend tests**, all passing. The backend
 suite takes about five minutes, most of it bcrypt hashing at cost 12.
 
 The backend suite needs the same PostgreSQL server. It creates its own database

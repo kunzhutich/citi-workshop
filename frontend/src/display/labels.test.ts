@@ -13,7 +13,7 @@ import {
   seatFieldLabel,
   statusLabel,
 } from './labels';
-import { statusButtonColor, statusChipColor } from './statusColor';
+import { statusChipColor, transitionButtonColor } from './statusColor';
 
 describe('labels', () => {
   it('never shows a raw enum member to a person', () => {
@@ -70,25 +70,42 @@ describe('seatFieldLabel', () => {
   });
 });
 
-describe('statusColor', () => {
-  it('gives a chip and a button the same colour for the same status', () => {
-    // The point of sharing the palette: a button that moves a ticket to
-    // Resolved is the green of the Resolved chip.
-    const shared: IncidentStatus[] = ['OPEN', 'IN_PROGRESS', 'BLOCKED', 'RESOLVED'];
-    for (const status of shared) {
-      expect(statusChipColor(status)).toBe(statusButtonColor(status));
+describe('statusChipColor', () => {
+  it('follows the palette from the build plan', () => {
+    const expected: Record<IncidentStatus, string> = {
+      OPEN: 'info',
+      IN_PROGRESS: 'primary',
+      BLOCKED: 'warning',
+      RESOLVED: 'success',
+      CLOSED: 'default',
+    };
+    for (const status of INCIDENT_STATUSES) {
+      expect(statusChipColor(status)).toBe(expected[status]);
     }
   });
+});
 
-  it('spells neutral the way each component needs', () => {
-    // Material UI has no `default` button colour and no `inherit` chip colour,
-    // which is the whole reason there are two functions.
-    expect(statusChipColor('CLOSED')).toBe('default');
-    expect(statusButtonColor('CLOSED')).toBe('inherit');
+describe('transitionButtonColor', () => {
+  it('colours the two destinations that mean the same thing to everyone', () => {
+    // "Resolve" is always "I have fixed it" and "Mark blocked" is always
+    // "this has stalled", so the button can be coloured like its outcome.
+    expect(transitionButtonColor('RESOLVED')).toBe('success');
+    expect(transitionButtonColor('BLOCKED')).toBe('warning');
   });
 
-  it('draws blocked as a warning, which is what the stepper reads', () => {
-    expect(statusChipColor('BLOCKED')).toBe('warning');
-    expect(statusChipColor('RESOLVED')).toBe('success');
+  it('leaves CLOSED plain rather than confidently wrong', () => {
+    // RESOLVED -> CLOSED is "Confirm fixed" to a reporter and "Close ticket"
+    // to the assignee; OPEN -> CLOSED is "Cancel ticket". A happy path and a
+    // discard share a destination, and telling them apart would mean the UI
+    // keeping its own copy of `app/workflow.py`.
+    expect(transitionButtonColor('CLOSED')).toBe('primary');
+  });
+
+  it('never returns a colour a button cannot take', () => {
+    // `default` is a chip colour and not a button one, which is why these are
+    // two functions rather than one shared table.
+    for (const status of INCIDENT_STATUSES) {
+      expect(transitionButtonColor(status)).not.toBe('default');
+    }
   });
 });

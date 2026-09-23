@@ -202,6 +202,56 @@ def load_activity(
     return timeline
 
 
+#: Events whose `from_value` and `to_value` hold a user id rather than a word.
+_USER_VALUED_EVENTS = frozenset({EventType.ASSIGNED, EventType.UNASSIGNED})
+
+
+def resolve_event_labels(
+    session: Session,
+    timeline: Sequence[IncidentEvent | IncidentNote],
+) -> dict[str, str]:
+    """Return ``{user id: full name}`` for every id an event refers to.
+
+    ASSIGNED and UNASSIGNED record *who*, as an id. That is the right thing to
+    store, because a name can change and an id cannot, and the wrong thing to
+    show, so the router renders these alongside the raw values rather than
+    instead of them.
+
+    One query for the whole timeline, not one per event: a ticket reassigned
+    six times refers to at most a handful of people, usually the same two.
+    """
+    ids: set[uuid.UUID] = set()
+    for entry in timeline:
+        if not isinstance(entry, IncidentEvent) or entry.event_type not in _USER_VALUED_EVENTS:
+            continue
+        for value in (entry.from_value, entry.to_value):
+            parsed = _parse_user_id(value)
+            if parsed is not None:
+                ids.add(parsed)
+
+    if not ids:
+        return {}
+
+    rows = session.scalars(select(User).where(User.id.in_(ids))).all()
+    return {str(row.id): row.full_name for row in rows}
+
+
+def _parse_user_id(value: str | None) -> uuid.UUID | None:
+    """Return a recorded event value as a UUID, or None when it is not one.
+
+    Named apart from `_as_uuid` below, which narrows a value the schema has
+    already guaranteed and raises when it is not an id. This one is the
+    opposite: it is asked about strings that are usually *not* ids — every
+    status change stores a word — and answers with None rather than an error.
+    """
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 # --- Permissions -------------------------------------------------------------
 
 

@@ -268,6 +268,15 @@ export interface ActivityEntry {
   event_type: EventType | null;
   from_value: string | null;
   to_value: string | null;
+  /**
+   * Human-readable forms of the two values above, when they are ids.
+   *
+   * An ASSIGNED event records the assignee's id, which is right for an audit
+   * row and unreadable on a screen. The API resolves the name; the raw value
+   * stays alongside it.
+   */
+  from_label: string | null;
+  to_label: string | null;
   reason: string | null;
 
   body: string | null;

@@ -48,6 +48,19 @@ class ActivityEntry(BaseModel):
     event_type: EventType | None = None
     from_value: str | None = None
     to_value: str | None = None
+    from_label: str | None = Field(
+        default=None,
+        description="Readable form of `from_value` when it is a user id.",
+    )
+    to_label: str | None = Field(
+        default=None,
+        description=(
+            "Readable form of `to_value` when it is a user id. An ASSIGNED "
+            "event records the assignee's id, which is right for an audit row "
+            "and unreadable on a screen; this carries the name without "
+            "changing what was recorded."
+        ),
+    )
     reason: str | None = None
 
     # --- Set on note entries --------------------------------------------------

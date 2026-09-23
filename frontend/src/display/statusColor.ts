@@ -4,33 +4,56 @@ import type { ChipProps } from '@mui/material/Chip';
 import type { IncidentStatus } from '../api/types';
 
 /**
- * The colour each status is drawn in, from BUILD-PLAN section 10.
+ * How a status is coloured, as a chip and as a button that produces it.
  *
- * In its own module because two different things read it: the chip that says
- * what a ticket's status *is*, and the workflow buttons that say what it will
- * *become*. Keeping them in step means "Resolve" is the same green as the
- * Resolved chip it produces — the button is coloured like its outcome, which
- * is information rather than decoration, and it costs no new rule because the
- * palette already existed.
- *
- * Two functions rather than one because Material UI spells neutral
- * differently for the two components: a chip wants `default` (a filled grey)
- * and a button wants `inherit` (the surrounding text colour). Only CLOSED is
- * neutral, so that is the only place they differ.
+ * The two are **not** the same mapping, and the difference is worth stating
+ * because the first version of this file assumed they were.
  */
-const SHARED_COLORS: Record<Exclude<IncidentStatus, 'CLOSED'>, 'info' | 'primary' | 'warning' | 'success'> = {
-  OPEN: 'info',
-  IN_PROGRESS: 'primary',
-  BLOCKED: 'warning',
-  RESOLVED: 'success',
-};
 
-/** The colour of a status chip. */
+/**
+ * The status palette, from BUILD-PLAN section 10.
+ *
+ * Colour is a second channel carrying the same information as the text, so a
+ * dense list can be scanned without reading every row.
+ */
 export function statusChipColor(status: IncidentStatus): ChipProps['color'] {
-  return status === 'CLOSED' ? 'default' : SHARED_COLORS[status];
+  const colors: Record<IncidentStatus, ChipProps['color']> = {
+    OPEN: 'info',
+    IN_PROGRESS: 'primary',
+    BLOCKED: 'warning',
+    RESOLVED: 'success',
+    CLOSED: 'default',
+  };
+  return colors[status];
 }
 
-/** The colour of a button that moves a ticket *into* this status. */
-export function statusButtonColor(status: IncidentStatus): ButtonProps['color'] {
-  return status === 'CLOSED' ? 'inherit' : SHARED_COLORS[status];
+/**
+ * The colour of a workflow button, by the status it moves a ticket to.
+ *
+ * Only two destinations mean the same thing to everyone. **Resolve** is always
+ * "I have fixed it" and **Mark blocked** is always "this has stalled", so
+ * those two take the green and the orange of the states they produce — the
+ * button is coloured like its outcome, which is information rather than
+ * decoration.
+ *
+ * Everything else is plain primary, and CLOSED is the reason. A single
+ * (from, to) pair carries different meanings for different actors: on a
+ * resolved ticket, `RESOLVED → CLOSED` is "Confirm fixed" to the reporter and
+ * "Close ticket" to the assignee, and on an open one it is "Cancel ticket".
+ * The first is a happy path and the last is a discard, and the frontend cannot
+ * tell them apart without keeping its own copy of `app/workflow.py` — which is
+ * the thing this application refuses to do.
+ *
+ * So the ambiguous destination is left uncoloured rather than confidently
+ * mis-coloured. Drawing "Confirm fixed" in the grey of Closed made a
+ * reporter's happy path look like the least important thing on the screen.
+ */
+export function transitionButtonColor(toStatus: IncidentStatus): ButtonProps['color'] {
+  if (toStatus === 'RESOLVED') {
+    return 'success';
+  }
+  if (toStatus === 'BLOCKED') {
+    return 'warning';
+  }
+  return 'primary';
 }

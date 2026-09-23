@@ -167,22 +167,28 @@ export function ActivityTimeline({ entries }: ActivityTimelineProps) {
 /**
  * Narrate one event in a sentence.
  *
- * `from_value` and `to_value` are stored as the enum members they are, so a
- * status change reads "Open → In progress" rather than "OPEN → IN_PROGRESS".
- * Anything that is not a recognised status — an assignee's name, a priority —
- * passes through as written.
+ * Values are stored as the enum members they are, so a status change reads
+ * "Open → In progress" rather than "OPEN → IN_PROGRESS". An ASSIGNED event
+ * stores a user **id**, which no client can resolve, so the API sends a
+ * matching `*_label` and this prefers it — the raw value stays in the
+ * response for anyone reading the audit trail rather than the screen.
  */
 function describeEvent(entry: ActivityEntry): string {
   if (!entry.event_type) {
     return '';
   }
   const label = eventLabel(entry.event_type);
+  const from = entry.from_label ?? (entry.from_value ? humanise(entry.from_value) : null);
+  const to = entry.to_label ?? (entry.to_value ? humanise(entry.to_value) : null);
 
-  if (entry.from_value && entry.to_value) {
-    return `${label}: ${humanise(entry.from_value)} → ${humanise(entry.to_value)}`;
+  if (from && to) {
+    return `${label}: ${from} → ${to}`;
   }
-  if (entry.to_value) {
-    return `${label}: ${humanise(entry.to_value)}`;
+  if (to) {
+    return `${label}: ${to}`;
+  }
+  if (from) {
+    return `${label}: ${from}`;
   }
   return label;
 }
