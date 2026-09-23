@@ -94,8 +94,9 @@ The app opens at the sign-in screen. Two ways in:
   and offers no way past it. That is the gate working, not a fault.
 
 `npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod`,
-`@hookform/resolvers` and `@fontsource/inter` (the typeface is self-hosted and bundled,
-not fetched from a CDN).
+`@hookform/resolvers`, `@fontsource/inter` and `@fontsource/roboto` (both typefaces are
+self-hosted and bundled, not fetched from a CDN; Inter renders and Roboto is the
+fallback).
 
 ### 5. Run the checks
 

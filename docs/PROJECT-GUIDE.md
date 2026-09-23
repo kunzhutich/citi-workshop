@@ -2378,7 +2378,7 @@ Both cookies now answer 401.
 | File | Responsibility |
 | --- | --- |
 | [src/routes.ts](../frontend/src/routes.ts) | Every path in the application, named once. |
-| [src/fonts.ts](../frontend/src/fonts.ts) | Four `@font-face` imports. The only reason the theme's typeface is the one that renders. |
+| [src/fonts.ts](../frontend/src/fonts.ts) | The `@font-face` imports for both self-hosted families. The only reason the theme's typeface is the one that renders. |
 | [src/App.tsx](../frontend/src/App.tsx) | The route table: open routes, the gate-exempt route, and the guarded routes inside the shell. |
 | [src/theme.ts](../frontend/src/theme.ts) | Grown from M1's palette into the component defaults the whole app inherits. |
 | [src/components/FullPageProgress.tsx](../frontend/src/components/FullPageProgress.tsx) | The whole-page waiting state, used while the session is restored. |
@@ -2643,11 +2643,18 @@ browser to read its `OS/2` typo values, and those are chosen to centre.
 load, it fails closed in a locked-down network, and it puts a dependency outside the
 distribution that serves everything else. `@fontsource` bundles the same files through
 Vite, so they are emitted into `dist/assets/` with content hashes and served from the same
-CloudFront distribution as the JavaScript — 96 kB of woff2 across four weights, and no
-external origin in the built output at all.
+CloudFront distribution as the JavaScript, with no external origin in the built output at
+all. Two numbers, and they are not the same one: 192 kB of woff2 is *emitted* across two
+families and four weights each, while a normal load *fetches* the 96 kB of Inter.
 
-**Rejected:** bundling Roboto as well. It is second in the stack, so it can only render if
-Inter fails to load, and shipping a second 96 kB for that case is not a trade worth making.
+Roboto is bundled too, and the reasoning is worth being precise about, because "ship one
+font" was the wrong instinct. A `@font-face` family is fetched **lazily** — only when
+something needs it — so Roboto costs nothing on a normal load: Inter is first, Inter
+renders, and Roboto's files sit in S3 untouched. What it buys is that the second rung of
+the stack becomes real. Before, if Inter's file 404'd or was blocked, the browser fell
+past a Roboto nobody had installed and landed on Nimbus Sans — straight back to the 4px
+lean. Now it lands on Roboto, which leans 0.44px at worst, and which is the family MUI's
+own component heights were calibrated against in the first place.
 
 The fallback order changed too, on the same evidence. `Arial` now precedes `Helvetica`,
 because Arial resolves to metrics that centre to within 0.02em on every platform while
@@ -2661,12 +2668,15 @@ from M1's palette into component defaults — `textTransform: 'none'` on buttons
 `fullWidth` on text fields, `variant="outlined"` on cards. Each of those is a line that
 forty components no longer carry.
 
-One exception was taken, and CLAUDE.md anticipates exactly this one: "a third-party
-library that ships or demands a stylesheet". [src/fonts.ts](../frontend/src/fonts.ts) is
-four `@fontsource` CSS imports and nothing else. Each is a single `@font-face` rule for
-one weight of one subset — the narrowest form the package offers — and they are confined
-to that one module so the exception is easy to find and easy to reverse. No `@keyframes`,
-no other stylesheet.
+[src/fonts.ts](../frontend/src/fonts.ts) imports eight `@fontsource` stylesheets, and
+that is not a breach of this rule — the rule is about *our* styling. What it forbids is
+the `Catalog.tsx` + `Catalog.css` pattern, where the styling for one component lives in a
+second file shadowing it. Importing a stylesheet a package ships is ordinary use of that
+package, and each of these is one `@font-face` rule for one weight of one subset, the
+narrowest form `@fontsource` offers. They are kept in one module so they are easy to find.
+
+No exceptions were needed beyond that. No `@keyframes`, no `<style>` block, and no
+stylesheet of our own.
 
 ### 3. How the pieces connect
 
@@ -2890,16 +2900,18 @@ because it failed silently for a whole phase: MUI renders, nothing warns, and th
 looks approximately right — it just leans. If a family is added to
 [theme.ts](../frontend/src/theme.ts), it needs a matching import in
 [fonts.ts](../frontend/src/fonts.ts) or it will never render. The same applies to
-**weights**: `fonts.ts` bundles 400, 500, 600 and 700, and a theme asking for 300 or 800
-gets a browser-synthesised approximation — smeared or mechanically emboldened — rather than
-an error. `theme.test.ts` pins both halves of that contract.
+**weights**: `fonts.ts` bundles 400, 500, 600 and 700 of each family, and a theme asking
+for 300 or 800 gets a browser-synthesised approximation — smeared or mechanically
+emboldened — rather than an error. `theme.test.ts` pins both halves of that contract.
+Note that `@fontsource/roboto` does ship a 600, which upstream Roboto historically did
+not; a family swap is worth a weight check rather than an assumption.
 
 **`package-lock.json` is gitignored by the scaffold** (`.gitignore` line 204). M5 added
 three dependencies, and a fresh `npm install` will resolve them within their caret ranges
 rather than to the versions tested here. Not ours to change mid-build, but worth knowing
 if CI ever disagrees with a laptop.
 
-**The bundle is 790 kB of JavaScript, 251 kB gzipped**, plus 96 kB of woff2 across four font weights. The JavaScript is almost all Material UI. It is served
+**The bundle is 790 kB of JavaScript, 251 kB gzipped.** Alongside it sit 192 kB of woff2 — two families, four weights each — of which a normal load fetches the 96 kB of Inter, since fallback families are only fetched when they are needed. The JavaScript is almost all Material UI. It is served
 compressed by CloudFront and is not a problem yet, but M6 adds `@mui/x-data-grid` and M7
 adds `@mui/x-charts`. If it needs attention, route-level `React.lazy` splitting is the
 lever, and the admin screens are the natural split point.

@@ -781,9 +781,10 @@ behaviour, and the CloudFront default is **off**. The production bundle is ~790 
 against ~251 kB gzipped — a 3× difference on the first load of every session, and it grows
 in M6 (`@mui/x-data-grid`) and M7 (`@mui/x-charts`). Measure it before deciding.
 
-The 96 kB of woff2 alongside it is *not* part of this argument: woff2 is already
-compressed, and CloudFront will not shrink it further. Only the JavaScript, CSS and HTML
-are at stake.
+The woff2 alongside it is *not* part of this argument: woff2 is already compressed, and
+CloudFront will not shrink it further. Only the JavaScript, CSS and HTML are at stake.
+(192 kB of font is emitted, two families at four weights each, but a normal load fetches
+only the 96 kB of Inter — fallback families are fetched lazily.)
 
 ```sh
 BUNDLE=$(curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.js')
@@ -809,16 +810,18 @@ the 4 px vertical lean in buttons, navigation rows and inputs that self-hosting 
 remove, which is invisible unless you are looking for it.
 
 ```sh
-# Every font the built CSS references must be fetchable.
+# Every font the built CSS references must be fetchable. Inter is what renders;
+# Roboto is the fallback tier and is only fetched if Inter cannot be, so check
+# both are actually there rather than trusting the one you can see load.
 CSS=$(curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.css')
-curl -s "https://$CF$CSS" | grep -o '/assets/inter-[^)]*\.woff2' | sort -u |
+curl -s "https://$CF$CSS" | grep -oE '/assets/(inter|roboto)-[^)]*\.woff2' | sort -u |
   while read -r font; do
     printf '%-52s %s\n' "$font" \
       "$(curl -s -o /dev/null -w '%{http_code} %{content_type} %{size_download}' "https://$CF$font")"
   done
 ```
 
-✅ **Correct result:** four lines, each `200 font/woff2` with roughly 24000 bytes.
+✅ **Correct result:** eight lines, each `200 font/woff2` with roughly 24000 bytes.
 ❌ A **403** means the S3 object is missing or OAC is not granting it — re-run
 `./bin/deploy-frontend.sh` and check the sync included `dist/assets/`.
 ❌ A `content_type` of `application/octet-stream` or `binary/octet-stream` means the S3
