@@ -47,12 +47,22 @@ the default 30-day period, 26 unassigned over 24 h, 318 incidents).
    machine runs **18.6**; CI runs 17; Aurora is 17.7. The README now says "17 or
    newer" and names all three.
 
-**Not done, and the largest remaining M8 item:** BUILD-PLAN §15 also asks for a
-*front section* on `docs/PROJECT-GUIDE.md` — one coherent system overview, the
-data-model narrative, a complete rule-to-file map, an end-to-end request trace
-and a merged glossary, so the guide reads as a whole rather than as eight
-stitched-together phase logs. It was out of scope for this run. The guide is
-5,567 lines; this is a substantial piece of writing, not a tidy-up.
+**Done in a second M8 pass:** BUILD-PLAN §15's *front section* on
+`docs/PROJECT-GUIDE.md`. The guide is now in two parts. **Part I** (~1,310 lines)
+is a single coherent account of the system as it stands: a system overview
+separating what the scaffold and the IAM boundary forced from what was chosen, the
+ten tables as a narrative in the order that makes them make sense, the complete
+rule-to-file map merged from all nine per-phase maps, one request — an engineer
+resolving a ticket — followed through every file it touches with real function
+names, a reading order, and one merged glossary of every non-obvious term. **Part
+II** is the unchanged phase log. The guide is now 6,939 lines.
+
+Part I was verified rather than transcribed: every markdown link (372, 176 distinct
+targets) and every backticked identifier (818) was checked against the code. Two
+stale claims were found in the existing phase sections and corrected —
+`apply_visibility`, which has been two functions since M4, and a gotcha
+attributing a timezone dependency to `date_trunc` where the code casts with
+`::date`. Both were in rule-map tables rather than prose.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
 11, computed with SQL aggregates. 665 backend tests (609 + 56 new), ruff check
@@ -169,7 +179,7 @@ reviews.
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
 | `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
 | `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
-| `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide section — committed, **not pushed** |
+| `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide phase section + guide Part I — committed, **not pushed** |
 | `s6-hardening` … | stretch | not started |
 
 ## Remaining plan
@@ -177,8 +187,9 @@ reviews.
 1. **M6** — verify when the other session finishes, commit, push.
 2. **M7** — ~~report endpoints~~, ~~`seed_demo`~~, ~~three dashboards~~. All done.
 3. **M8 minus deploy** — ~~README rewrite~~, ~~architecture diagram~~,
-   ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~. Done. See
-   decision D1. Outstanding: the project guide's front section (above).
+   ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~,
+   ~~the project guide's front section~~. Done. See decision D1. Nothing
+   outstanding but the deploy itself.
 4. **Stretch**, in order S6 → S1 → S3 → S2. See decision D2.
 
 The AWS deploy is not part of this run: no credentials. Every step that needs
