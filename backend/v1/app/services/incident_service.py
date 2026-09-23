@@ -41,6 +41,7 @@ from app.models.enums import (
     EventType,
     IncidentStatus,
     LocationDetail,
+    NotificationType,
     UserRole,
 )
 from app.models.event import IncidentEvent
@@ -62,6 +63,7 @@ from app.schemas.incident import (
     TransitionRequest,
 )
 from app.services import notes as note_service
+from app.services import notification_service
 from app.services.visibility import apply_incident_visibility
 from app.workflow import Transition
 
@@ -691,6 +693,16 @@ def perform_transition(
             reason=f"Duplicate of {duplicate_of.reference}.",
         )
 
+    # Who hears about this is decided in `app/notifications.py`, not here.
+    # The incident already carries its new status, so the rule reads the move
+    # off the row rather than being handed it.
+    notification_service.record(
+        session,
+        NotificationType.STATUS_CHANGED,
+        incident=incident,
+        actor=user,
+    )
+
     return repository.reload(session, incident)
 
 
@@ -928,5 +940,16 @@ def clear_escalation(
             to_value=payload.priority.value,
             reason=payload.note,
         )
+
+    # One notification for the whole decision, not one per event: the
+    # re-prioritisation is part of the same answer and is visible on the
+    # ticket. A priority change on its own, through `update_incident`,
+    # notifies nobody — see `app/notifications.py`.
+    notification_service.record(
+        session,
+        NotificationType.ESCALATION_CLEARED,
+        incident=incident,
+        actor=admin,
+    )
 
     return repository.reload(session, incident)

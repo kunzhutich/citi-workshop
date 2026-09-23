@@ -30,12 +30,19 @@ from sqlalchemy.orm import Session
 
 from app.clock import utc_now
 from app.errors import AuthorizationError, NotFoundError
-from app.models.enums import EngineerLevel, IncidentStatus, NoteVisibility, UserRole
+from app.models.enums import (
+    EngineerLevel,
+    IncidentStatus,
+    NoteVisibility,
+    NotificationType,
+    UserRole,
+)
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.user import User
 from app.repositories import incidents as repository
 from app.schemas.note import NoteCreate, NoteUpdate
+from app.services import notification_service
 from app.services.visibility import apply_note_visibility
 
 #: How long after writing a note its author may still edit or delete it.
@@ -107,7 +114,21 @@ def add_note(
         body=payload.body,
         visibility=payload.visibility,
     )
-    return repository.add_note(session, note)
+    stored = repository.add_note(session, note)
+
+    # Called for *every* note, including INTERNAL ones. The rule that an
+    # internal note reaches nobody lives in `app/notifications.py` beside the
+    # audience it is protecting, not in an `if` here — see that module's
+    # docstring, and decisions D9-D11 for what this class of leak looks like
+    # when it is spread across call sites.
+    notification_service.record(
+        session,
+        NotificationType.NOTE_ADDED,
+        incident=incident,
+        actor=author,
+        note=stored,
+    )
+    return stored
 
 
 def get_note(session: Session, note_id: uuid.UUID, user: User) -> IncidentNote:

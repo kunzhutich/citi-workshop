@@ -31,11 +31,19 @@ from sqlalchemy.orm import Session
 from app.clock import utc_now
 from app.errors import AuthorizationError, ValidationError
 from app.models.engineer_profile import EngineerProfile
-from app.models.enums import AvailabilityStatus, EngineerLevel, EventType, IncidentStatus, UserRole
+from app.models.enums import (
+    AvailabilityStatus,
+    EngineerLevel,
+    EventType,
+    IncidentStatus,
+    NotificationType,
+    UserRole,
+)
 from app.models.incident import Incident
 from app.models.user import User
 from app.repositories import engineers as engineer_repository
 from app.repositories import incidents as repository
+from app.services import notification_service
 
 #: Availability states that mean "not taking work right now". Assigning to
 #: someone in one of these warns rather than fails.
@@ -98,7 +106,12 @@ def assign(
     assignee, profile = _require_assignable_engineer(session, assignee_id)
     previous_assignee_id = incident.assignee_id
 
-    incident.assignee_id = assignee.id
+    # The relationship as well as the id. Setting only the id leaves an
+    # already-loaded `incident.assignee` pointing at the *previous* engineer
+    # until the session expires it, and the reporter's notification names that
+    # attribute — so a reassignment would have announced the person who just
+    # lost the ticket.
+    incident.assignee = assignee
     # Set once and never overwritten: `assigned_at` answers "how long did this
     # ticket wait for an owner?", which a reassignment does not change.
     if incident.assigned_at is None:
@@ -111,6 +124,14 @@ def assign(
         event_type=EventType.ASSIGNED,
         from_value=str(previous_assignee_id) if previous_assignee_id else None,
         to_value=str(assignee.id),
+    )
+    # Below the no-op guard above, so re-assigning a ticket to the engineer who
+    # already holds it notifies nobody, exactly as it writes no event.
+    notification_service.record(
+        session,
+        NotificationType.ASSIGNED,
+        incident=incident,
+        actor=actor,
     )
     session.flush()
 

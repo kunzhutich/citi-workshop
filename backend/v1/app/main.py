@@ -18,6 +18,7 @@ from app.routers import (
     health,
     incidents,
     notes,
+    notifications,
     reports,
     users,
 )
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     application.include_router(users.router, prefix=API_PREFIX)
     application.include_router(incidents.router, prefix=API_PREFIX)
     application.include_router(notes.router, prefix=API_PREFIX)
+    application.include_router(notifications.router, prefix=API_PREFIX)
     application.include_router(reports.router, prefix=API_PREFIX)
     return application
 

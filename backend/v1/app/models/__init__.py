@@ -15,6 +15,7 @@ from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.login_attempt import LoginAttempt
 from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.refresh_token import RefreshToken
 from app.models.seat import Seat
 from app.models.user import User
@@ -29,6 +30,7 @@ __all__ = [
     "IncidentEvent",
     "IncidentNote",
     "LoginAttempt",
+    "Notification",
     "RefreshToken",
     "Seat",
     "User",

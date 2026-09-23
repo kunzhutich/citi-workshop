@@ -126,8 +126,27 @@ class EventType(StrEnum):
     REOPENED = "REOPENED"
 
 
+class NotificationType(StrEnum):
+    """Kinds of in-app notification, and the reason each one was sent.
+
+    Deliberately a *narrower* vocabulary than ``EventType``. Not everything
+    worth recording in an audit log is worth interrupting somebody with: a
+    ticket being created, a priority being edited and an escalation being
+    *raised* all write events and send nobody a notification. Which capacity
+    hears about each of these is decided in ``app/notifications.py``.
+    """
+
+    STATUS_CHANGED = "STATUS_CHANGED"
+    ASSIGNED = "ASSIGNED"
+    NOTE_ADDED = "NOTE_ADDED"
+    ESCALATION_CLEARED = "ESCALATION_CLEARED"
+
+
 #: PostgreSQL type name -> Python enum. The single source of truth for which
-#: enum types exist; the initial migration creates and drops exactly these.
+#: enum types exist. Revision 0001 creates and drops every type listed here at
+#: the time it was written; a type added later is created by the migration that
+#: adds it (``notification_type`` by revision 0005), because 0001 has already
+#: run everywhere it is ever going to run.
 ENUM_TYPES: dict[str, type[StrEnum]] = {
     "user_role": UserRole,
     "engineer_level": EngineerLevel,
@@ -140,4 +159,5 @@ ENUM_TYPES: dict[str, type[StrEnum]] = {
     "seat_type": SeatType,
     "location_detail": LocationDetail,
     "event_type": EventType,
+    "notification_type": NotificationType,
 }
