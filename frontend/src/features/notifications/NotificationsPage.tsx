@@ -75,6 +75,9 @@ type Filter = 'all' | 'unread';
  * The ticket's *current* status is shown beside the message on purpose. The
  * message is a stored sentence about a moment; the chip says where the ticket
  * stands now, and the difference between them is often the reason to open it.
+ * It is labelled "Now" because unlabelled it read as a contradiction — see the
+ * comment on that line, which is a defect found by looking at the screen
+ * rather than by any test.
  */
 export function NotificationsPage() {
   const [filter, setFilter] = useState<Filter>('all');
@@ -153,8 +156,18 @@ export function NotificationsPage() {
                   {index > 0 ? <Divider component="li" /> : null}
                   <NotificationRow
                     notification={notification}
-                    onOpen={() => markRead.mutate(notification.id)}
-                    onMarkRead={() => markRead.mutate(notification.id)}
+                    onOpen={() =>
+                      markRead.mutate({
+                        id: notification.id,
+                        wasUnread: notification.read_at === null,
+                      })
+                    }
+                    onMarkRead={() =>
+                      markRead.mutate({
+                        id: notification.id,
+                        wasUnread: notification.read_at === null,
+                      })
+                    }
                   />
                 </Fragment>
               ))}
@@ -242,10 +255,24 @@ function NotificationRow({ notification, onOpen, onMarkRead }: NotificationRowPr
               }}
             >
               {isUnread ? <Chip label="New" size="small" color="primary" /> : null}
-              <StatusChip status={notification.incident_status} />
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
                 {notification.incident_reference} · {notification.incident_title}
               </Typography>
+              {/*
+                The word "Now" is load-bearing, and it was added after looking
+                at the screen. The message is a stored sentence about a moment
+                — "is now In progress" — and the chip is the ticket's *current*
+                status, which may be something else entirely. Unlabelled, the
+                two sat side by side reading as a contradiction: "is now In
+                progress" next to a green Resolved chip. Two words fix it, and
+                a screen reader gets them too.
+              */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Now
+                </Typography>
+                <StatusChip status={notification.incident_status} />
+              </Box>
               <Typography variant="caption" color="text.secondary">
                 {relativeTime(notification.created_at)}
               </Typography>

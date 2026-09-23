@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 
 import { expect, expectNothingLoading, test } from './fixtures/test';
-import { reportIssue } from './fixtures/ticket';
+import { openTicket, reportIssue } from './fixtures/ticket';
 
 /**
  * Accessibility, checked two ways, because one of them is not enough.
@@ -129,6 +129,34 @@ test.describe('axe: every screen', () => {
     await employeePage.getByRole('button', { name: /^Hardware/ }).click();
     await employeePage.getByRole('button', { name: 'Keyboard/Mouse' }).click();
     await expect(employeePage.getByLabel(/^Building/)).toBeVisible();
+    await expectNoViolations(employeePage);
+  });
+
+  test('the notification inbox, with rows in it rather than its empty state', async ({
+    employeePage,
+    seniorPage,
+  }) => {
+    // A notification is manufactured first, on purpose. Scanning an empty
+    // inbox would scan an `EmptyState` and report no violations about a list
+    // that was never on the page — and the list is exactly where S6 found the
+    // `<a>` inside `<ul>` violation. The badge is on the app bar for this
+    // scan too, which is the only state in which it has any markup to check.
+    const reference = await reportIssue(employeePage, {
+      group: 'Hardware',
+      subcategory: 'Monitor',
+      title: 'Monitor blanks out for a second at a time',
+      description:
+        'The screen goes black for about a second, several times an hour, on both inputs.',
+      priority: 'Medium',
+    });
+    await openTicket(seniorPage, reference);
+    await seniorPage.getByRole('button', { name: 'Pick up', exact: true }).click();
+    await expect(seniorPage.getByRole('button', { name: 'Start work', exact: true })).toBeVisible();
+
+    await employeePage.goto('/notifications');
+    await expect(employeePage.getByRole('list', { name: 'Notifications' })).toBeVisible();
+    await expectNothingLoading(employeePage);
+
     await expectNoViolations(employeePage);
   });
 

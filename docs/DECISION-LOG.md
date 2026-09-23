@@ -1395,3 +1395,353 @@ dashboard suite is the scope creep D24 declined for this very test.
 
 **Nothing in `src/` changed, and no application bug was found.** The rule works;
 only the test was silent about it. Reversible: four call sites, one line each.
+
+## D26 — Who gets notified is a rule, so where does it live?
+
+**Question.** S1 creates notifications on four different events, handled by
+four different services: `perform_transition` and `clear_escalation` in
+`incident_service.py`, `assign` in `assignment.py`, `add_note` in `notes.py`.
+The obvious implementation is four blocks of "and also tell the reporter, and
+the assignee unless they did it". Is that acceptable, and if not, what shape
+replaces it?
+
+**Finding — it is the shape this codebase exists to avoid.** The audience of a
+notification is a business rule with the same three properties as the workflow
+and the visibility filter: several places need it, the places do not otherwise
+know about each other, and getting it wrong is invisible to the person who got
+it wrong. Written inline it would be four copies of "not the actor", four
+copies of "the reporter, and the assignee if there is one", and four different
+wordings of the same sentence. The fifth trigger somebody adds later would be
+the one that forgets.
+
+**Chosen.** `app/notifications.py`, a peer of `app/workflow.py`, shaped the
+same way: four `NotificationRule` rows as **data**, read by three things and
+restated by none —
+`services/notification_service.record`, `seed/demo.py`, and
+`tests/unit/test_notifications.py`, which parametrises over `RULES` itself so
+a kind of notification added without a test is not possible.
+
+Three decisions inside that shape are worth recording separately.
+
+**1. The audience list and the wording are one field, not two.**
+
+```python
+@dataclass(frozen=True)
+class NotificationRule:
+    type: NotificationType
+    messages: Mapping[Audience, Message]
+    applies: Precondition | None = None
+```
+
+`messages` *is* the audience list: a capacity that is not a key is never
+notified. The alternative — an `audiences: frozenset` beside a `render`
+function — makes it possible to declare an audience and forget to give it a
+sentence, and makes the per-audience wording ("**Your ticket** INC-000123 was
+assigned to Sam Senior" for the reporter, "INC-000123 was assigned **to you**"
+for the engineer) either impossible or a conditional inside the renderer.
+`test_every_audience_has_wording` pins the property even though the type makes
+it hold, so that a refactor back to two fields fails here rather than in
+somebody's inbox.
+
+**2. Three rules apply to every row, so they are applied once.** In `plan()`,
+not eleven times in the table: never your own action; one person, one
+notification; a capacity nobody holds is skipped. The first is why
+`NotificationContext` carries the actor at all.
+
+**3. There is no FACILITY_ADMIN audience.** `Audience` has two members where
+`workflow.Actor` has three. Notifying every admin of every event in the estate
+is a fan-out with no bound, and the admin dashboard's "Needs attention" panel
+is already the screen that answers "what needs me?" — a queue, not an inbox.
+`test_no_rule_speaks_to_an_admin_as_an_audience` is where that decision is
+written down rather than left as an omission.
+
+**The one thing the table is not.** `notifications.user_in_capacity` is
+deliberately *not* `workflow.resolve_actors`. That function makes a LEAD
+engineer an ASSIGNEE on **any** ticket, because leads cover for their team when
+*acting*. Notifying every lead about every ticket in the estate is not covering
+for anybody, it is an unreadable inbox, and the two functions answering the
+same question differently is the point rather than a duplication.
+
+**Cost.** One more module, and a reader tracing "why did I get this?" has one
+extra hop: service → `notification_service.record` → `notifications.plan` →
+the row. That is the same hop the workflow already costs, and the same trade:
+a rule is one grep away instead of four.
+
+**Reversible.** Yes. The four call sites are one line each and name only a
+`NotificationType`; inlining the policy back into them is mechanical.
+
+## D27 — A notification stores its sentence, and never quotes a note
+
+**Question.** `notifications.message` holds rendered English. Two alternatives
+were available: store structured fields (`type`, `from_status`, `to_status`)
+and render in the browser, or render from the incident's current state at read
+time. And within the stored-sentence option: should a NOTE_ADDED message quote
+the note?
+
+**Chosen: store the sentence; quote nothing.**
+
+**Why stored rather than rendered at read time.** The facts that made a
+sentence true change. "Your ticket INC-000123 is now Resolved" is a statement
+about a moment; read a week later, after the ticket was reopened and resolved
+again, a re-rendered inbox would show a sentence nobody was ever sent. An inbox
+that rewrites its own history is worse than one that is out of date, because
+the reader has no way to tell. `test_the_message_is_stored_not_re_rendered`
+reopens a ticket and asserts the notification still says "Resolved", while the
+row's `incident_status` — which *is* read live — says `IN_PROGRESS`.
+
+**Why not structured fields rendered in the browser.** It would have kept the
+wording in `frontend/src/display/labels.ts` with every other label, which is
+the tidier place for it. It loses the property above: the row would carry
+`to_status = RESOLVED` and the browser would render it, which is the same
+sentence, but any future rule that depends on more than two columns would have
+to add columns. The deciding argument is that the sentence is the *record*. It
+is also why `STATUS_WORDING` in `app/notifications.py` is the one place the
+backend renders a domain value into English, and its docstring says so: the
+API returns enums everywhere else precisely because the browser should decide
+how to say them.
+
+**Why a NOTE_ADDED message names the author and quotes nothing.** A snippet
+would be more useful and is safe *today*, because the rule only fires on a
+PUBLIC note the reporter may read. It is not safe over time. A note can be
+edited for fifteen minutes and soft-deleted by an admin at any point — and the
+usual reason an admin deletes one is that it should not have been written down,
+a phone number pasted into a ticket thirty people can read being the example in
+`services/notes.py`'s own docstring. A quotation in a notification would
+outlive both the edit and the deletion, in a table no visibility filter
+touches. So the message is a pointer: "Sam Okafor added an update to your
+ticket INC-000451", and following it goes through `apply_note_visibility` like
+every other read. `test_a_note_never_quotes_itself` and
+`test_a_note_notification_never_carries_the_note_body` hold both ends of it.
+
+**Reversible.** The stored sentence, not cheaply — old rows would keep their
+wording. The no-quotation rule, trivially, and it should not be.
+
+## D28 — Revision 0001 was not frozen, and 0005 is what proved it
+
+**Question.** `NotificationType` needs a PostgreSQL enum type. Adding it to
+`app/models/enums.ENUM_TYPES` is what the registry's own docstring asks for —
+"the single source of truth for which enum types exist". Does that work?
+
+**Finding — it breaks the initial migration, silently and only on new
+databases.** `0001_initial_schema.py` creates its enum types by **iterating
+`ENUM_TYPES`**:
+
+```python
+for type_name, enum_cls in ENUM_TYPES.items():
+    op.execute(f"CREATE TYPE {type_name} AS ENUM (...)")
+```
+
+So adding a twelfth entry to a live application constant changes what an
+*already-applied* revision does. A database created before the change (the
+development one, the demo one, the deployed one) had 0001 create eleven types
+and would get `notification_type` from 0005. A database created after it — the
+test database, which `tests/conftest.py` drops and recreates every session —
+would have 0001 create twelve, and 0005 would die on `type "notification_type"
+already exists`. The two paths diverge, and only one of them is ever exercised
+by CI.
+
+The irony is on the file itself: 0001's docstring opens "Written once, then
+frozen."
+
+**Chosen.** 0001 now names the eleven types it has always created, in
+`ENUM_TYPES_AT_0001`, and iterates that. The *values* still come from the enum
+classes, because changing a member of an existing enum is a different question
+and would need its own revision; the *set of types* is frozen. 0005 creates
+`notification_type` itself and spells its four values out as literals, for the
+same reason.
+
+This is an equivalence-preserving edit to an applied migration: every database
+that has run 0001 ran it with exactly these eleven names, so freezing them
+changes nothing that has happened and everything that could.
+
+**Why not the alternatives.** Keeping `notification_type` out of `ENUM_TYPES`
+would leave a Postgres enum type that the registry does not know about and that
+`test_every_enum_type_exists_with_the_right_values` does not check —
+trading a real invariant for avoiding a six-line edit. `CREATE TYPE IF NOT
+EXISTS` does not exist in PostgreSQL, and the `DO $$ ... $$` block that
+emulates it would hide the divergence rather than fix it.
+
+**The general rule this leaves behind**, written into 0001's docstring: a
+migration that reads a live application constant is not frozen. It is worth
+auditing the others for the same shape — 0001 also imports nothing else, and
+0002–0005 import no application code at all.
+
+**Reversible.** Yes, and it would reintroduce the bug.
+
+## D29 — The read rate: whose inbox, and which `created_at` the window filters
+
+**Question.** BUILD-PLAN §15 says "add notification read-rate to the
+communication report". Two things that sounds like it settles and does not:
+which notifications are counted, and what the report's `from`/`to` window
+filters when the row being counted is not an incident.
+
+**Finding.** `/reports/communication` is a *period* report (D9), and every
+period report filters `Incident.created_at` through `_window_clauses()`.
+A read rate is not about incidents.
+
+**Chosen, in two halves.**
+
+**1. The window filters `notifications.created_at`.** This is D5's rule
+unchanged — *the window filters the `created_at` of the thing being counted* —
+applied to a row that happens to be a notification. The report now has two
+halves that count different things: the first seven fields count incidents
+created in the period, the last three count notifications sent in it. They can
+therefore move independently, and that is correct: telling somebody in March
+about a ticket raised in February is activity in March. Windowing on the
+incident instead would answer "how much of what we sent about tickets raised
+in March has been read", which is a question nobody has.
+`test_communication_read_rate_windows_on_the_notification_not_the_ticket`
+asserts both directions at once — a notification sent yesterday about the
+fixture's out-of-window ticket **is** counted, one sent forty days ago about an
+in-window ticket is **not**, and `total` stays at 9 throughout to prove the
+other half of the report did not move.
+
+**2. Only notifications addressed to the ticket's own reporter are counted.**
+The join is `Notification.user_id == Incident.reporter_id`. Every other number
+on this report is about the reporter's experience — were they told anything
+before their ticket was resolved, how long did the first note take, did they
+have to reopen it — and the brief's question is "how effectively are
+**employees** being informed". A rate that folded in engineers' inboxes would
+answer a different question while standing next to the ones it does not.
+`test_communication_read_rate_ignores_notifications_to_the_engineer` pins it.
+
+**The honest limitation, stated in the code.** A notification sent an hour
+before the end of the window has had an hour to be read; one sent three weeks
+earlier has had three weeks. The rate is therefore depressed by recent
+activity, inherently, and no amount of filtering fixes it. That is why
+`notifications_total` is reported beside the percentage rather than the
+percentage alone, and why the repository docstring says so rather than leaving
+the reader to discover it.
+
+**And the report finally has a screen.** `/reports/communication` has existed
+since M7 and **nothing rendered it** — `useCommunicationReport` was a hook with
+no caller, which is why the brief's seventh business question could be
+described as "measured and unacted on". That was defensible while the only
+answer to it was "somebody should write a note"; S1 gives it something to act
+on, so the whole thing goes on the admin dashboard together as
+`features/dashboard/CommunicationPanel.tsx`: told-before-it-was-fixed, median
+time to first update, notifications read, and reopen rate. Four tiles, none of
+them linked — a percentage and a median have no list behind them, and
+`GET /incidents` cannot filter on "had a public staff note before resolution"
+in any case, so a link would open the wrong tickets.
+
+The panel renders a `null` percentage as an em dash and never as zero. The API
+is careful to distinguish "nothing was resolved" from "0% were kept informed",
+and collapsing that at the last moment would throw the distinction away where
+nobody would see it happen. `test_renders_a_missing_percentage_as_a_dash` is
+the assertion; it checks that `0%` appears nowhere on the screen.
+
+**Deliberately not done: a per-type breakdown.** "Status changes are read 80%
+of the time and note updates 40%" would be a genuinely interesting number and
+is one `GROUP BY` away. It is not in scope, the panel has nowhere to put a
+fifth tile without becoming a table, and a report grows a column far more
+easily than it loses one.
+
+**Reversible.** Yes: one repository function, three schema fields and one
+component.
+
+## D30 — Thirty seconds, one integer, and a database that sleeps
+
+**Question.** BUILD-PLAN §15 says poll the unread count every 30 seconds. What
+does "cheap" have to mean for the route that will be called more than any other
+in the application, and is polling really the only option?
+
+**There was no choice about polling.** The API is a Lambda behind a Function
+URL. A Function URL cannot hold a connection open, so websockets and SSE are
+not alternatives that were rejected — they are not available. The interesting
+question is only what the poll costs.
+
+**Chosen, and measured.**
+
+*The query.* `SELECT count(*) FROM notifications WHERE user_id = ? AND read_at
+IS NULL`, over `ix_notifications_user_id_read_at`, whose two columns are
+exactly that WHERE clause in that order. No join, no ORM entity, no ordering,
+and `count(*)` needs no other column — so PostgreSQL answers it from the index
+alone. Measured on a scratch database of 200,000 notifications across 40 users
+(27 MB table, 35 MB of indexes):
+
+| case | plan | buffers | time |
+| --- | --- | --- | --- |
+| empty inbox (the common one) | Index Only Scan, `Heap Fetches: 0` | 3 | 0.09 ms |
+| busiest inbox, 556 unread | Index Only Scan, `Heap Fetches: 0` | 4 | 0.13 ms |
+| the inbox page, 25 rows + tickets | Index Scan Backward + nested loop | 25 | 0.19 ms |
+
+*The response.* `{"unread": 3}` and nothing else — no timestamps, no echo of
+the request, no list. Reading the count through the list endpoint would have
+been one fewer endpoint and would have made the busiest request in the
+application carry a page of rows it never renders.
+
+*A second index.* `ix_notifications_user_id_created_at` exists because the
+badge's index cannot serve the inbox page: its second column is `read_at`, so a
+user's rows come out of it grouped by read state and would have to be sorted
+afterwards. Two indexes on a table written on every status change is two index
+inserts per notification, which is the right side of that trade.
+
+**The part that is not about the query.** Aurora Serverless v2 runs at
+`min_capacity = 0` and sleeps when idle. A poll that never stopped would be a
+standing instruction to keep the database awake, which is a bill rather than a
+bug — and the sort of thing that is discovered a month later. TanStack Query
+does not run a `refetchInterval` while the window is unfocused
+(`refetchIntervalInBackground` defaults to false), so a tab left open behind
+another one stops asking; `staleTime` is set just under the interval so that
+regaining focus inside the same tick reuses the answer rather than adding a
+request. Both are recorded in `features/notifications/hooks.ts` beside the
+code, because neither is visible from the outside.
+
+**A failed poll is not an error the user sees.** `retry: 1`, and no snackbar:
+the badge keeps its last value until the next tick. A network blip must not put
+an alert on every screen in the application, and there is nothing the reader
+could do about it if it did.
+
+**Reversible.** The interval is one constant, `UNREAD_POLL_INTERVAL_MS`.
+
+## D31 — What S1 deliberately does not do, and what looking at it found
+
+**Question.** Four triggers are in scope. Several neighbouring events look like
+they belong and are not there. Recording the omissions is the difference
+between a decision and an oversight — and each has a test, so that adding one
+later is a visible change rather than a surprise.
+
+**Not notified, and why.**
+
+| Event | Why not |
+| --- | --- |
+| **Unassignment** | BUILD-PLAN §15 names "assignment". Losing a ticket is a workload question, and the engineer's queue screen is where workload is answered. `test_unassigning_notifies_nobody`. |
+| **An escalation being raised** | There is no admin audience (D26), so there is nobody to tell: the reporter raised it and the assignee already has the ticket. It reaches an admin through the dashboard's "Needs attention" panel, which is a queue. `test_raising_an_escalation_notifies_nobody`. |
+| **A priority change** | The reason `NotificationType` is narrower than `EventType`. A ticket moving from MEDIUM to HIGH is housekeeping; when it accompanies a cleared escalation it is part of that one decision and rides on that one notification. `test_a_priority_edit_notifies_nobody`. |
+| **A ticket being reported** | You know you reported it, and there is no assignee yet. `test_reporting_a_ticket_notifies_nobody`. |
+| **A reporter's own public note** | The rule is "a PUBLIC note **from staff**", which is the same definition `/reports/communication` already uses for being kept informed. The assignee learns of a reply on the ticket page they are already looking at. |
+| **Watchers** | S4's feature, and its own rule row when it arrives. |
+
+**No backfill, and this one was close.** `incident_events` and
+`incident_notes` hold the whole history, so a backfill could honestly
+reconstruct which notifications *would* have been sent to whom — and the demo
+database's 318 incidents would light the feature up immediately. It is not
+done, for one reason: it could not reconstruct which of them anybody **read**,
+so every backfilled row would be unread and `/reports/communication` would
+report a read rate of 0% over invented data. A number computed from fabricated
+history is worse than an empty one. Fresh environments get demo notifications
+from `seed_demo`; existing ones accumulate real ones from use, which on the
+demo database means the demo script generates them live — which is a better
+demonstration of a notification feature than pre-seeded rows anyway.
+
+**No live region on the bell.** A polite announcement every time the poll finds
+something new would interrupt whatever a screen-reader user was reading, every
+thirty seconds, on every screen. The count is in the control's accessible name
+instead, so it is available on demand rather than pushed. The cost is real and
+is recorded in `docs/DEPLOYMENT-CHECKLIST.md`: such a user learns of a
+notification when they next reach the bell, not when it arrives.
+
+**What looking at the screen found.** One defect, and no test would have caught
+it. The inbox shows each row's message beside the ticket's **current** status
+chip, deliberately — the message is a sentence about a moment and the chip says
+where the ticket stands now. On screen, unlabelled, they read as a
+contradiction: "Your ticket INC-000455 is now In progress." with a green
+**Resolved** chip directly beneath it. Every assertion about that row passed;
+it was legible only in a screenshot. The chip is now preceded by the word
+"Now", which costs one `<Typography variant="caption">` and removes the
+ambiguity for sighted and screen-reader readers alike. This is the fifth phase
+in a row where the most valuable defect was found by looking.
+
+**Reversible.** Each omission is a row in `RULES` and a test that would need
+deleting. The "Now" label is one element.

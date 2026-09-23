@@ -44,11 +44,21 @@ Three personas, one ticket.
   specialties; leads also assign their team. Engineers see internal notes that employees
   never do.
 - **Facility admin** — defines the world (buildings → floors → seats, category tree,
-  engineer accounts), assigns and escalates anything, and reads the dashboard.
+  engineer accounts), assigns and escalates anything, and reads the dashboard — which
+  since S1 also answers the brief's question about whether employees are being kept
+  informed: what share of resolved tickets got a public update first, how long the first
+  one took, and how much of what the application sent was read.
+
+Everybody also has an **inbox**. A bell in the app bar carries an unread badge; a
+notification is created when a ticket you reported or hold changes status, gains an
+owner, gets a public update from staff, or has its escalation cleared — and never when
+you did the thing yourself. An internal note never produces one. Who hears about what is
+a table of four rules in `backend/v1/app/notifications.py`, not four copies of an `if`.
 
 The data model is buildings/floors/seats, a two-level category tree, incidents with a
-status/priority/escalation state, notes with public-or-internal visibility, and an
-append-only event log that every timing metric is computed from. Full schema:
+status/priority/escalation state, notes with public-or-internal visibility, an
+append-only event log that every timing metric is computed from, and one notification
+row per thing a person was told. Full schema:
 [BUILD-PLAN §3](./docs/BUILD-PLAN.md).
 
 ## Architecture
@@ -131,22 +141,26 @@ backend/v1/                    # the single auto-discovered Lambda
 ├── requirements-dev.txt       #   test/lint deps, never packaged
 ├── alembic/versions/          # migrations; the test suite runs them, not create_all()
 ├── app/
-│   ├── main.py config.py db.py errors.py workflow.py
-│   ├── routers/     auth categories engineers facilities health incidents notes reports users
+│   ├── main.py config.py db.py errors.py workflow.py notifications.py
+│   ├── routers/     auth categories engineers facilities health incidents notes
+│   │                notifications reports users
 │   ├── services/    incident_service assignment categories engineers facilities notes
-│   │                ops reporting users visibility auth_service health
-│   ├── repositories/  incidents facilities engineers reports
+│   │                notification_service ops reporting users visibility
+│   │                auth_service health
+│   ├── repositories/  incidents facilities engineers notifications reports
 │   ├── models/ schemas/ security/ seed/
 │   └── migrations.py
-└── tests/  unit/ (6 files)  integration/ (15 files)  conftest.py  factories.py
+└── tests/  unit/ (7 files)  integration/ (16 files)  conftest.py  factories.py
 
 frontend/
 ├── vite.config.ts             # dev proxy + Vitest config
 ├── playwright.config.ts       # two viewport projects, starts/reuses the stack
-├── e2e/                       # lifecycle · assignment · dashboards · responsive
+├── e2e/                       # lifecycle · assignment · dashboards · notifications
+│                              # · responsive · accessibility
 └── src/
     ├── api/  auth/  components/  display/  hooks/  layout/
-    └── features/  incidents facilities categories engineers users home dashboard auth status
+    └── features/  incidents facilities categories engineers users home dashboard
+    │               notifications auth status
 ```
 
 Three rules hold this together, and each is enforced in exactly one file:
@@ -154,6 +168,7 @@ Three rules hold this together, and each is enforced in exactly one file:
 | Rule | Lives in |
 | --- | --- |
 | What may happen to a ticket, and who may do it | `backend/v1/app/workflow.py` (a data table) |
+| Who is told about it | `backend/v1/app/notifications.py` (a data table, and no database access at all) |
 | Which rows a user may read | `backend/v1/app/services/visibility.py` (applied to the query, never a serializer) |
 | Which actions the UI offers | `GET /api/v1/incidents/{id}/allowed-transitions` — the frontend renders buttons and dialog fields **only** from this response |
 
@@ -398,15 +413,15 @@ npx playwright install chromium   # once
 npm run test:e2e                  # or npm run test:e2e:ui
 ```
 
-### Results, as of S6
+### Results, as of S1
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Backend unit + integration | `pytest` | **738 passing** |
+| Backend unit + integration | `pytest` | **819 passing** |
 | Backend lint + format | `ruff check` / `ruff format --check` | clean |
-| Frontend component + hook | `npm test` (Vitest, 31 files) | **290 passing** |
+| Frontend component + hook | `npm test` (Vitest, 33 files) | **310 passing** |
 | Frontend lint + types + build | `npm run lint` / `typecheck` / `build` | clean (ESLint, `tsc -b`, `vite build`) |
-| End-to-end | `npm run test:e2e` | **72 passing**, 10 deliberate viewport skips, across 5 spec files and 2 viewports (1440×900, 375×812) |
+| End-to-end | `npm run test:e2e` | **82 passing**, 10 deliberate viewport skips, across 6 spec files and 2 viewports (1440×900, 375×812) |
 | Accessibility | part of `npm run test:e2e` | axe-core at WCAG 2.1 AA over every screen, at both viewports, with dialogs and drawers open |
 
 The backend suite takes about five to six minutes, most of it bcrypt at cost 12.
@@ -417,7 +432,10 @@ vitest → vite build) on every push and pull request.
 ### What is covered at each level
 
 - **Backend unit** (`tests/unit/`) — the workflow table parametrised over `TRANSITIONS`
-  itself, so a row added without a test is not possible; the 7-day reopen window against an
+  itself, so a row added without a test is not possible; the notification rules
+  parametrised over `RULES` the same way, with every "does **not** get notified" case
+  asserted — your own action, an internal note, a stranger, an unassigned ticket — and no
+  database anywhere in the file; the 7-day reopen window against an
   injected fixed `now`; email-domain validation including lookalikes (`x@sub.acme.inc`,
   `x@acme.inc.evil.com`); password hashing; token encode/decode and expiry; config
   (including the refusal to start deployed with a weak `JWT_SECRET`); the ops dispatcher.
@@ -427,8 +445,11 @@ vitest → vite build) on every push and pull request.
   transaction that is rolled back. Covers CRUD for every resource, the RBAC matrix endpoint
   by endpoint and level by level, every transition (allowed *and* denied actors), search by
   ticket number and full text, employees never receiving internal notes, 409s on
-  referenced deletes and duplicate keys, and all eight report endpoints against a fixture
-  table with numbers worked out by hand.
+  referenced deletes and duplicate keys, all eight report endpoints against a fixture
+  table with numbers worked out by hand, and the notification triggers end to end —
+  including that an internal note writes no row, that a failed transition writes neither
+  an event nor a notification, and that one person's inbox is a 404 from another
+  person's session.
 - **Frontend** (`src/**/*.test.tsx`, jsdom) — auth and route guards, the report
   questionnaire's progressive reveal and validation, the incident detail page rendering
   actions *from* `allowed-transitions`, the transition dialog building itself from
@@ -441,7 +462,11 @@ vitest → vite build) on every push and pull request.
   tile opens exactly the tickets it counted), the layout assertions jsdom cannot make, and
   — since S6 — an **accessibility** spec: axe-core over every screen with the dialogs and
   drawers *open*, plus keyboard tests for the tab order, the skip link, focus returning
-  from a dialog, and the questionnaire being completable without a pointer. It runs against
+  from a dialog, and the questionnaire being completable without a pointer. Since S1 it
+  also drives the **notification inbox**: an employee is told that their ticket was
+  assigned and resolved while the engineer who did both is told nothing, an internal note
+  produces nothing and the public note that follows it does, and the badge follows
+  marking one read and then all. It runs against
   the **development database**, creating accounts and tickets through the API with a unique
   suffix per run and deactivating the accounts afterwards; it never drops or truncates
   anything.
@@ -464,7 +489,7 @@ Stated plainly, because the rubric asks for coverage figures this project does n
    Aurora's `CREATE EXTENSION`, timestamp serialisation — is written up with its exact
    command and expected result in
    [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md), unrun.
-5. **Four admin screens have no component tests.** Vitest covers 29 files, none of them
+5. **Four admin screens have no component tests.** Vitest covers 33 files, none of them
    under `features/facilities`, `features/categories`, `features/users` or
    `features/engineers` (beyond `sortForAssignment`). Their APIs are covered by backend
    integration tests and their happy paths are walked by hand; the screens themselves are
@@ -483,7 +508,7 @@ Stated plainly, because the rubric asks for coverage figures this project does n
 
 ## Trade-offs and decisions
 
-Twenty-three decisions are recorded with their alternatives in
+Thirty-one decisions are recorded with their alternatives in
 [docs/DECISION-LOG.md](./docs/DECISION-LOG.md); three infrastructure changes in
 [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:
@@ -493,6 +518,25 @@ ask about:
 cannot read a route handler and know what a button does. The benefit is that the rules
 cannot drift between the API and the UI, and that the tests parametrise over the table, so
 an untested row is impossible.
+
+**Who gets a notification is a table, not four `if`s** ([D26](./docs/DECISION-LOG.md)).
+Four services create notifications; without a table each would carry its own copy of "and
+also tell the reporter, unless they did it", and the fifth trigger added later would be
+the one that forgets. `backend/v1/app/notifications.py` holds four rows of data, each
+carrying its audience *and* that audience's wording in one mapping, and touches no
+database — so every refusal is unit-testable with no session. The row that matters most
+carries a precondition: an INTERNAL note produces no notification, and that rule lives
+beside the audience it protects rather than at the call site. Both properties were checked
+rather than trusted: deleting either from the rule module fails nine of the forty-five
+unit tests.
+
+**Polling was not a preference** ([D30](./docs/DECISION-LOG.md)). The unread badge asks
+the server every thirty seconds because a Lambda Function URL cannot hold a connection
+open — there was no websocket to reject. So the polled route is one scalar query answered
+by an index-only scan (measured: 3–4 shared buffers, ~0.1 ms, `Heap Fetches: 0` against a
+200,000-row table), the response is one integer, and the interval stops while the browser
+tab is unfocused — which also stops an abandoned tab keeping a `min_capacity = 0` Aurora
+awake.
 
 **The login lockout counts addresses that have no account** ([D19](./docs/DECISION-LOG.md)).
 Ten failures per email per fifteen minutes, counted in a table because a Lambda container
@@ -581,8 +625,9 @@ to do the rest of M8 anyway.
 
 Scope decisions, all deliberate:
 
-- **No email at all** — no verification on registration, no notifications. There are no
-  external integrations in the MVP; a registered `@acme.inc` address is trusted as typed.
+- **No email at all** — no verification on registration, and no notification ever leaves
+  the application. Notifications are in-app only: a bell, a badge and an inbox. There are
+  no external integrations; a registered `@acme.inc` address is trusted as typed.
 - **No file or photo attachments**, which for facility reporting ("here is the leak") is
   the most-missed feature.
 - **No SSO.** Local accounts with bcrypt and JWTs only.
@@ -590,7 +635,18 @@ Scope decisions, all deliberate:
   visibility hook that would scope them exists and is unused.
 - **Response times are wall-clock**, not business hours. A ticket raised on Friday evening
   and fixed Monday morning reports ~60 hours.
-- **In-app notifications, a Kanban board and SLA targets are unbuilt** (stretch S1–S3).
+- **A Kanban board and SLA targets are unbuilt** (stretch S2, S3). In-app notifications
+  (S1) are built.
+- **Notifications are not retrospective.** The table starts empty on an existing database.
+  The history to reconstruct which notifications *would* have been sent is all there in
+  `incident_events` and `incident_notes` — what is not there is which of them anybody
+  **read**, so a backfill would report a read rate of 0% over invented rows. A fresh
+  environment gets demo notifications from `seed_demo`; an existing one accumulates real
+  ones from use. See [D31](./docs/DECISION-LOG.md).
+- **The unread badge does not announce itself.** There is no live region on the bell: a
+  polite announcement every thirty seconds, on every screen, would interrupt whatever a
+  screen-reader user was reading. The count is in the control's accessible name instead,
+  so it is available on demand rather than pushed — but it is not pushed.
 - **Login lockout can be used against somebody.** Ten failed sign-ins against an address
   lock it for fifteen minutes, whether or not anybody holds it — which is what stops the
   refusal revealing who has an account, and also means a colleague's address can be locked

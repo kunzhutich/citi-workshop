@@ -6,7 +6,7 @@ import {
 } from '@tanstack/react-query';
 
 import * as notificationsApi from '../../api/notifications';
-import type { NotificationQuery } from '../../api/notifications';
+import type { NotificationQuery, UnreadCount } from '../../api/notifications';
 import { queryKeys } from '../../api/queryKeys';
 
 /**
@@ -70,18 +70,43 @@ export function useNotificationFeed(query: NotificationQuery) {
   });
 }
 
+/** What `useMarkNotificationRead` is told, beyond which row to mark. */
+export interface MarkReadVariables {
+  id: string;
+  /** Whether it was unread, so the badge is only decremented when it should be. */
+  wasUnread: boolean;
+}
+
 /**
  * Mark one notification read.
  *
- * Invalidates the whole `['notifications']` prefix rather than the one list it
- * came from: the badge and the list are two views of the same rows, and a
+ * **The badge is decremented optimistically, and that is not a nicety.**
+ * Opening a notification follows a link to the ticket, which unmounts this
+ * screen — and TanStack Query does not call a mutation's `onSuccess` once the
+ * component that started it has gone. Relying on the invalidation alone would
+ * leave the bell showing its old number until the next poll, up to thirty
+ * seconds after the user watched the row they just read disappear. `onMutate`
+ * runs synchronously, before the navigation, so it always fires.
+ *
+ * The invalidation stays as the correction: when it does run it replaces the
+ * guess with the server's answer, and when it does not, the next poll does.
+ * Invalidating the whole `['notifications']` prefix rather than one list is
+ * deliberate — the badge and the list are two views of the same rows, and a
  * screen where the list says "read" while the bell still says 3 is worse than
  * one extra request.
  */
 export function useMarkNotificationRead() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: notificationsApi.markNotificationRead,
+    mutationFn: ({ id }: MarkReadVariables) => notificationsApi.markNotificationRead(id),
+    onMutate: ({ wasUnread }: MarkReadVariables) => {
+      if (!wasUnread) {
+        return;
+      }
+      queryClient.setQueryData<UnreadCount>(queryKeys.notifications.unreadCount, (current) =>
+        current && current.unread > 0 ? { unread: current.unread - 1 } : current,
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     },

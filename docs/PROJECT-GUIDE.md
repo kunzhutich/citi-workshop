@@ -81,7 +81,7 @@ decides everything and commits nothing. A router commits.
 > directory tree is in [the README's Code layout section](../README.md#code-layout) and
 > is not repeated here; what follows is why the layers exist rather than what is in them.
 
-**3. PostgreSQL** holds eleven tables and is not merely a store. Constraints that can be
+**3. PostgreSQL** holds twelve tables and is not merely a store. Constraints that can be
 expressed in the schema are expressed there (a `BLOCKED` ticket cannot exist without a
 blocked reason), the full-text search document is a generated column the application
 cannot desynchronise, and every number on the admin dashboard is computed by an
@@ -107,6 +107,13 @@ one place is put in exactly one place, and every other place asks.**
   **query**, never to the serialised result, and the repository functions that need them
   take the already-narrowed statement as an argument rather than building their own —
   so there is no `select(IncidentNote)` at the point of use to forget to filter.
+- *Who is told about what happened to a ticket* is decided in
+  `app/notifications.py`, as four `NotificationRule` rows. It is the sibling of
+  `workflow.py` and exists for the same reason: four services create notifications, and
+  without the table each of them would carry its own copy of "and also tell the
+  reporter, unless they did it". The module touches no database at all, which is what
+  makes every *refusal* — your own action, an internal note, a stranger — testable
+  without a session.
 - *What time it is* is decided in `app/clock.py`, one function, and every rule that
   depends on the clock takes `now` as a parameter defaulting to it. That is why the
   seven-day reopen window and the fifteen-minute note-edit window are testable without
@@ -184,10 +191,13 @@ For contrast, these were arguments we had with ourselves, not constraints:
 
 ## 2. The data model as a narrative
 
-Eleven tables. Read them in this order — it is neither alphabetical nor the order they
-were created in, but the order in which each one becomes necessary. The last two stand
-apart from the other nine: they are about *sessions* rather than about the estate, and
-neither has a foreign key into the domain.
+Twelve tables. Read them in this order — it is neither alphabetical nor the order they
+were created in, but the order in which each one becomes necessary. Two of them stand
+apart from the rest: `refresh_tokens` and `login_attempts` are about *sessions* rather
+than about the estate, and neither has a foreign key into the domain. `notifications`,
+added last by S1, is the only table that is purely *derived* — every row in it could be
+reconstructed from `incident_events` and `incident_notes`, and it exists because an
+inbox needs a read flag, which history does not carry.
 
 Everything below is defined in `backend/v1/app/models/`, one module per table, and
 created by `backend/v1/alembic/versions/0001_initial_schema.py`. Two conventions are
@@ -195,14 +205,16 @@ declared once in `models/base.py` and then inherited, and **the exceptions to ea
 the interesting part**:
 
 - `UUIDPrimaryKeyMixin` gives a table `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`.
-  Nine of the eleven use it. The two exceptions are `engineer_profiles`, whose primary
+  Ten of the twelve use it. The two exceptions are `engineer_profiles`, whose primary
   key *is* `user_id` — it is an extension of a user, not an identity of its own (§2.2) —
   and `login_attempts`, keyed on the email address the attempts were against (§2.10).
 - `TimestampMixin` gives a table `created_at` and `updated_at` as UTC `timestamptz`.
-  Eight of the eleven use it. The exceptions are `incident_events` and `refresh_tokens`,
+  Eight of the twelve use it. The exceptions are `incident_events` and `refresh_tokens`,
   which are written once and never modified and say so by declaring `created_at`
-  themselves while omitting `updated_at` (§2.7, §2.9), and `login_attempts`, whose two
-  timestamps are the same two facts said in domain words (§2.10).
+  themselves while omitting `updated_at` (§2.7, §2.9); `login_attempts`, whose two
+  timestamps are the same two facts said in domain words (§2.10); and `notifications`,
+  where `read_at` is the only thing that ever changes and an `updated_at` beside it
+  would be a second copy of the same fact.
 
 So the mixins a model does *not* inherit tell you what kind of row it is before you read
 a single column.
@@ -509,7 +521,38 @@ The table cleans itself: every failed login deletes the windows that have expire
 the failure path is the only path that inserts. Aurora sleeps at `min_capacity = 0`, so
 there is nowhere for a scheduled sweeper to run. See [D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory).
 
-### 2.11 Where a new field goes
+### 2.11 `notifications` — the derived table, and the only one
+
+One row per thing one person was told: `user_id`, `incident_id`, `type`, `message`,
+`read_at` and `created_at`. Added by S1 and by revision `0005`.
+
+**Every column but one is a copy of something.** Which ticket, what kind of event and
+when are all reconstructible from `incident_events` and `incident_notes`. `read_at` is
+not — nothing else in the schema knows whether a person has looked at something — and
+that one column is the table's reason to exist. It is nullable rather than a boolean
+because *when* it was read is what `/reports/communication` needs to answer "are people
+reading these?", and a boolean throws that away.
+
+**`message` stores the sentence, rendered.** Not fields to render later: "Your ticket
+INC-000123 is now Resolved" was true when it was sent, and re-rendering it from the
+ticket's current state would make an inbox that silently rewrites its own history. The
+one thing a message never contains is the body of a note — a note can be edited for
+fifteen minutes and deleted by an admin for ever, and this table is not behind any
+visibility filter. See [D27](DECISION-LOG.md#d27--a-notification-stores-its-sentence-and-never-quotes-a-note).
+
+**Two indexes, because there are two readers with opposite needs.**
+`ix_notifications_user_id_read_at` answers the unread badge — the busiest query in the
+application, polled every thirty seconds by every open tab — as an index-only scan, in
+three or four shared buffers. `ix_notifications_user_id_created_at` answers the inbox
+page, which the first index cannot: its second column is `read_at`, so one user's rows
+come out of it grouped by read state and would have to be sorted afterwards.
+
+**No `updated_at`**, per §2's rule about what a missing mixin tells you: `read_at` is
+the only mutation, and an `updated_at` beside it would say the same thing twice.
+`created_at` defaults to `clock_timestamp()` rather than `now()`, for the reason §2.7
+gives about `incident_events` — one request can write several of these.
+
+### 2.12 Where a new field goes
 
 The point of the above is to make this predictable. The questions, in order:
 
@@ -660,6 +703,29 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | **Which incidents a user may read** | `app/services/visibility.py` | `apply_incident_visibility` — today a no-op, and the seam where per-building scoping would go |
 | The base statements those filters narrow | `app/repositories/incidents.py` | `notes_query`, and `visible` as a parameter of `list_incidents` |
 
+### 3.5a Notifications
+
+Everything about *who hears what* is in **one file**, `app/notifications.py`, for the
+same reason the workflow is in one file. The four services that create notifications
+each contain one line, and that line names a `NotificationType` and never a person.
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which events produce a notification at all | `app/models/enums.py` | `NotificationType` — four members, deliberately fewer than `EventType` |
+| **Who hears about each, and in what words** | `app/notifications.py` | `RULES` — four `NotificationRule` rows; `messages` is the audience list *and* the wording |
+| Nobody is notified about their own action | `app/notifications.py` | `plan()` — one line, applied to every rule |
+| One person who holds two capacities gets one notification | `app/notifications.py` | `plan()`, `AUDIENCE_PRECEDENCE` — the reporter's wording wins |
+| **An INTERNAL note notifies nobody** | `app/notifications.py` | `_is_a_public_staff_note`, the `applies` precondition on the NOTE_ADDED row |
+| Which capacity a user holds on a ticket | `app/notifications.py` | `user_in_capacity` — **not** `workflow.resolve_actors`, which makes a LEAD an ASSIGNEE everywhere |
+| There is no admin audience | `app/notifications.py` | `Audience` has two members; asserted by `test_no_rule_speaks_to_an_admin_as_an_audience` |
+| How a status is worded inside a stored message | `app/notifications.py` | `STATUS_WORDING` — the only place the backend renders a domain value into English |
+| That a notification is written in the same transaction as its event | `app/services/notification_service.py` | `record` — "the caller commits", like every other service |
+| One inbox is unreachable from another session | `app/repositories/notifications.py` | every statement takes `user_id` as an argument; there is no query that could express otherwise |
+| Somebody else's notification is 404, not 403 | `app/services/notification_service.py` | `mark_read` |
+| Marking read twice keeps the first timestamp | `app/services/notification_service.py` | `mark_read` — the `read_at is None` guard |
+| What makes the unread count cheap | `app/repositories/notifications.py` | `unread_count` + `ix_notifications_user_id_read_at` |
+| How often the badge asks | `frontend/src/features/notifications/hooks.ts` | `UNREAD_POLL_INTERVAL_MS` (30 s), and `refetchIntervalInBackground` left false |
+
 ### 3.6 Search, filtering, sorting and paging
 
 | Rule | File | Symbol |
@@ -734,6 +800,8 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | What counts as an escalation somebody can still act on | `app/repositories/reports.py` | `_live_escalation_clauses` — used by all three current-state readers |
 | What counts as "kept informed" | `app/repositories/reports.py` | `_first_public_staff_note`, `communication` |
 | Which roles are staff for that purpose | `app/repositories/reports.py` | `STAFF_ROLES` |
+| What the notification read rate counts, and whose inbox | `app/repositories/reports.py` | `notification_read_rate` — reporters only, via `Notification.user_id == Incident.reporter_id` |
+| Which `created_at` that half of the report windows on | `app/repositories/reports.py` | `notification_read_rate` — `Notification.created_at`, because a notification is the row being counted (D5's rule, D29's application) |
 | Hours, rounding, percentages, `NULL` at a zero denominator | `app/repositories/reports.py` | `_hours`, `_rounded`, `_percentage`, `SECONDS_PER_HOUR`, `MEDIAN` |
 | Median rather than mean | `app/repositories/reports.py` | `_median_hours_since_created` — `percentile_cont(0.5)` |
 | Every day appears in the daily series, zeroes included | `app/repositories/reports.py` | `summary_per_day`, `_counted_on_day` — `generate_series` supplies the calendar |
@@ -1088,7 +1156,17 @@ Inside `app/services/incident_service.py::perform_transition`, in order:
    `clock_timestamp()`, so it sorts after anything written a microsecond earlier in the same
    transaction.
 
-9. **`repository.reload(session, incident)`** — `session.flush()`, then re-select with
+9. **`notification_service.record(session, NotificationType.STATUS_CHANGED, incident=incident, actor=user)`**
+   — one line, and it names no recipient. It builds a `NotificationContext` and calls
+   `notifications.plan()`, which looks up the `STATUS_CHANGED` row in `RULES`, walks
+   `AUDIENCE_PRECEDENCE`, resolves REPORTER to `incident.reporter_id` and ASSIGNEE to
+   `incident.assignee_id`, **drops Nina because she is the actor**, and renders the
+   reporter's sentence from the status the incident now carries. One row goes into
+   `notifications`, in this transaction, so a commit that fails notifies nobody about a
+   status the database never reached. Had Nina been the reporter too, the plan would have
+   been empty and no row would exist — not a row addressed to nobody.
+
+10. **`repository.reload(session, incident)`** — `session.flush()`, then re-select with
    `_detail_loaders()` **and `execution_options(populate_existing=True)`**. That flag is
    load-bearing: without it the query finds the object already in the session's identity map
    and hands it back untouched, *including relationships loaded before the write*. This
@@ -1206,8 +1284,8 @@ that each step makes the next one obvious.
 2. `docs/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
 
 **Then, 30 minutes — the shape of the domain.**
-3. `backend/v1/app/models/enums.py` — eleven enums, and the whole vocabulary of the system
-   in 143 lines. Read this before any table.
+3. `backend/v1/app/models/enums.py` — twelve enums, and the whole vocabulary of the system
+   in one file. Read this before any table.
 4. `backend/v1/app/models/incident.py` — the central table, heavily commented.
 5. §2 above, with `backend/v1/app/models/` open beside it.
 
@@ -1224,6 +1302,9 @@ that each step makes the next one obvious.
    `app/repositories/incidents.py`.
 9. `backend/v1/app/services/visibility.py` — 55 lines, and the clearest statement of the
    "one place, applied to the query" discipline in the repository.
+9a. `backend/v1/app/notifications.py` — the same thesis as `workflow.py` applied a second
+   time, and the shorter of the two. If §6 of `workflow.py` convinced you, this shows what
+   it looks like when the pattern is reused deliberately rather than discovered.
 
 **Then, 30 minutes — the frontend's contract with the backend.**
 10. `frontend/src/api/client.ts` — the session, the token, and the 401 retry, in one file.
@@ -1458,6 +1539,13 @@ current.
 | **Vertical slice** | Building a phase as migration → endpoint → test → screen rather than all-backend-then-all-frontend, so the app is demoable at every point. |
 | **Drill-down** | Clicking a chart segment or tile to open the pre-filtered list it counted. Period tiles link with dates; current-state tiles deliberately do not. |
 | **Table twin** | The text view beside every chart, giving the same numbers to a keyboard, a screen reader or a printout — a hover is not available to any of them. |
+| **Audience** | The capacity in which someone *hears about* one particular incident: REPORTER or ASSIGNEE. The sibling of **Actor**, with one member fewer — there is no admin audience, because notifying every admin of every event is a fan-out with no bound. |
+| **Notification rule** | A row of `RULES` in `app/notifications.py`: a `NotificationType`, a mapping from audience to the sentence that audience is told, and optionally a precondition. The whole policy is four of them. |
+| **Precondition (`applies`)** | The notification analogue of a workflow **guard**: a condition on the triggering action rather than on who is listening. `_is_a_public_staff_note` is the only one, and it is what stops an INTERNAL note reaching a reporter. |
+| **Stored message** | A notification's `message` is rendered when it is written and never re-rendered. It records what was true at the time; the row's `incident_status`, read live, records what is true now. |
+| **Index-only scan** | A PostgreSQL plan that answers a query from an index without reading the table, possible when every column the query needs is in the index. `EXPLAIN` confirms it with `Heap Fetches: 0`. The unread count is one, which is why a 30-second poll is affordable. |
+| **Polling (and why not websockets)** | The badge asks the server every 30 seconds. Not a preference: a Lambda Function URL cannot hold a connection open, so there is no socket to open. The interval stops while the browser tab is unfocused, which also stops it keeping a `min_capacity = 0` Aurora awake. |
+| **Read rate** | Of the notifications sent to reporters inside the reporting period, the share read at any time since. Depressed by recent activity, inherently — which is why `notifications_total` is reported beside the percentage. |
 
 ---
 
@@ -7532,3 +7620,303 @@ can filter on `status` and `duration_ms` only because of this.
 handling one request, so they can be pulled back together afterwards. Ours
 prefers the caller's `x-request-id`, then the Lambda request id — which is also
 what CloudWatch files the invocation under, so the two views join.
+
+## Phase S1 — In-app notifications
+
+*The brief asks "How effectively are employees being informed about ticket
+progress and outcomes?" It was the one business question in the requirements
+with a report measuring it — `/api/v1/reports/communication`, reading about 70%
+informed on the demo data — and nothing acting on it. It is also the only place
+`docs/full-stack.md`'s "Deliver real-time capabilities" gets touched. S1 builds
+the thing the report was measuring the absence of.*
+
+### 1. What was built
+
+**Backend.**
+
+| File | Responsibility |
+| --- | --- |
+| `app/notifications.py` | **New, and the point of the phase.** Who gets notified, when, and in what words — four `NotificationRule` rows as data. No database access at all. |
+| `app/models/notification.py` | **New.** One row per thing one person was told. |
+| `app/repositories/notifications.py` | **New.** Six statements, every one of them keyed on a `user_id` taken as an argument. |
+| `app/services/notification_service.py` | **New.** Turns a plan into rows, and answers the four questions the inbox screen asks. Deliberately thin. |
+| `app/routers/notifications.py` | **New.** `GET /notifications`, `GET /notifications/unread-count`, `POST /notifications/{id}/read`, `POST /notifications/read-all`. |
+| `app/schemas/notification.py` | **New.** `NotificationRead`, `UnreadCount`, `MarkAllReadResult`. |
+| `alembic/versions/0005_notifications.py` | **New.** The `notification_type` enum, the `notifications` table, its two indexes. Head moves `0004 → 0005`. |
+| `alembic/versions/0001_initial_schema.py` | Stops iterating `ENUM_TYPES` to decide which types to create. See [D28](DECISION-LOG.md#d28--revision-0001-was-not-frozen-and-0005-is-what-proved-it). |
+| `app/models/enums.py` | `NotificationType`, and a registry comment that is now true. |
+| `app/services/incident_service.py` | Two one-line calls: `STATUS_CHANGED` in `perform_transition`, `ESCALATION_CLEARED` in `clear_escalation`. Neither names a recipient. |
+| `app/services/assignment.py` | One line for `ASSIGNED` — and `incident.assignee = assignee` rather than only the id, which is a bug fixed before it shipped (§6). |
+| `app/services/notes.py` | One line for `NOTE_ADDED`, called for **every** note including INTERNAL ones. The rule is what refuses. |
+| `app/repositories/reports.py` | `notification_read_rate()`, the read-rate aggregate. |
+| `app/services/reporting.py`, `app/schemas/report.py` | Three new fields on `CommunicationReport`. |
+| `tests/factories.py` | `make_notification`, for report tests that need chosen timestamps. |
+
+**Frontend.**
+
+| File | Responsibility |
+| --- | --- |
+| `api/notifications.ts` | **New.** Four calls. `fetchUnreadCount` is deliberately separate from the list. |
+| `features/notifications/hooks.ts` | **New.** The polling query, the infinite inbox feed, the two mutations. |
+| `features/notifications/NotificationBell.tsx` | **New.** The app-bar bell, its badge, and its accessible name. |
+| `features/notifications/NotificationsPage.tsx` | **New.** The inbox: list, filter, mark one, mark all, load more. |
+| `features/dashboard/CommunicationPanel.tsx` | **New.** The brief's seventh business question, on screen for the first time: informed %, median time to first update, notification read rate, reopen rate. |
+| `features/dashboard/AdminDashboardPage.tsx` | Mounts that panel, and finally calls `useCommunicationReport` — a hook that had no caller since M7. |
+| `layout/AppShell.tsx` | The bell, at both widths. On a phone it takes the one slot beside the menu button. |
+| `api/types.ts`, `api/queryKeys.ts`, `routes.ts`, `App.tsx` | The new type, the new cache keys, `/notifications`, the route. |
+
+**Demo data.** `app/seed/demo.py` builds the demo world's inbox by replaying
+each ticket's planned history through `app/notifications.py` — the same rules
+the application uses, not a second implementation. A 60-incident world produces
+304 notifications across all four kinds and a 61.4% read rate, which is what the
+dashboard tile shows. `read_at` is invented, which is legitimate here and is
+exactly what a backfill of a *real* database could not honestly do (D31).
+
+**Tests.** `tests/unit/test_notifications.py` (45, no database),
+`tests/integration/test_notifications.py` (31), five more in
+`tests/integration/test_reports.py`, six more in
+`tests/integration/test_seed_demo.py`; `NotificationBell.test.tsx` (6),
+`NotificationsPage.test.tsx` (14) and two more in `AdminDashboardPage.test.tsx`;
+`e2e/notifications.spec.ts` (4 per viewport) and one more scan in
+`e2e/accessibility.spec.ts`.
+
+### 2. Why it is shaped this way
+
+**The rule table exists because four services would otherwise each carry a copy
+of it.** Notifications are created on a status change, an assignment, a public
+staff note and a cleared escalation — four events, four services, and the
+obvious implementation is four blocks of "and also tell the reporter, and the
+assignee unless they did it". That is four copies of "not the actor", four
+copies of "the reporter, and the assignee if there is one", and four wordings
+of the same sentence, with the fifth trigger somebody adds later being the one
+that forgets. So the audience is data, in `app/notifications.py`, exactly as
+the workflow is data in `app/workflow.py` — and the four call sites each name a
+`NotificationType` and never a recipient. The full argument, including why the
+audience list and the wording are one field rather than two, is
+[D26](DECISION-LOG.md#d26--who-gets-notified-is-a-rule-so-where-does-it-live).
+
+**The rule module touches no database, and that is load-bearing.** `plan()`
+takes an incident, a user and possibly a note, and returns a list of
+`PlannedNotification`. Every "does not get notified" case — your own action, an
+internal note, a stranger, an unassigned ticket — is therefore checkable in a
+unit test with no session, no fixtures and no transaction. Forty-five of them
+run in 0.13 seconds. The negative cases are the ones that matter here, because
+a notification that should not have been sent is visible only to the person who
+received it.
+
+**The message is stored, not rendered on read.** "Your ticket INC-000123 is now
+Resolved" was true when it was sent; re-rendering it from the ticket's current
+state would make an inbox that silently rewrites its own history. The row's
+`incident_status`, which *is* read live, is where the reader sees where the
+ticket stands now. And a NOTE_ADDED message names the author but never quotes
+the note — a note can be edited for fifteen minutes and deleted by an admin for
+ever, and a quotation in a table no visibility filter touches would outlive
+both. [D27](DECISION-LOG.md#d27--a-notification-stores-its-sentence-and-never-quotes-a-note).
+
+**Polling was not a choice.** A Lambda Function URL cannot hold a connection
+open, so websockets and SSE were never on the table. What was decided is what
+the poll costs: one integer, from an index-only scan over an index whose two
+columns are exactly the WHERE clause, and an interval that stops while the tab
+is unfocused — because Aurora runs at `min_capacity = 0` and a poll that never
+stopped is a standing instruction to keep the database awake.
+[D30](DECISION-LOG.md#d30--thirty-seconds-one-integer-and-a-database-that-sleeps).
+
+**The read rate is a second query, not a widened one.** `/reports/communication`
+now has two halves that count different rows — incidents created in the period,
+and notifications sent in it — and both obey the same rule: the window filters
+the `created_at` of the thing being counted. Folding them into one statement
+would need an outer join whose grain is neither.
+[D29](DECISION-LOG.md#d29--the-read-rate-whose-inbox-and-which-created_at-the-window-filters).
+
+**And the report is finally rendered.** `useCommunicationReport` had no caller
+from M7 until now, which is precisely why the brief's seventh business question
+counted as "measured and unacted on". `CommunicationPanel` puts all four
+figures on the admin dashboard. None of the tiles links anywhere, per
+`StatTile`'s own rule — a median and a percentage have no list behind them —
+and a `null` percentage renders as an em dash, never as `0%`, because the API
+distinguishes "nothing was resolved" from "nobody was informed" and the last
+mile is a poor place to lose that.
+
+**Rejected: a `notifications` projection built inside `repository.add_event`.**
+Every trigger except the note already writes an `incident_event`, so a hook
+there would have caught three of the four for free. Rejected on two counts. It
+puts policy in the repository layer, which is the one layer in this codebase
+that is allowed to know nothing; and notes write no event at all
+(`EventType.NOTE_ADDED` exists and only `seed/demo.py` has ever written one),
+so the fourth trigger would have been a special case beside a general
+mechanism — the worst of both.
+
+**Rejected: a `type TEXT` column, which is what BUILD-PLAN §3 sketched.** Three
+things have to agree on those four words: the rule table, the icon the inbox
+draws, and the report that could count them by kind. `TEXT` admits a typo that
+the database stores happily. The cost is real and is written into the
+migration: a fifth kind of notification needs `ALTER TYPE ... ADD VALUE` in a
+new revision, where `TEXT` would have needed nothing.
+
+### 3. How the pieces connect
+
+**An engineer resolves a ticket, and the reporter's badge turns red.**
+
+1. The engineer clicks **Resolve** in `TransitionDialog`, which was drawn from
+   `GET /incidents/{id}/allowed-transitions` and knows nothing about the
+   workflow itself.
+2. `api/incidents.ts` `performTransition` → Vite dev proxy → `POST
+   /api/v1/incidents/{id}/transitions`.
+3. `routers/incidents.py` validates the body into a `TransitionRequest`,
+   resolves the caller through `security/dependencies.get_current_user`, and
+   calls `services/incident_service.perform_transition`.
+4. That service asks `app/workflow.py` whether the move is legal for this
+   caller's actors, applies the effects, and writes an `incident_events` row.
+5. Then one line: `notification_service.record(session,
+   NotificationType.STATUS_CHANGED, incident=incident, actor=user)`.
+6. `services/notification_service.record` builds a `NotificationContext` and
+   calls `notifications.plan()`.
+7. `app/notifications.py` looks up the `STATUS_CHANGED` row, walks
+   `AUDIENCE_PRECEDENCE`, resolves REPORTER to `incident.reporter_id` and
+   ASSIGNEE to `incident.assignee_id`, **drops the engineer because they are
+   the actor**, and renders the reporter's sentence from the incident's
+   now-current status. One `PlannedNotification` comes back.
+8. `repositories/notifications.add` puts one row in the session.
+9. The **router** calls `session.commit()` — the same commit as the status
+   change and the event. There is no path that notifies somebody about a
+   status the database never reached.
+10. Within thirty seconds the reporter's tab polls `GET
+    /api/v1/notifications/unread-count`. `repositories/notifications.
+    unread_count` runs one scalar query, answered from
+    `ix_notifications_user_id_read_at` without touching the table.
+11. `useUnreadCount` updates, `NotificationBell` re-renders: the badge shows a
+    number and the link's accessible name becomes "Notifications, 1 unread".
+12. The reporter clicks it. `NotificationsPage` mounts,
+    `useNotificationFeed` fetches `GET /api/v1/notifications`, and
+    `inbox_query` joins each row to its incident (`load_only` on three columns,
+    because `incidents` carries a `tsvector` this screen has no use for).
+13. Clicking the row fires `markNotificationRead` and navigates to the ticket.
+    The mutation invalidates the whole `['notifications']` prefix, so the badge
+    and the list cannot disagree about how many are unread.
+
+**An engineer writes an INTERNAL note, and nothing happens.** Steps 1–5 are the
+same through `services/notes.add_note`, which calls `record` for *every* note.
+At step 7 the `NOTE_ADDED` row's `applies` precondition —
+`_is_a_public_staff_note` — returns False, `plan()` returns `[]`, and no row is
+written. The refusal is in the rule table, beside the audience it is
+protecting, rather than in an `if` at the call site.
+
+### 4. Where the rules live
+
+| Rule | Where |
+| --- | --- |
+| Which events produce a notification at all | `app/models/enums.py` `NotificationType` — four members, deliberately fewer than `EventType` |
+| Who hears about each, and in what words | `app/notifications.py` `RULES` — four `NotificationRule` rows |
+| Nobody is notified about their own action | `app/notifications.py` `plan()`, one line, applied to every rule |
+| One person, one notification | `app/notifications.py` `plan()` + `AUDIENCE_PRECEDENCE` |
+| An INTERNAL note notifies nobody | `app/notifications.py` `_is_a_public_staff_note`, the `applies` on the NOTE_ADDED row |
+| Which capacity a user holds on a ticket | `app/notifications.py` `user_in_capacity` — **not** `workflow.resolve_actors`, and §6 says why |
+| The wording of a status inside a stored message | `app/notifications.py` `STATUS_WORDING` — the only place the backend renders a domain value into English |
+| One inbox is unreachable from another session | `app/repositories/notifications.py` — every statement takes `user_id` as an argument |
+| Somebody else's notification is 404, not 403 | `app/services/notification_service.mark_read` |
+| How often the badge polls | `frontend/src/features/notifications/hooks.ts` `UNREAD_POLL_INTERVAL_MS` |
+| What the read rate counts | `app/repositories/reports.py` `notification_read_rate` |
+
+### 5. How to change it
+
+**To add a kind of notification** (five steps, in this order):
+
+1. Add a member to `NotificationType` in `app/models/enums.py`.
+2. Write a new Alembic revision containing
+   `op.execute("ALTER TYPE notification_type ADD VALUE 'YOUR_KIND'")`. This is
+   the cost of the enum over `TEXT`; it cannot be folded into 0005, which is
+   frozen.
+3. Add one `NotificationRule` row to `RULES` in `app/notifications.py`, with a
+   named message function per audience.
+4. Add one line at the service that performs the action, naming the type and
+   the actor. If it needs a condition — "only when the note is public" — that
+   condition is an `applies` on the row, not an `if` at the call site.
+5. Add an icon to `NOTIFICATION_ICONS` in `NotificationsPage.tsx`. It is a
+   `Record`, so the compiler will already have told you.
+
+`tests/unit/test_notifications.py` parametrises over `RULES`, so steps 1 and 3
+without a test are impossible — several parametrised tests will fail until the
+row exists and is coherent. Then write the "does" and the "does not".
+
+**To change who hears about an existing kind**: edit that row's `messages`
+mapping. Nothing else. Adding `Audience.ASSIGNEE` to `NOTE_ADDED` is one line
+plus its sentence.
+
+**To change the polling interval**: `UNREAD_POLL_INTERVAL_MS`. `staleTime` is
+derived from it.
+
+**To add a field to the inbox row**: `NotificationRead` in
+`app/schemas/notification.py`, `_to_read` in `app/routers/notifications.py`, the
+`AppNotification` interface in `api/notifications.ts`, and `NotificationRow` in
+`NotificationsPage.tsx`. If it comes from the incident, add it to the
+`load_only` list in `repositories/notifications.inbox_query` or it will not be
+loaded.
+
+### 6. Gotchas
+
+**`incident.assignee = assignee`, not just `assignee_id`.** This is the bug
+that nearly shipped. `assignment.assign` set `incident.assignee_id` and
+flushed; the reporter's notification reads `incident.assignee.full_name`. On a
+**re**-assignment the relationship may already be loaded with the *previous*
+engineer, and SQLAlchemy does not expire it just because the foreign key
+changed — so the reporter would have been told their ticket went to the person
+who had just lost it. Setting the relationship sets the id too.
+`test_reassigning_names_the_new_engineer_not_the_previous_one` is the
+regression test; it assigns to Sam, then to Ada, and asserts the reporter was
+told "Ada Other".
+
+**`user_in_capacity` is not `workflow.resolve_actors`, on purpose.** The
+workflow makes a LEAD engineer an ASSIGNEE on *any* ticket, because leads cover
+for their team when acting. Reusing that here would have sent every lead a
+notification about every ticket in the estate. Two functions answering "what is
+this user to this ticket?" differently looks like duplication and is a
+decision; `test_a_lead_is_not_an_audience_on_every_ticket` records it.
+
+**The rule module is called for every note, including INTERNAL ones.** If you
+are reading `services/notes.add_note` and wondering where the visibility check
+is: it is not there, deliberately. Moving it to the call site would be the
+first step back towards four services each carrying a copy of the policy, and
+D9–D11 are three entries about this class of leak arriving through a door
+nobody was watching.
+
+**A migration that reads a live application constant is not frozen.** Revision
+0001 created its enum types by iterating `ENUM_TYPES`, so adding
+`notification_type` to that registry changed what an already-applied revision
+did — and only on databases created *after* the change, which is exactly the
+test database and nothing else. See [D28](DECISION-LOG.md#d28--revision-0001-was-not-frozen-and-0005-is-what-proved-it).
+
+**`openInbox` in the e2e spec navigates rather than clicking the bell.** A test
+already on `/notifications` that clicks a link to `/notifications` navigates
+nowhere: React Router keeps the component mounted, nothing refetches, and the
+assertions that follow read a screen from a minute ago. Two tests failed
+exactly that way before the helper was changed to `page.goto`. That the bell is
+a working link is asserted once, separately.
+
+**The e2e accounts are worker-scoped**, so an inbox accumulates across the
+tests in a file. A test that asserts "two unread" is otherwise asserting about
+everything that ran before it; `clearInbox` is what turns that back into a
+statement about the test's own actions.
+
+**`listitem` counts more than you think.** The inbox puts `<Divider
+component="li" />` between rows for correct list markup, so
+`getByRole('listitem')` counts dividers too. Counts in the e2e spec are taken
+from the bell's accessible name, which is one number.
+
+**The badge is `aria-hidden`.** A badge is a number in a coloured circle; to a
+screen reader it is otherwise a stray "3" inside a control called
+"Notifications". The count lives in the control's accessible name instead —
+and `NotificationBell.test.tsx` asserts both halves, because removing either
+one looks fine in a screenshot.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Audience** | The capacity in which a user hears about one ticket — REPORTER or ASSIGNEE. Not a role: the same person is a different audience on a different ticket. The sibling of `workflow.Actor`, with one fewer member. |
+| **Index-only scan** | A PostgreSQL plan that answers a query from an index without reading the table at all, possible when every column the query needs is in the index. `EXPLAIN` confirms it with `Heap Fetches: 0`; the unread count is one. |
+| **Partial vs. composite index** | `ix_notifications_user_id_read_at` is composite — two columns in order. A *partial* index (`WHERE read_at IS NULL`) would be smaller still, and was not used: the composite one also serves "all of this user's read rows", and two indexes are already the write cost this table carries. |
+| **`clock_timestamp()`** | PostgreSQL's real wall clock, as opposed to `now()`, which is the time the *transaction* began. Rows written in one request all share `now()`; ordering them then falls back to comparing UUIDs. Revision 0003 moved `incident_events` and `incident_notes` to it, and `notifications` was created with it. |
+| **`refetchInterval` / `refetchIntervalInBackground`** | TanStack Query's polling. The interval does not run while the browser window is unfocused unless the second option is set, which is what stops an abandoned tab keeping Aurora awake. |
+| **`useInfiniteQuery`** | TanStack Query's accumulating fetch: pages are appended rather than replacing each other, which is what "Load more" needs. The same hook the ticket lists use on a phone. |
+| **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders the control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor. |
+| **Read rate** | Of the notifications sent to reporters inside the reporting period, the share that have been read at any time since. Depressed by recent activity, inherently — a notification sent an hour ago has had an hour. |

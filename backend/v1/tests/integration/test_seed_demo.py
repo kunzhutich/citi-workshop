@@ -39,12 +39,16 @@ from app.models.enums import (
     EngineerLevel,
     EventType,
     IncidentStatus,
+    NoteVisibility,
+    NotificationType,
     SeatType,
     UserRole,
 )
 from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
+from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.schemas.report import ReportScope, ReportWindow
@@ -453,3 +457,137 @@ def test_running_it_twice_changes_nothing_and_says_so(
     assert "does not top up or refresh" in second.detail
     assert second.incidents == 0
     assert db_session.scalars(select(func.count()).select_from(Incident)).one() == before
+
+
+# --- The demo inbox ----------------------------------------------------------
+
+
+def test_it_fills_an_inbox(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """A demo world with no notifications makes the bell look broken."""
+    result, _ = seeded
+
+    rows = db_session.scalars(select(Notification)).all()
+
+    assert result.notifications > 0
+    assert len(rows) == result.notifications
+    # All four kinds occur, so every icon on the inbox screen is exercised and
+    # the read-rate report has something of each to count.
+    assert {row.type for row in rows} == set(NotificationType)
+
+
+def test_every_notification_goes_to_somebody_involved(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """The generator asks `app/notifications.py`; this proves it did not guess.
+
+    A second implementation of the audience rule would show up here as a row
+    addressed to a bystander — the demo world has thirty-odd employees and six
+    engineers, so a wrong answer has plenty of room to be wrong in.
+    """
+    rows = db_session.execute(
+        select(Notification, Incident).join(Incident, Incident.id == Notification.incident_id)
+    ).all()
+
+    assert rows
+    for notification, incident in rows:
+        assert notification.user_id in {incident.reporter_id, incident.assignee_id}
+
+
+def test_nobody_is_told_about_their_own_action(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """The replay hands the actor to `plan()`, which is what drops them.
+
+    Checked against the audit log rather than against the generator: for each
+    notification, no event of the matching kind at the same instant may have
+    been performed by the person who received it.
+    """
+    notifications = db_session.scalars(select(Notification)).all()
+    actors_by_moment = {
+        (event.incident_id, event.created_at): event.actor_id
+        for event in db_session.scalars(select(IncidentEvent)).all()
+    }
+
+    assert notifications
+    for notification in notifications:
+        actor_id = actors_by_moment.get((notification.incident_id, notification.created_at))
+        if actor_id is not None:
+            assert notification.user_id != actor_id
+
+
+def test_no_internal_note_produced_a_notification(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """The rule that matters most, asserted against the demo data too.
+
+    Every NOTE_ADDED notification must line up in time with a note that is
+    PUBLIC. An INTERNAL note at that instant would mean the generator had
+    routed around `_is_a_public_staff_note`.
+    """
+    note_visibility = {
+        (note.incident_id, note.created_at): note.visibility
+        for note in db_session.scalars(select(IncidentNote)).all()
+    }
+    note_notifications = db_session.scalars(
+        select(Notification).where(Notification.type == NotificationType.NOTE_ADDED)
+    ).all()
+
+    assert note_notifications
+    for notification in note_notifications:
+        visibility = note_visibility.get((notification.incident_id, notification.created_at))
+        assert visibility == NoteVisibility.PUBLIC
+
+
+def test_the_read_rate_is_a_number_a_dashboard_can_show(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Neither 0% nor 100%, because both are indistinguishable from a bug.
+
+    The window is wide enough to cover the whole generated history, so this is
+    the figure `/reports/communication` will put on the admin dashboard.
+    """
+    _, now = seeded
+    window = ReportWindow(
+        date_from=now - timedelta(days=DEFAULT_SPEC.days + 1),
+        date_to=now,
+        building_id=None,
+    )
+
+    report = reporting.communication(db_session, window)
+
+    assert report.notifications_total > 0
+    assert report.notification_read_rate_pct is not None
+    assert 20.0 < report.notification_read_rate_pct < 95.0
+    assert report.notifications_read_total < report.notifications_total
+
+
+def test_a_notification_never_arrives_before_the_thing_it_describes(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Backdated like the event log, not stamped with the moment of seeding.
+
+    `Notification.created_at` defaults to `clock_timestamp()`, so a generator
+    that forgot to set it would put ninety days of history in the last second —
+    and the read rate would read 0%, because nothing would have had time to be
+    read.
+    """
+    _, now = seeded
+    rows = db_session.execute(
+        select(Notification, Incident).join(Incident, Incident.id == Notification.incident_id)
+    ).all()
+
+    assert rows
+    for notification, incident in rows:
+        assert notification.created_at >= incident.created_at
+        assert notification.created_at <= now
+        if notification.read_at is not None:
+            assert notification.read_at > notification.created_at
+            assert notification.read_at <= now

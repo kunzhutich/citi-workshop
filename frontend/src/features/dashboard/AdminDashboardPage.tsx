@@ -18,12 +18,14 @@ import { useIncidents } from '../incidents/hooks';
 import { BlockedByReasonPanel } from './BlockedByReasonPanel';
 import { BreakdownChart, type BreakdownDatum } from './BreakdownChart';
 import { PRIORITY_RAMP } from './chartPalette';
+import { CommunicationPanel } from './CommunicationPanel';
 import { DashboardFilterBar } from './DashboardFilterBar';
 import { EngineerWorkloadTable } from './EngineerWorkloadTable';
 import { FlowChart } from './FlowChart';
 import {
   useBlockedEscalatedReport,
   useCategoriesReport,
+  useCommunicationReport,
   useEngineerWorkloadReport,
   useLocationsReport,
   useResponseTimesReport,
@@ -76,6 +78,7 @@ export function AdminDashboardPage() {
   const locations = useLocationsReport(periodParams);
   const responseTimes = useResponseTimesReport(periodParams);
   const workload = useEngineerWorkloadReport(periodParams);
+  const communication = useCommunicationReport(periodParams);
   const live = useBlockedEscalatedReport(scopeParams);
 
   // Oldest first, so everything past the age cut is younger still and one page
@@ -317,6 +320,21 @@ export function AdminDashboardPage() {
           </StatTileGrid>
         </QueryState>
       </Box>
+
+      {/*
+        The brief's seventh business question, which had a report and no
+        screen until S1 gave it something to measure. It sits inside the
+        period block because every number on it is about activity in the
+        window — including the read rate, which counts notifications *sent*
+        in the period rather than tickets raised in it (D29).
+      */}
+      <QueryState
+        isPending={communication.isPending}
+        error={communication.error}
+        errorFallback="Could not load the communication figures."
+      >
+        <CommunicationPanel report={communication.data} isStale={communication.isFetching} />
+      </QueryState>
 
       <Box sx={{ mt: 3 }}>
         <QueryState

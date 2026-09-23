@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   BlockedEscalatedReport,
   CategoriesReport,
+  CommunicationReport,
   EngineerWorkloadReport,
   LocationsReport,
   ResponseTimesReport,
@@ -178,6 +179,27 @@ function emptyPage(): Page<IncidentListItem> {
   return { items: [], total: 0, page: 1, page_size: 50 };
 }
 
+/**
+ * The communication figures, with numbers unlike every other block's.
+ *
+ * `informed_pct` and `notification_read_rate_pct` are deliberately different
+ * from each other and from the reopen rate, so a panel that drew one where
+ * another belongs fails rather than passing by coincidence.
+ */
+const COMMUNICATION: CommunicationReport = {
+  window: WINDOW,
+  total: 120,
+  resolved_total: 75,
+  informed_total: 54,
+  informed_pct: 72.0,
+  median_first_public_note_hours: 4.5,
+  reopened_total: 9,
+  reopen_rate_pct: 7.5,
+  notifications_total: 233,
+  notifications_read_total: 143,
+  notification_read_rate_pct: 61.4,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(reportsApi.fetchSummary).mockResolvedValue(SUMMARY);
@@ -186,6 +208,7 @@ beforeEach(() => {
   vi.mocked(reportsApi.fetchResponseTimes).mockResolvedValue(RESPONSE_TIMES);
   vi.mocked(reportsApi.fetchEngineerWorkload).mockResolvedValue(WORKLOAD);
   vi.mocked(reportsApi.fetchBlockedEscalated).mockResolvedValue(LIVE);
+  vi.mocked(reportsApi.fetchCommunication).mockResolvedValue(COMMUNICATION);
   vi.mocked(fetchFacilityTree).mockResolvedValue(FACILITIES);
   vi.mocked(listIncidents).mockResolvedValue(emptyPage());
 });
@@ -372,5 +395,57 @@ describe('the engineer workload table', () => {
     const table = await screen.findByRole('table', { name: 'Engineer workload' });
     expect(within(table).getByText('in the period')).toBeInTheDocument();
     expect(within(table).getByText('Capacity now')).toBeInTheDocument();
+  });
+});
+
+describe('whether people were kept informed', () => {
+  /**
+   * The brief's seventh business question, on screen for the first time.
+   *
+   * `/reports/communication` existed from M7 and nothing rendered it. These
+   * tests hold the two things that would go wrong quietly: a percentage drawn
+   * from the wrong field, and a missing figure rendered as zero.
+   */
+  it('shows all four figures, each from its own field', async () => {
+    render();
+
+    expect(
+      await screen.findByRole('heading', { name: 'Whether people were kept informed' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('72%')).toBeInTheDocument();
+    expect(screen.getByText('61.4%')).toBeInTheDocument();
+    expect(screen.getByText('7.5%')).toBeInTheDocument();
+    expect(
+      screen.getByText('54 of 75 resolved tickets had a public update first'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('143 of 233 sent to reporters in this period'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders a missing percentage as a dash, not as zero', async () => {
+    vi.mocked(reportsApi.fetchCommunication).mockResolvedValue({
+      ...COMMUNICATION,
+      resolved_total: 0,
+      informed_total: 0,
+      informed_pct: null,
+      median_first_public_note_hours: null,
+      notifications_total: 0,
+      notifications_read_total: 0,
+      notification_read_rate_pct: null,
+    });
+
+    render();
+
+    // "Nothing was resolved" and "0% were kept informed" are different facts,
+    // and the API is careful to distinguish them. So is this.
+    await screen.findByRole('heading', { name: 'Whether people were kept informed' });
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('No ticket reported in this period has been resolved yet'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Nothing was sent to a reporter in this period'),
+    ).toBeInTheDocument();
   });
 });

@@ -268,6 +268,19 @@ export interface BlockedEscalatedReport {
 
 // --- /reports/communication --------------------------------------------------
 
+/**
+ * Mirrors `CommunicationReport`.
+ *
+ * **Two halves that count different rows.** The first seven fields count
+ * *incidents created* in the period. The last three count *notifications sent*
+ * in it, and can therefore move while the others do not — telling somebody in
+ * March about a ticket raised in February is activity in March. Both obey the
+ * same rule: the window filters the `created_at` of the row being counted. See
+ * decision D29.
+ *
+ * Every `_pct` is `null` rather than `0` when its denominator is empty, and
+ * the difference is load-bearing: "nothing was resolved" is not "0% informed".
+ */
 export interface CommunicationReport {
   window: ReportWindow;
   total: number;
@@ -277,6 +290,11 @@ export interface CommunicationReport {
   median_first_public_note_hours: number | null;
   reopened_total: number;
   reopen_rate_pct: number | null;
+
+  /** In-app notifications sent to reporters about their own tickets. */
+  notifications_total: number;
+  notifications_read_total: number;
+  notification_read_rate_pct: number | null;
 }
 
 // --- /reports/me -------------------------------------------------------------

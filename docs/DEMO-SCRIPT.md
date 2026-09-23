@@ -203,6 +203,30 @@ Now click **"Resolve"**. A dialog opens asking for a resolution summary — type
 
 **Window A, Eve.** Go to **Home** and reload.
 
+**Look at the bell in the top bar first.** It is carrying a number it did not have
+when Act 1 ended.
+
+> "Nothing here polled for five minutes and nothing pushed. The bell asks the server
+> for one integer every thirty seconds — a Lambda behind a Function URL cannot hold a
+> connection open, so there is no socket to open. What it is counting is everything
+> that happened to Eve's ticket while she was not looking at it."
+
+Click it.
+
+> "An owner, then work started, then resolved — and the public note Nina wrote. Not the
+> internal one: an internal note is staff-only, and a notification saying 'Nina added an
+> update' would announce that something exists which Eve is not allowed to read. Who
+> hears about what is four rules in one file, and that one carries a condition."
+
+Then, the part worth saying out loud:
+
+> "And Nina has nothing. She resolved this ticket; she does not need telling that she
+> resolved it. Every rule here drops the person who performed the action — which is the
+> sort of thing that is easy to get wrong and invisible when you do, because the only
+> person who sees the mistake is the one who got the pointless notification."
+
+Press **Mark all as read** — the badge clears — then carry on with Home.
+
 > "The ticket is not closed. The engineer does not get to decide that."
 
 Point at the **"Needs your attention"** section, which was not there five minutes ago.
@@ -358,6 +382,10 @@ Each of these is one extra minute and shows something the main script skips.
   up, the stepper shows **"Reopened ×1"**, and the seven-day window is enforced server-side
   by a guard that takes `now` as an argument — which is how it is tested without waiting a
   week.
+- **The notification rules from the other side.** With Nina's window open, add an
+  **internal** note to a ticket of Eve's, then check Eve's bell: nothing. Add a public
+  one: it arrives. Then have Henry assign a ticket to Nina — Nina is told she has been
+  given it, Eve is told who has it, and Henry, who did it, is told nothing.
 - **The same screens at 375 px.** Narrow the window: the sidebar becomes a bottom bar, the
   ticket table becomes cards, dialogs go full-screen, and the ticket's action buttons move
   into a sticky bar at the bottom of the screen.

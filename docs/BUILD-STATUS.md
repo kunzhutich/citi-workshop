@@ -12,14 +12,79 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, S6 (hardening) complete
-**Current branch:** `s6-hardening`
-**Phase in progress:** none. S6 is finished. Next is stretch S1 (in-app
-notifications), per [D2](DECISION-LOG.md).
+**Last updated:** 2026-09-23, S1 (in-app notifications) complete
+**Current branch:** `s1-notifications`
+**Phase in progress:** none. S1 is finished. Next is stretch S3 (SLA targets),
+per [D2](DECISION-LOG.md).
 
-**S6 verified:** backend **738** pytest (683 + 55) · frontend **290** vitest
-(271 + 19) · e2e **72 passed, 10 deliberate viewport skips** (25 + 7 before) · ruff check + ruff format clean · eslint,
-`tsc -b` and `vite build` clean.
+**S1 verified:** backend **819** pytest (738 + 81) · frontend **310** vitest
+(290 + 20) · e2e **82 passed, 10 deliberate viewport skips** (72 + 8 before) ·
+ruff check + ruff format clean · eslint, `tsc -b` and `vite build` clean.
+Migration `0005` applied to **both** `acme_incidents_dev` and `acme_demo`.
+
+S1 builds the feature the brief's one measured-but-unacted-on business question
+asked for — "how effectively are employees being informed about ticket progress
+and outcomes?" — and is the only thing in the build that touches
+`docs/full-stack.md`'s "Deliver real-time capabilities".
+
+**1. The rule, in one place.** `app/notifications.py` is the sibling of
+`app/workflow.py`: four `NotificationRule` rows as data, each carrying its
+audience *and* that audience's wording in one mapping, so an audience without a
+sentence cannot be declared. Three rules apply to every row and are therefore
+applied once in `plan()` — never your own action, one person one notification,
+skip a capacity nobody holds. The four services that create notifications
+contain one line each, naming a `NotificationType` and never a recipient. The
+module touches **no database**, which is what makes all 45 of its unit tests run
+in 0.13 s with no session. [D26](DECISION-LOG.md).
+
+**2. The leak that did not happen.** The NOTE_ADDED row carries a precondition,
+`_is_a_public_staff_note`. `services/notes.add_note` calls the rule module for
+*every* note including INTERNAL ones, and the rule is what refuses — so "an
+internal note notifies nobody" is a statement in the rule table rather than an
+`if` at a call site somebody can delete. D9–D11 are three entries about this
+class of leak arriving through an unwatched door.
+
+**3. Checked rather than trusted.** Two mutations of the rule module — deleting
+that precondition, and letting an actor stay in their own audience — fail 9 of
+the 45 unit tests between them. The e2e absence assertion was proved the same
+way: with the actor rule removed, "the engineer was not told they resolved it"
+fails with a clear message; restored, it passes.
+
+**4. The cost of the thing that polls.** Measured on a scratch database of
+200,000 notifications across 40 users (27 MB table, 35 MB indexes):
+`unread-count` is an Index Only Scan with `Heap Fetches: 0` — 3 shared buffers
+and 0.09 ms for an empty inbox, 4 and 0.13 ms for the busiest (556 unread). The
+inbox page is an Index Scan Backward, 25 buffers, 0.19 ms. Polling rather than
+websockets was not a preference: a Lambda Function URL cannot hold a connection
+open. [D30](DECISION-LOG.md).
+
+**5. A latent migration bug, found on the way.** Revision 0001 created its enum
+types by iterating the live `ENUM_TYPES` constant, so adding `notification_type`
+to that registry changed what an *already-applied* revision did — and only on
+databases created after the change, which is exactly the test database that CI
+drops and recreates. 0001 now names the eleven types it has always created.
+[D28](DECISION-LOG.md).
+
+**6. The report that had no screen.** `/reports/communication` has existed since
+M7 and `useCommunicationReport` had no caller — which is exactly why the brief's
+seventh business question counted as measured-but-unacted-on. S1 gives it
+something to measure and puts all four figures on the admin dashboard as
+`CommunicationPanel`. A `null` percentage renders as an em dash and never as
+`0%`, because "nothing was resolved" and "nobody was informed" are different
+facts and the API is careful to distinguish them.
+
+**Demo data.** `seed_demo` now builds the demo inbox by replaying each ticket's
+planned history through `app/notifications.py` rather than reimplementing the
+audience rule. A 60-incident world produces 304 notifications across all four
+kinds, with a 61.4% read rate — a number a dashboard can show, which neither 0%
+nor 100% would be.
+
+**What looking at the screen found**, as in every phase so far: the inbox showed
+each message beside the ticket's *current* status chip, so "Your ticket
+INC-000455 is now In progress." sat directly above a green **Resolved** chip and
+read as a contradiction. Every assertion about that row passed. The chip is now
+preceded by the word "Now". Screenshots were taken at 375 px and 1440 px, with
+and without a badge, read and unread, and with the keyboard focus ring on a row.
 
 S6 shipped the five things BUILD-PLAN §15 names, plus the three cleanups M8
 recorded but did not make.
@@ -311,7 +376,8 @@ reviews.
 | `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
 | `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide phase section + guide Part I — committed, **not pushed** |
 | `s6-hardening` | S6 (stretch) | complete, branched off `m8-docs-and-demo`; committed, **not pushed** |
-| `s1-notifications` … | stretch | not started |
+| `s1-notifications` | S1 (stretch) | complete, branched off `s6-hardening`; committed, **not pushed** |
+| `s3-sla-targets` … | stretch | not started |
 
 ## Remaining plan
 
@@ -321,8 +387,8 @@ reviews.
    ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~,
    ~~the project guide's front section~~. Done. See decision D1. Nothing
    outstanding but the deploy itself.
-4. **Stretch**, in order ~~S6~~ → S1 → S3 → S2. See decision D2. S6 is done;
-   S1 (in-app notifications) is next.
+4. **Stretch**, in order ~~S6~~ → ~~S1~~ → S3 → S2. See decision D2. S6 and S1
+   are done; S3 (SLA targets) is next.
 
 The AWS deploy is not part of this run: no credentials. Every step that needs
 them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.

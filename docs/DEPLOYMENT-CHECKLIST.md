@@ -1493,6 +1493,97 @@ be a ring. Then tab to a category card on `/report` and look again. That is the 
 that caught the ring being absent in the first place
 ([D23](DECISION-LOG.md#d23--what-tabbing-found-that-axe-did-not)).
 
+## S1 — In-app notifications
+
+### 10.1 Revision 0005 applies to Aurora, and creates the enum type
+
+`0005` is the first revision to create a PostgreSQL enum type outside `0001`, and the
+first to be written after `0001` stopped iterating `ENUM_TYPES`
+([D28](DECISION-LOG.md#d28--revision-0001-was-not-frozen-and-0005-is-what-proved-it)).
+Both halves are worth proving against a database that has already run `0001`–`0004`.
+
+```sh
+aws lambda invoke --function-name <fn> \
+  --payload '{"action":"migrate"}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+Expect `{"ok": true, ... "schema": "upgraded to head"}`. Then, through the API rather
+than psql (Aurora is not reachable from a laptop): sign in, `GET
+/api/v1/notifications/unread-count` must return `{"unread": 0}` rather than a 500. A 500
+here with `type "notification_type" does not exist` means the revision half-applied;
+`relation "notifications" does not exist` means it did not run at all.
+
+**Locally this was applied to both `acme_incidents_dev` and `acme_demo`.** A migration
+applied to one and not the other is the failure mode S6 nearly shipped — the demo
+database was missed and would have 500'd on login.
+
+### 10.2 The unread count is an index-only scan on Aurora, not just on PostgreSQL 18
+
+The measurement behind [D30](DECISION-LOG.md#d30--thirty-seconds-one-integer-and-a-database-that-sleeps)
+was taken on the development machine's PostgreSQL 18.6. Aurora is 17.7, and an
+index-only scan depends on the visibility map, which depends on autovacuum having run.
+With demo data seeded:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM notifications WHERE user_id = '<a demo user>' AND read_at IS NULL;
+```
+
+Expect `Index Only Scan using ix_notifications_user_id_read_at` and `Heap Fetches: 0`.
+**`Heap Fetches` above zero is the thing to watch**: it means the visibility map is
+stale, the scan is touching the table, and the cheapest route in the application is not
+as cheap as it looks. `VACUUM ANALYZE notifications` and re-measure. If it recurs on a
+busy instance, that is the argument for a partial index
+(`ON notifications (user_id) WHERE read_at IS NULL`) rather than the composite one.
+
+There is no way to run this without a psql session, so it needs the ops path: add a
+read-only `explain` action, or take the measurement from a local database seeded to the
+same size and treat it as a lower bound.
+
+### 10.3 The poll does not keep Aurora awake — or, if it does, that is a decision
+
+Aurora Serverless v2 runs at `min_capacity = 0` and sleeps when idle. Every open browser
+tab asks for the unread count every thirty seconds, and TanStack Query stops the interval
+while the window is unfocused — but a tab that *is* focused, left open on somebody's
+second monitor, will hold the database awake indefinitely.
+
+Check it after a demo: leave one tab open and idle, then look at the ACU graph in
+RDS → Databases → the cluster → Monitoring. If capacity never returns to 0, this is why.
+
+Three ways out, in increasing order of effort: accept it (the cost of 0.5 ACU is small);
+raise `UNREAD_POLL_INTERVAL_MS`; or stop polling after a period of no interaction, which
+is a real feature and not a config change. **Nothing here is a bug** — it is a known
+consequence of a polled badge on a database that bills for being awake, recorded so that
+the graph does not come as a surprise.
+
+### 10.4 The notifications a demo generates are real, and the read rate starts at zero
+
+The `notifications` table starts empty on any database that already existed
+([D31](DECISION-LOG.md#d31--what-s1-deliberately-does-not-do-and-what-looking-at-it-found)
+explains why there is no backfill). So on first deploy:
+
+- every bell reads zero, which is correct and looks broken;
+- `/reports/communication`'s three new fields read `0`, `0` and `null` — **not** 0%, which
+  is the distinction the schema is careful about;
+- both fill in as soon as anybody uses the application.
+
+If the deployed database is seeded fresh with `seed_demo`, it gets demo notifications
+with it. If it is not, walk the demo script once before showing the dashboard: report a
+ticket, assign it, add a public note, resolve it. That produces one of each of the four
+kinds and puts a number on the tile.
+
+### 10.5 Known limitation to state rather than check: the badge does not announce itself
+
+There is no `aria-live` region on the bell, deliberately — a polite announcement every
+thirty seconds on every screen would interrupt whatever a screen-reader user was reading.
+The count is in the control's accessible name, so it is available on demand.
+
+The consequence is real and belongs with the other accessibility notes: a screen-reader
+user learns that something arrived when they next reach the bell, not when it arrives.
+If that is judged unacceptable, the fix is an `aria-live="polite"` region that announces
+**only on an increase** and only once per change — not a live region on the count itself,
+which would re-announce on every poll.
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
@@ -1524,6 +1615,10 @@ These are out of scope until the phase that introduces them:
   how they *sound* is not, and it is the one part of an accessibility pass no
   automated check substitutes for. Worth half an hour with a real screen reader
   before anybody calls this done.
+- **Whether a stale visibility map ever costs the unread count its index-only scan.**
+  10.2 says how to look; it cannot be looked at without a psql session against Aurora,
+  which the IAM boundary and `publicly_accessible = false` together prevent. Measured
+  locally, on a 200,000-row table, it was 3–4 shared buffers and `Heap Fetches: 0`.
 - **The 15-minute lockout window expiring in the cloud.** Locally the expiry is tested
   with an injected `now`, which is the right way to test it. Watching a real address
   unlock after fifteen real minutes is a stopwatch exercise; run it once if you want the

@@ -61,6 +61,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import notifications as notification_rules
 from app.clock import utc_now
 from app.models.building import Building
 from app.models.category import Category
@@ -76,6 +77,7 @@ from app.models.enums import (
     IncidentStatus,
     LocationDetail,
     NoteVisibility,
+    NotificationType,
     SeatType,
     UserRole,
 )
@@ -83,6 +85,7 @@ from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.security.passwords import hash_password
@@ -141,6 +144,7 @@ class DemoSeedResult:
     incidents: int = 0
     events: int = 0
     notes: int = 0
+    notifications: int = 0
     by_status: dict[str, int] = field(default_factory=dict)
     by_priority: dict[str, int] = field(default_factory=dict)
     by_category_group: dict[str, int] = field(default_factory=dict)
@@ -339,6 +343,19 @@ PATH_WEIGHTS: dict[str, float] = {
 STALLED_PATHS: frozenset[str] = frozenset(
     {"never_assigned", "assigned_not_started", "stalled", "stuck_blocked"}
 )
+
+#: What share of the demo world's notifications have been read.
+#:
+#: The number `/reports/communication` will report as the notification read
+#: rate, give or take the ones too recent to have been read yet. Deliberately
+#: neither 0 nor 100: both are useless on a dashboard, and a generator that
+#: produced either would make the tile impossible to tell from a broken query.
+NOTIFICATION_READ_SHARE = 0.62
+
+#: How long after arriving a notification tends to be read, in hours. Drawn
+#: uniformly; the point is only that `read_at` is after `created_at` and
+#: usually within a working day or two.
+NOTIFICATION_READ_DELAY_HOURS = (0.5, 40.0)
 
 #: How often the assignee writes the reporter a public note early on. Not
 #: every ticket: `/reports/communication` exists to measure how often the
@@ -885,6 +902,7 @@ def _seed_incidents(
 
     _link_duplicates(rng, plans, incidents, outcomes, specs)
     _write_events_and_notes(session, incidents, specs, result)
+    _write_notifications(session, rng, incidents, specs, result, world=world, now=now)
     _summarise(result, plans, incidents, world.engineers)
 
 
@@ -1606,6 +1624,162 @@ def _write_events_and_notes(
 
     session.add_all(rows)
     session.flush()
+
+
+#: Which `EventType` produces which notification, when replaying a timeline.
+#:
+#: Four kinds of event out of ten. The absences are the rules: CREATED,
+#: PRIORITY_CHANGED, ESCALATED, UNASSIGNED and MARKED_DUPLICATE notify nobody,
+#: which is decision D31 and not an oversight here.
+_NOTIFYING_EVENTS: dict[EventType, NotificationType] = {
+    EventType.STATUS_CHANGED: NotificationType.STATUS_CHANGED,
+    EventType.REOPENED: NotificationType.STATUS_CHANGED,
+    EventType.ASSIGNED: NotificationType.ASSIGNED,
+    EventType.ESCALATION_CLEARED: NotificationType.ESCALATION_CLEARED,
+}
+
+
+def _write_notifications(
+    session: Session,
+    rng: random.Random,
+    incidents: list[Incident],
+    specs: list[tuple[list[_EventSpec], list[_NoteSpec]]],
+    result: DemoSeedResult,
+    *,
+    world: _World,
+    now: datetime,
+) -> None:
+    """Build the demo inbox by replaying each ticket through the real rules.
+
+    **Deliberately not a second implementation of the policy.**
+    ``app/notifications.py`` decides who hears about what; this walks a
+    ticket's planned history in order, hands each moment to ``plan()``, and
+    writes whatever comes back. A demo world whose notifications disagreed
+    with the application's own rules would be worse than a demo world with no
+    notifications in it — a reviewer comparing the inbox to the timeline would
+    be shown a lie.
+
+    The replay is necessary because the rules read *state*: the message for a
+    status change names the status the ticket had reached at that moment, and
+    the message for an assignment names the engineer it went to. The finished
+    `Incident` row carries only the last of each. So a throwaway `Incident` is
+    built per step carrying the state as of that step — transient, never added
+    to the session, which is safe because `Incident.assignee` has no backref to
+    pull it in.
+
+    `read_at` is invented, like everything else in the demo world, and it is
+    the one column a backfill of a *real* database could not honestly produce
+    (D31). Here it is legitimate: the tickets are fictional too.
+    """
+    people = {person.id: person for person in [world.admin, *world.engineers, *world.employees]}
+    rows: list[Notification] = []
+
+    for incident, (events, notes) in zip(incidents, specs, strict=True):
+        assignee_id: uuid.UUID | None = None
+        status = IncidentStatus.OPEN
+
+        # One chronological stream. `sorted` is stable, so events and notes
+        # written at the same instant keep the order the planner put them in.
+        timeline: list[tuple[datetime, _EventSpec | _NoteSpec]] = sorted(
+            [(event.when, event) for event in events] + [(note.when, note) for note in notes],
+            key=lambda item: item[0],
+        )
+
+        for when, step in timeline:
+            if isinstance(step, _NoteSpec):
+                actor = people.get(step.author_id)
+                if actor is None:
+                    continue
+                note = IncidentNote(
+                    incident_id=incident.id,
+                    author_id=step.author_id,
+                    body=step.body,
+                    visibility=step.visibility,
+                )
+                snapshot = _snapshot(
+                    incident, status=status, assignee_id=assignee_id, people=people
+                )
+                planned = notification_rules.plan(
+                    NotificationType.NOTE_ADDED,
+                    notification_rules.NotificationContext(
+                        incident=snapshot, actor=actor, note=note
+                    ),
+                )
+            else:
+                if step.event_type in (EventType.STATUS_CHANGED, EventType.REOPENED):
+                    status = IncidentStatus(step.to_value) if step.to_value else status
+                elif step.event_type == EventType.ASSIGNED:
+                    assignee_id = uuid.UUID(step.to_value) if step.to_value else None
+                elif step.event_type == EventType.UNASSIGNED:
+                    assignee_id = None
+
+                notification_type = _NOTIFYING_EVENTS.get(step.event_type)
+                actor = people.get(step.actor_id) if step.actor_id else None
+                if notification_type is None or actor is None:
+                    continue
+                snapshot = _snapshot(
+                    incident, status=status, assignee_id=assignee_id, people=people
+                )
+                planned = notification_rules.plan(
+                    notification_type,
+                    notification_rules.NotificationContext(incident=snapshot, actor=actor),
+                )
+
+            rows.extend(
+                Notification(
+                    user_id=item.user_id,
+                    incident_id=incident.id,
+                    type=item.type,
+                    message=item.message,
+                    created_at=when,
+                    read_at=_read_at(rng, when, now=now),
+                )
+                for item in planned
+            )
+
+    session.add_all(rows)
+    session.flush()
+    result.notifications = len(rows)
+
+
+def _snapshot(
+    incident: Incident,
+    *,
+    status: IncidentStatus,
+    assignee_id: uuid.UUID | None,
+    people: dict[uuid.UUID, User],
+) -> Incident:
+    """Return a throwaway `Incident` carrying the state as of one moment.
+
+    Transient on purpose: never passed to `session.add`, and `Incident.assignee`
+    is a one-way many-to-one, so setting it cannot drag this object into the
+    session through a backref.
+    """
+    snapshot = Incident(
+        id=incident.id,
+        ticket_number=incident.ticket_number,
+        title=incident.title,
+        status=status,
+        reporter_id=incident.reporter_id,
+        assignee_id=assignee_id,
+    )
+    snapshot.assignee = people.get(assignee_id) if assignee_id else None
+    return snapshot
+
+
+def _read_at(rng: random.Random, sent_at: datetime, *, now: datetime) -> datetime | None:
+    """Decide whether and when this notification was read.
+
+    A notification is unread if the draw says so, and also if the moment it
+    would have been read has not arrived yet — which is what leaves the most
+    recent ones unread and gives the demo world a believable badge rather than
+    an inbox that is either wholly read or wholly not.
+    """
+    if rng.random() > NOTIFICATION_READ_SHARE:
+        return None
+    delay = timedelta(hours=rng.uniform(*NOTIFICATION_READ_DELAY_HOURS))
+    read_at = sent_at + delay
+    return read_at if read_at <= now else None
 
 
 def _summarise(
