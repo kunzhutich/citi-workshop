@@ -27,6 +27,19 @@ POSTGRES_NAME=acme_demo
 **Restart uvicorn afterwards.** Settings are cached per process; editing `.env` under a
 running server changes nothing, and `--reload` does not watch `.env`.
 
+> **The symptom, if you skip this.** Henry signs in fine and Eve and Nina are rejected
+> with "Incorrect email or password." Nothing is broken and the password is not wrong —
+> `henry@acme.inc` exists in *both* databases, and the rest of the cast only exists in
+> `acme_demo`. A rejected Eve means you are pointed at `acme_incidents_dev`.
+>
+> This is the most likely way to lose the first minute of a demo, and it is especially
+> easy to hit when a server from an earlier session is already running on :3000. Check
+> with:
+>
+> ```sh
+> grep POSTGRES_NAME backend/v1/.env
+> ```
+
 ```sh
 cd backend/v1 && .venv/bin/uvicorn app.main:app --reload --port 8000
 cd frontend   && npm run dev
