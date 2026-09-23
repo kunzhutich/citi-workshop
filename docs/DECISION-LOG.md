@@ -73,3 +73,38 @@ nothing merges to `main` until the owner has reviewed.
 **Why.** The owner's instruction, and it is the right call — `main` stays a known
 good state, and rejecting any phase rebases the ones above it rather than
 requiring a revert.
+
+## D4 — The development database has accumulated test data
+
+**Question.** `acme_incidents_dev` was left at a deliberate baseline after M5 —
+37 categories, one building/floor/eight seats, two admin accounts, zero
+incidents. After M6 it holds 87 users, 64 incidents, 22 notes, 181 events and
+56 engineer profiles: the residue of M6's Playwright runs and manual checks.
+The Playwright suite creates accounts and tickets in the development database
+by design, deactivating the accounts afterwards but not removing the tickets
+(`frontend/playwright.config.ts`, header comment).
+
+Should this be cleaned now, cleaned before M7, or left?
+
+**Chosen.** Leave it during M6 review; reset the database to a clean seeded
+baseline immediately before M7's `seed_demo` runs.
+
+**Why.** Two reasons to leave it now: the owner will review M6's screens, and
+screens with data in them are far more reviewable than empty ones; and deleting
+data while the phase is still being verified risks removing something a test
+depends on.
+
+One reason to reset before M7: `seed_demo` is specified to produce a coherent
+dataset — 3 buildings, 6 engineers across three levels, 30 employees, ~300
+incidents backdated over 90 days so the timing metrics mean something. Layering
+that on top of 64 arbitrary test tickets and 56 profiles would make every
+dashboard number a mix of designed data and detritus, which defeats the purpose
+of the M7 reports and makes them impossible to verify against expected values.
+
+**Reversible.** The reset is destructive to the development database only. No
+migration, no schema change, nothing in git. Re-running `migrate` plus
+`seed_demo` reproduces the result exactly.
+
+**Note for the owner.** If you want to review M6 with data before M7 resets it,
+do that first — or just review afterwards, when `seed_demo` will have produced
+a much better dataset to look at than this one.
