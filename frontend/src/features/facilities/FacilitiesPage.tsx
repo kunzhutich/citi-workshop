@@ -8,6 +8,7 @@ import Chip from '@mui/material/Chip';
 import Collapse from '@mui/material/Collapse';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -166,13 +167,13 @@ export function FacilitiesPage() {
                     expanded={building.id === expandedBuildingId}
                     selectedFloorId={selectedFloorId}
                     onToggle={() =>
-                      setExpandedBuildingId(
-                        building.id === expandedBuildingId ? null : building.id,
-                      )
+                      setExpandedBuildingId(building.id === expandedBuildingId ? null : building.id)
                     }
                     onSelectFloor={setSelectedFloorId}
                     onEdit={() => setDialog({ kind: 'building', building })}
-                    onAddFloor={() => setDialog({ kind: 'floor', buildingId: building.id, floor: null })}
+                    onAddFloor={() =>
+                      setDialog({ kind: 'floor', buildingId: building.id, floor: null })
+                    }
                     onRemove={() => void remove(() => deleteBuilding.mutateAsync(building.id))}
                   />
                 ))}
@@ -183,7 +184,9 @@ export function FacilitiesPage() {
               {selectedFloor ? (
                 <SeatPane
                   floor={selectedFloor}
-                  onAddSeat={() => setDialog({ kind: 'seat', floorId: selectedFloor.id, seat: null })}
+                  onAddSeat={() =>
+                    setDialog({ kind: 'seat', floorId: selectedFloor.id, seat: null })
+                  }
                   onBulkAdd={() =>
                     setDialog({
                       kind: 'bulk-seats',
@@ -198,9 +201,7 @@ export function FacilitiesPage() {
                       floor: selectedFloor,
                     })
                   }
-                  onRemoveFloor={() =>
-                    void remove(() => deleteFloor.mutateAsync(selectedFloor.id))
-                  }
+                  onRemoveFloor={() => void remove(() => deleteFloor.mutateAsync(selectedFloor.id))}
                   onEditSeat={(seat) =>
                     setDialog({ kind: 'seat', floorId: selectedFloor.id, seat })
                   }
@@ -280,9 +281,7 @@ export function FacilitiesPage() {
           onClose={close}
           floorName={dialog.floorName}
           isSubmitting={bulkCreateSeats.isPending}
-          onSubmit={(payload) =>
-            bulkCreateSeats.mutateAsync({ floorId: dialog.floorId, payload })
-          }
+          onSubmit={(payload) => bulkCreateSeats.mutateAsync({ floorId: dialog.floorId, payload })}
         />
       ) : null}
     </Box>
@@ -312,7 +311,14 @@ function BuildingBranch({
   onRemove,
 }: BuildingBranchProps) {
   return (
-    <>
+    /*
+      One building is one `<li>`, holding its own button and its own nested
+      list. Both used to be direct children of the outer `<ul>` — a `<button>`
+      and a `<div>` — which is invalid, and which a screen reader may answer by
+      not announcing the list or its item count at all. The nesting now matches
+      the meaning: a building, and inside it its floors.
+    */
+    <ListItem disablePadding sx={{ display: 'block' }}>
       <ListItemButton onClick={onToggle} sx={{ borderRadius: 1 }}>
         <ListItemIcon sx={{ minWidth: 36 }}>
           <ApartmentIcon fontSize="small" />
@@ -327,40 +333,43 @@ function BuildingBranch({
       <Collapse in={expanded} unmountOnExit>
         <List disablePadding sx={{ pl: 3 }}>
           {building.floors.map((floor) => (
-            <ListItemButton
-              key={floor.id}
-              selected={floor.id === selectedFloorId}
-              onClick={() => onSelectFloor(floor.id)}
-              sx={{ borderRadius: 1 }}
-            >
-              <ListItemIcon sx={{ minWidth: 36 }}>
-                <LayersIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary={floor.name}
-                secondary={`${floor.seats.length} ${floor.seats.length === 1 ? 'place' : 'places'}`}
-              />
-              {!floor.is_active ? <Chip size="small" label="Off" /> : null}
-            </ListItemButton>
+            <ListItem key={floor.id} disablePadding sx={{ display: 'block' }}>
+              <ListItemButton
+                selected={floor.id === selectedFloorId}
+                onClick={() => onSelectFloor(floor.id)}
+                sx={{ borderRadius: 1 }}
+              >
+                <ListItemIcon sx={{ minWidth: 36 }}>
+                  <LayersIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary={floor.name}
+                  secondary={`${floor.seats.length} ${floor.seats.length === 1 ? 'place' : 'places'}`}
+                />
+                {!floor.is_active ? <Chip size="small" label="Off" /> : null}
+              </ListItemButton>
+            </ListItem>
           ))}
 
           {/* Named in full. These sit under the floor list, so "Edit" alone
               reads as editing the floor above it rather than the building
               they belong to. */}
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, px: 1, py: 1 }}>
-            <Button size="small" startIcon={<AddIcon />} onClick={onAddFloor}>
-              Add floor
-            </Button>
-            <Button size="small" onClick={onEdit}>
-              Edit building
-            </Button>
-            <Button size="small" color="warning" onClick={onRemove}>
-              Remove building
-            </Button>
-          </Box>
+          <ListItem disablePadding sx={{ display: 'block' }}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, px: 1, py: 1 }}>
+              <Button size="small" startIcon={<AddIcon />} onClick={onAddFloor}>
+                Add floor
+              </Button>
+              <Button size="small" onClick={onEdit}>
+                Edit building
+              </Button>
+              <Button size="small" color="warning" onClick={onRemove}>
+                Remove building
+              </Button>
+            </Box>
+          </ListItem>
         </List>
       </Collapse>
-    </>
+    </ListItem>
   );
 }
 

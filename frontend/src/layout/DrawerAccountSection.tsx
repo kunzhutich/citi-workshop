@@ -3,6 +3,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import Avatar from '@mui/material/Avatar';
 import Box from '@mui/material/Box';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -62,26 +63,32 @@ export function DrawerAccountSection({ user, onNavigate }: DrawerAccountSectionP
         </Box>
       </Stack>
 
+      {/* `ListItem` wrappers: a `ListItemButton` is a `<button>` or an `<a>`,
+          and neither is a legal direct child of the `<ul>` a `List` renders. */}
       <List disablePadding sx={{ px: 1.5, pb: 1.5 }}>
-        <ListItemButton
-          onClick={() => {
-            onNavigate();
-            void navigate(paths.changePassword);
-          }}
-          sx={{ borderRadius: 1.5 }}
-        >
-          <ListItemIcon sx={{ minWidth: 40 }}>
-            <LockResetIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText primary="Change password" />
-        </ListItemButton>
+        <ListItem disablePadding sx={{ display: 'block' }}>
+          <ListItemButton
+            onClick={() => {
+              onNavigate();
+              void navigate(paths.changePassword);
+            }}
+            sx={{ borderRadius: 1.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              <LockResetIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Change password" />
+          </ListItemButton>
+        </ListItem>
 
-        <ListItemButton onClick={() => void handleSignOut()} sx={{ borderRadius: 1.5 }}>
-          <ListItemIcon sx={{ minWidth: 40 }}>
-            <LogoutIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText primary="Log out" />
-        </ListItemButton>
+        <ListItem disablePadding sx={{ display: 'block' }}>
+          <ListItemButton onClick={() => void handleSignOut()} sx={{ borderRadius: 1.5 }}>
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              <LogoutIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Log out" />
+          </ListItemButton>
+        </ListItem>
       </List>
     </Box>
   );

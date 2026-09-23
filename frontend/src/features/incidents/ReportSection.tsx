@@ -31,7 +31,14 @@ export function ReportSection({ step, question, action, children }: ReportSectio
         }}
       >
         <Typography variant="h2" component="h2">
-          <Box component="span" sx={{ color: 'text.disabled', mr: 1 }}>
+          {/*
+            `text.secondary`, not `text.disabled`. The number is part of the
+            heading a screen reader reads out ("1. What kind of problem is
+            it?") and part of what makes the form legible as a sequence — it
+            is not disabled, it was only drawn as if it were. At 21.6px,
+            `text.disabled` is 2.64:1 against the page; this is 5.63:1.
+          */}
+          <Box component="span" sx={{ color: 'text.secondary', mr: 1 }}>
             {step}.
           </Box>
           {question}

@@ -10,6 +10,7 @@ import Drawer from '@mui/material/Drawer';
 import Fab from '@mui/material/Fab';
 import IconButton from '@mui/material/IconButton';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -95,25 +96,33 @@ export function AppShell() {
         {reportNavItem.label}
       </Button>
       <Divider sx={{ mb: 1 }} />
+      {/*
+        `ListItem` wrappers are not decoration. A `ListItemButton` rendered as
+        a router link is an `<a>`, and an `<a>` as a direct child of a `<ul>`
+        is invalid — axe flags it as a serious `list` violation, and a screen
+        reader may not announce the list or its item count at all. The
+        `<li>` is what makes "6 items, item 2 of 6" possible.
+      */}
       <List disablePadding>
         {items.map((item) => (
-          <ListItemButton
-            key={item.path}
-            component={RouterLink}
-            to={item.path}
-            selected={item.path === activePath}
-            // `selected` is styling; this is the fact. Without it the current
-            // page is signalled by a background colour alone, which is exactly
-            // the channel a screen reader does not have.
-            aria-current={item.path === activePath ? 'page' : undefined}
-            onClick={() => setDrawerOpen(false)}
-            sx={{ borderRadius: 1.5, mb: 0.5 }}
-          >
-            <ListItemIcon sx={{ minWidth: 40 }}>
-              <item.icon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText primary={item.label} />
-          </ListItemButton>
+          <ListItem key={item.path} disablePadding sx={{ display: 'block' }}>
+            <ListItemButton
+              component={RouterLink}
+              to={item.path}
+              selected={item.path === activePath}
+              // `selected` is styling; this is the fact. Without it the
+              // current page is signalled by a background colour alone, which
+              // is exactly the channel a screen reader does not have.
+              aria-current={item.path === activePath ? 'page' : undefined}
+              onClick={() => setDrawerOpen(false)}
+              sx={{ borderRadius: 1.5, mb: 0.5 }}
+            >
+              <ListItemIcon sx={{ minWidth: 40 }}>
+                <item.icon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary={item.label} />
+            </ListItemButton>
+          </ListItem>
         ))}
       </List>
     </Box>

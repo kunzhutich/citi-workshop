@@ -5,6 +5,7 @@ import Chip from '@mui/material/Chip';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import Typography from '@mui/material/Typography';
 import { useState } from 'react';
@@ -109,7 +110,9 @@ export function AssignDialog({
               <EngineerRow
                 key={engineer.user_id}
                 engineer={engineer}
-                isSpecialtyMatch={Boolean(groupId && engineer.specialty_group_ids.includes(groupId))}
+                isSpecialtyMatch={Boolean(
+                  groupId && engineer.specialty_group_ids.includes(groupId),
+                )}
                 isCurrent={engineer.user_id === currentAssigneeId}
                 disabled={isSubmitting}
                 onSelect={() => void assign(engineer.user_id)}
@@ -154,24 +157,28 @@ function EngineerRow({
   onSelect,
 }: EngineerRowProps) {
   return (
-    <ListItemButton
-      onClick={onSelect}
-      disabled={disabled || isCurrent}
-      selected={isCurrent}
-      sx={{ borderRadius: 1, mb: 0.5, alignItems: 'flex-start', gap: 2 }}
-    >
-      <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
-          <Typography variant="subtitle2">{engineer.full_name}</Typography>
-          <Chip size="small" variant="outlined" label={levelLabel(engineer.level)} />
-          {isSpecialtyMatch ? <Chip size="small" color="success" label="Specialty" /> : null}
-          {isCurrent ? <Chip size="small" color="primary" label="Assigned" /> : null}
+    // The `ListItem` wrapper is what keeps the `<ul>` legal: a `ListItemButton`
+    // renders a `<button>`, which is not an allowed direct child of a list.
+    <ListItem disablePadding sx={{ display: 'block' }}>
+      <ListItemButton
+        onClick={onSelect}
+        disabled={disabled || isCurrent}
+        selected={isCurrent}
+        sx={{ borderRadius: 1, mb: 0.5, alignItems: 'flex-start', gap: 2 }}
+      >
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
+            <Typography variant="subtitle2">{engineer.full_name}</Typography>
+            <Chip size="small" variant="outlined" label={levelLabel(engineer.level)} />
+            {isSpecialtyMatch ? <Chip size="small" color="success" label="Specialty" /> : null}
+            {isCurrent ? <Chip size="small" color="primary" label="Assigned" /> : null}
+          </Box>
+          <Typography variant="caption" color="text.secondary">
+            {availabilityLabel(engineer.availability)}
+          </Typography>
         </Box>
-        <Typography variant="caption" color="text.secondary">
-          {availabilityLabel(engineer.availability)}
-        </Typography>
-      </Box>
-      <CapacityBar active={engineer.active_ticket_count} max={engineer.max_active_tickets} />
-    </ListItemButton>
+        <CapacityBar active={engineer.active_ticket_count} max={engineer.max_active_tickets} />
+      </ListItemButton>
+    </ListItem>
   );
 }

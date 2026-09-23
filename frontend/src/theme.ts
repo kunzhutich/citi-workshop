@@ -17,6 +17,42 @@ export const theme = createTheme({
     primary: { main: '#1f3a93' },
     secondary: { main: '#6d28d9' },
     background: { default: '#f4f6fa', paper: '#ffffff' },
+
+    /*
+     * The status palette, pinned and contrast-checked.
+     *
+     * These four were Material UI's defaults until S6, when an axe run over
+     * the ticket list found the OPEN chip failing: white on `#0288d1` is
+     * 3.86:1, and a 13px chip label needs 4.5:1. `warning` was worse at 3.11.
+     * `chartPalette.ts` had been validated since M7; this half of the palette
+     * never had been, because it was never written down — it was whatever the
+     * library shipped.
+     *
+     * One number decides both variants. A filled chip is white text on the
+     * colour and an outlined chip is the colour on white, so both are the
+     * colour's contrast against white, and one check covers both.
+     *
+     * **Checked against two backgrounds, not one.** The first attempt at this
+     * used `#0277bd`, which is 4.80 against white and passes — and 4.43
+     * against `background.default` (#f4f6fa), which does not. An outlined chip
+     * sits on the page as often as on a card, so both surfaces have to clear
+     * the bar. That second number is what axe caught, on the ticket detail
+     * page, after the first fix.
+     *
+     *              vs #ffffff   vs #f4f6fa
+     *   info     #026da8   5.59       5.17   (was #0288d1: 3.86 / 3.56)
+     *   warning  #b45309   5.02       4.64   (was #ed6c02: 3.11 / 2.87)
+     *   success  #2e7d32   5.13       4.75   (unchanged; already passed)
+     *   error    #d32f2f   4.98       4.61   (unchanged; already passed)
+     *
+     * The two that passed are pinned anyway, so that a library upgrade cannot
+     * quietly move them and so this comment can say what was measured rather
+     * than what was changed.
+     */
+    info: { main: '#026da8' },
+    warning: { main: '#b45309' },
+    success: { main: '#2e7d32' },
+    error: { main: '#d32f2f' },
   },
   typography: {
     // Roboto and Inter are both self-hosted in `fonts.ts`. Roboto is first, so
@@ -84,6 +120,28 @@ export const theme = createTheme({
       // Every form in the app uses the same field shape; screens opt out
       // explicitly rather than each one opting in.
       defaultProps: { fullWidth: true, size: 'medium' },
+    },
+    MuiFormHelperText: {
+      styleOverrides: {
+        root: ({ theme: current }) => ({
+          /*
+           * Helper text stays readable while its field is disabled.
+           *
+           * Material UI greys it to `text.disabled`, which is 2.64:1 against
+           * the page — and on the report questionnaire the disabled field's
+           * helper text is "Choose a building first". The sentence telling you
+           * how to enable the control is the one you need most while the
+           * control is disabled, and it was the least readable text on the
+           * form. `text.secondary` is 5.63:1.
+           *
+           * Scoped to helper text deliberately. A disabled *control* should
+           * still look disabled — WCAG exempts it, and making one look
+           * available when it is not is a worse problem than a faint label.
+           * This is instruction text that merely happens to live inside one.
+           */
+          '&.Mui-disabled': { color: current.palette.text.secondary },
+        }),
+      },
     },
     MuiCard: {
       defaultProps: { variant: 'outlined' },
