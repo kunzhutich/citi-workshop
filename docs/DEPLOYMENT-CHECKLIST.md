@@ -863,22 +863,187 @@ means the S3 sync deleted the old asset before the invalidation landed; re-run t
 
 ---
 
+## M6 — Persona screens
+
+As with M5, `CF` is the distribution domain and the frontend has been deployed:
+
+```sh
+./bin/deploy-frontend.sh
+CF=$(cd infra && terraform output -raw cloudfront_distribution_url)
+```
+
+### 6.1 The questionnaire's two reference trees load behind CloudFront
+
+**Why it needs the cloud.** The report form cannot render until both
+`GET /api/v1/categories` and `GET /api/v1/facilities/tree` answer. Both are
+unpaginated whole-collection responses — 37 categories, and every building, floor and
+seat — which locally are a few kilobytes and instant. In the cloud they are the first
+two requests a signed-in employee makes, against a possibly-cold Lambda and a possibly
+sleeping Aurora, and the facility tree grows with the estate rather than with a page
+size.
+
+Sign in as an employee and open `https://$CF/report`.
+
+✅ **Correct result:** the five group cards appear with their icons and hints. Choosing
+one reveals its subcategories; choosing a subcategory reveals the location fields that
+group requires.
+❌ A spinner that never resolves, or "Could not load the categories and locations this
+form needs", means one of the two calls failed — check which in devtools before
+assuming it is the form.
+
+Then measure them, because they are the responses most likely to outgrow their shape:
+
+```sh
+curl -s -o /dev/null -w '%{size_download} bytes  %{time_total}s\n' \
+  -H "Authorization: Bearer $TOKEN" "https://$CF/api/v1/facilities/tree"
+```
+
+✅ Expect a few kilobytes and well under a second once warm. ❌ Hundreds of kilobytes
+means the estate has grown past what an unpaginated tree should carry, and the location
+picker needs to load lazily per building — worth knowing before it becomes a symptom.
+
+### 6.2 Repeatable filter parameters survive the distribution *from the browser*
+
+**Why it needs the cloud.** [4.4](#44-repeatable-query-parameters-survive-cloudfront)
+proved CloudFront forwards `?status=OPEN&status=BLOCKED` when curl sends it. What it did
+not cover is that the **browser** now generates that shape: axios would serialise
+`status[]=OPEN` by default, which FastAPI ignores silently, and `paramsSerializer:
+{ indexes: null }` in `api/client.ts` is what prevents it. A misconfigured CloudFront
+cache policy that drops or reorders query strings would produce the same symptom.
+
+Open `https://$CF/tickets?status=OPEN&status=BLOCKED` and watch the request in devtools.
+
+✅ **Correct result:** the request URL contains `status=OPEN&status=BLOCKED`, and the
+list shows only open and blocked tickets. The status filter reads "Open, Blocked".
+❌ Every ticket regardless of status means the parameters were dropped or renamed. Check
+the outgoing request first: if it says `status[]=`, the client is at fault; if it says
+`status=` and the list is still unfiltered, CloudFront is not forwarding the query
+string to the Lambda origin.
+
+### 6.3 A deep link to one ticket opens it
+
+**Why it needs the cloud.** [1.4](#14-the-spa-cloudfront-function-does-not-touch-the-api)
+and [5.1](#51-a-deep-link-into-a-guarded-route-restores-the-session) cover
+extension-less paths and two-segment routes. A ticket's URL is a third shape:
+`/tickets/0d93156a-fb89-4eda-9fe7-6e2f982c3c35`, whose last segment contains hyphens and
+digits and is the sort of thing a naive "does it look like a file?" rewrite gets wrong.
+
+Report a ticket, copy its URL, and paste it into a fresh private window.
+
+✅ **Correct result:** the login screen, and after signing in, that ticket — not the home
+page.
+❌ A CloudFront 404 or an XML error document means the SPA function did not rewrite the
+path. ❌ Landing on `/` means the navigation state was lost; that is 5.1's problem, not
+this one.
+
+### 6.4 `allowed-transitions` drives the buttons against the real API
+
+**Why it needs the cloud.** This is the rubric's central requirement and the one place
+the frontend is forbidden its own copy of a rule. Locally it is exercised by the
+Playwright suite; in the cloud the question is whether the same three responses arrive
+through the distribution, uncached and per-user. **A cached
+`/api/v1/incidents/*/allowed-transitions` would be a correctness failure, not a
+performance one:** one user's buttons served to another.
+
+With the same ticket open in two browsers — the reporter in one, the assigned engineer
+in the other, both on a RESOLVED ticket:
+
+✅ **Correct result:** the reporter sees **Confirm fixed** and **Still broken**; the
+engineer sees **Close ticket**. Both are on the same URL.
+❌ Both seeing the same buttons means the response is being cached. Confirm with the
+response headers:
+
+```sh
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  "https://$CF/api/v1/incidents/$INCIDENT_ID/allowed-transitions" | grep -i 'x-cache\|cache-control'
+```
+
+✅ Expect `X-Cache: Miss from cloudfront` on every request. ❌ `Hit from cloudfront` on
+the `/api/v1*` behaviour means the cache policy needs to be disabled for it.
+
+### 6.5 Creating an engineer shows the temporary password once
+
+**Why it needs the cloud.** [3.4](#34-post-engineers-hashes-a-password-inside-the-lambda)
+proves the Lambda can hash a password at bcrypt cost 12 within its timeout. What this
+adds is the round trip a person makes: the admin screen must show the generated password
+before the response is discarded, and that account must then be able to sign in.
+
+As an admin at `https://$CF/engineers`, add an engineer.
+
+✅ **Correct result:** a dialog with the password in a monospaced face and a copy button,
+and the warning that it is shown once. Sign out, sign in as that engineer with it, and
+land on the forced change-password screen. Complete it and the engineer's own screens
+open.
+❌ A long pause and then a 502 means bcrypt exceeded the Lambda timeout — see 3.4.
+❌ A dialog with no password means the response shape changed.
+
+### 6.6 Bulk seat creation survives the request path
+
+**Why it needs the cloud.** Every other write in this application is a small JSON body.
+`POST /floors/{id}/seats/bulk` accepts up to 500 codes, which is the largest request the
+application can make, and it travels through CloudFront to a Lambda Function URL rather
+than to a local uvicorn.
+
+At `https://$CF/facilities`, pick a floor, choose **Add many**, and paste 200 codes.
+
+✅ **Correct result:** the dialog reports how many were added and how many already
+existed, and stays open so the report can be read. The seats appear in the table behind
+it.
+❌ A 413 means a body-size limit somewhere on the path. ❌ A timeout means the single
+INSERT is slower against Aurora than expected — re-run with 500 to find the ceiling, and
+record it.
+
+### 6.7 The first list query after an idle period
+
+**Why it needs the cloud.** [1.6](#16-aurora-cold-start) and
+[3.6](#36-first-request-latency-on-a-cold-aurora) measure a cold Aurora through curl.
+This is the same wake-up seen from the interface, where it is a spinner rather than a
+number, and where TanStack Query's `retry: 1` may quietly turn one slow request into two.
+
+Leave the deployed app idle for ~15 minutes, then open `https://$CF/tickets`.
+
+✅ **Correct result:** the loading state holds for up to ~25 s and then the table
+renders. Exactly one `GET /api/v1/incidents` in the network panel.
+❌ Two requests means the first timed out and the retry succeeded, which is survivable
+but worth knowing. ❌ "Could not load these tickets" means the retry failed too.
+
+### 6.8 Run the end-to-end suite against the deployed stack
+
+**Why it needs the cloud.** The Playwright suite is written against a base URL, so it can
+be pointed at CloudFront — which turns the whole of M6 into one command, executed by a
+real browser against the real distribution, the real Lambda and Aurora.
+
+**Read this before running it.** The suite **creates accounts and tickets** in whatever
+database it is pointed at, through the API. It never drops or truncates anything, and it
+deactivates the accounts it made on the way out, but the tickets stay. Run it against a
+demo environment, not one being graded live.
+
+```sh
+cd frontend
+E2E_BASE_URL="https://$CF" \
+E2E_ADMIN_EMAIL="admin@acme.inc" \
+E2E_ADMIN_PASSWORD="<the seed_admin password, already changed>" \
+  npx playwright test
+```
+
+✅ **Correct result:** 12 passed, 2 skipped, the same as locally.
+❌ Timeouts on the first test are most likely a cold Aurora — the config allows 90 s per
+test, which is generous locally and may not be after a 15-minute idle. Warm it with a
+`curl https://$CF/api/v1/health` first and re-run before investigating anything else.
+❌ A failure in `responsive.spec.ts` but not in `lifecycle.spec.ts` points at the
+delivered CSS rather than the API — check 5.6 and 5.7.
+
+---
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
 
 - `seed_demo` and its production guard — M7.
 - Report endpoint performance against a realistic row count — M7.
-- End-to-end lifecycle through the deployed UI with three accounts — M6.
-- A real-browser end-to-end test of any kind. The M5 frontend suite runs in jsdom, which
-  has no layout engine, so the 375 / 768 / 1440 px assertions prove the *decision* the
-  shell makes and not that the result looks right at those widths. Every item in this
-  section that says "in a browser" is currently a manual check. Playwright is the fix and
-  M6 is the natural time, when there is a full lifecycle worth walking.
-- The admin screens for facilities, categories, engineers and users — M6. M3 ships the
-  endpoints they call; until then the checks above are the only way to exercise them
-  against the deployed stack.
-- The report questionnaire, the incident detail page and `WorkflowStepper` — M6. M4 ships
-  the endpoints behind them, including `allowed-transitions`, which is the one the UI is
-  required to render its buttons from. 4.5 is the only way to exercise the workflow
-  against the deployed stack until then.
+- The three persona home pages and the admin dashboard — M7. M6 ships every other screen;
+  `/` is still a placeholder naming the phase, because the counts and charts on it come
+  from report endpoints M7 builds.
+- Anything depending on a realistic row count — M7's `seed_demo`. The deployed database
+  currently holds whatever has been reported by hand, so 6.7's timings and 4.7's query
+  plan are measured against tens of rows rather than hundreds.

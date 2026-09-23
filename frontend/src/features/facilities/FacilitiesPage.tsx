@@ -212,7 +212,7 @@ export function FacilitiesPage() {
               ) : (
                 <EmptyState
                   title="Pick a floor"
-                  description="Expand a building on the left and choose a floor to see its desks and rooms."
+                  description="Choose a building, then a floor, to see its desks and rooms."
                 />
               )}
             </Box>
@@ -344,15 +344,18 @@ function BuildingBranch({
             </ListItemButton>
           ))}
 
+          {/* Named in full. These sit under the floor list, so "Edit" alone
+              reads as editing the floor above it rather than the building
+              they belong to. */}
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, px: 1, py: 1 }}>
             <Button size="small" startIcon={<AddIcon />} onClick={onAddFloor}>
-              Floor
+              Add floor
             </Button>
             <Button size="small" onClick={onEdit}>
-              Edit
+              Edit building
             </Button>
             <Button size="small" color="warning" onClick={onRemove}>
-              Remove
+              Remove building
             </Button>
           </Box>
         </List>

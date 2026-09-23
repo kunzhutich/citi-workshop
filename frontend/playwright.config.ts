@@ -3,9 +3,9 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * End-to-end tests, in a real browser, over real HTTP.
  *
- * The 112 Vitest tests run in jsdom, which has no layout engine: they can
- * prove that `useBreakpoint` *decides* "mobile" at 375px, but not that
- * anything is laid out correctly at 375px, because nothing is laid out at all.
+ * The Vitest suite runs in jsdom, which has no layout engine: it can prove
+ * that `useBreakpoint` *decides* "mobile" at 375px, but not that anything is
+ * laid out correctly at 375px, because nothing is laid out at all.
  * Three defects in this project so far were visible only when the app was
  * driven over HTTP rather than through a test client, and M5 recorded the
  * absence of real-browser testing as a known gap to close here.

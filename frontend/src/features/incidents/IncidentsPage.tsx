@@ -1,4 +1,3 @@
-import AddIcon from '@mui/icons-material/Add';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import TablePagination from '@mui/material/TablePagination';
@@ -70,15 +69,15 @@ export function IncidentsPage({
 
   return (
     <Box>
-      <PageHeader
-        title={title}
-        description={description}
-        actions={
-          <Button component={RouterLink} to={paths.report} variant="contained" startIcon={<AddIcon />}>
-            Report an issue
-          </Button>
-        }
-      />
+      {/*
+        No "Report an issue" button here. The shell's navigation already leads
+        with one on every screen, and on a phone employees also have the FAB —
+        a third copy on the list header would be the same action three times
+        in one viewport. The empty state below still offers it, which is where
+        it genuinely helps: "you have reported nothing yet" is the moment to
+        put the button in front of someone.
+      */}
+      <PageHeader title={title} description={description} />
 
       <IncidentFilterBar controls={controls} />
 

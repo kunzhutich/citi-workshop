@@ -93,10 +93,12 @@ The app opens at the sign-in screen. Two ways in:
   `must_change_password`, so the first sign-in goes straight to a change-password screen
   and offers no way past it. That is the gate working, not a fault.
 
-`npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod`,
-`@hookform/resolvers`, `@fontsource/inter` and `@fontsource/roboto` (both typefaces are
-self-hosted and bundled, not fetched from a CDN; Roboto renders and Inter is the
-fallback).
+`npm install` again after pulling this phase. M6 adds `@playwright/test` and
+`@types/node`, both development-only — the application itself gained no runtime
+dependency. (M5 added `react-hook-form`, `zod`, `@hookform/resolvers`,
+`@fontsource/inter` and `@fontsource/roboto`; both typefaces are self-hosted and
+bundled rather than fetched from a CDN, with Roboto rendering and Inter as the
+fallback.)
 
 ### 5. Run the checks
 
@@ -106,10 +108,10 @@ cd backend/v1
 .venv/bin/python -m pytest
 
 cd ../frontend
-npm run lint && npm test
+npm run lint && npm run typecheck && npm test
 ```
 
-As of M5: **606 backend tests** and **112 frontend tests**, all passing. The backend
+As of M6: **607 backend tests** and **199 frontend tests**, all passing. The backend
 suite takes about five minutes, most of it bcrypt hashing at cost 12.
 
 The backend suite needs the same PostgreSQL server. It creates its own database
@@ -125,6 +127,38 @@ once, give the second its own:
 POSTGRES_TEST_NAME=acme_incidents_mine .venv/bin/python -m pytest
 ```
 
+### 6. Run the end-to-end tests
+
+M6 adds a Playwright suite that drives a real browser against the running stack. jsdom
+has no layout engine, so the Vitest tests can prove what the shell *decides* at 375 px
+but not that anything is laid out there; these can.
+
+```sh
+cd frontend
+npx playwright install chromium   # once
+npm run test:e2e                  # or: npm run test:e2e:ui
+```
+
+**It uses your development database.** Unlike the pytest suite, which drops and
+recreates its own, this one creates accounts and tickets through the API — with a unique
+suffix per run — and deactivates the accounts afterwards. It never drops or truncates
+anything, and the tickets it reports are left behind as ordinary data.
+
+It needs an admin account to create engineers with. The defaults are `admin@acme.inc`
+and the password you set at step 3's first sign-in; override them if yours differ:
+
+```sh
+E2E_ADMIN_EMAIL=you@acme.inc E2E_ADMIN_PASSWORD='...' npm run test:e2e
+E2E_BASE_URL=https://example.cloudfront.net npm run test:e2e   # against a deployment
+```
+
+The config starts uvicorn and Vite if they are not already running, and reuses them if
+they are — so this works whether or not step 4's two terminals are open.
+
+Twelve tests across two viewports, 1440×900 and 375×812: one ticket's whole lifecycle
+with three accounts signed in at once, the same workflow reached by assignment rather
+than pick-up, and the layout assertions jsdom cannot make.
+
 ### Troubleshooting
 
 | Symptom | Cause |
@@ -137,6 +171,10 @@ POSTGRES_TEST_NAME=acme_incidents_mine .venv/bin/python -m pytest
 | Signing in lands on a change-password screen with no way out | Working as designed for a seeded or admin-created account: `must_change_password` is set, and the API answers 403 `PASSWORD_CHANGE_REQUIRED` everywhere outside `/auth` until it is cleared. Complete the form. |
 | The app sits on "Restoring your session…" | The first request of a page load is `POST /api/v1/auth/refresh`. Locally that is instant, so a hang means uvicorn is not running or the Vite proxy is not reaching it — check `curl localhost:3000/api/v1/health`. |
 | `Failed to resolve import "zod"` or `"react-hook-form"` | M5 added three frontend dependencies. Run `npm install` in `frontend/`. |
+| `browserType.launch: Executable doesn't exist` | Playwright's browser is downloaded separately from its package. Run `npx playwright install chromium` in `frontend/`. |
+| An end-to-end test fails with `Could not sign in as admin@acme.inc` | The suite needs an admin to create engineers with. Seed one (step 3) or set `E2E_ADMIN_EMAIL` and `E2E_ADMIN_PASSWORD`. |
+| A status or priority filter appears to do nothing | The repeatable parameter is being sent as `status[]=`. `api/client.ts` sets `paramsSerializer: { indexes: null }`; check it survived. |
+| A new file under `frontend/src/` is invisible to `git add` | The scaffold's `.gitignore` blocks any directory named `lib` (line 18, meant for Python build output). The presentation helpers live in `src/display/` for this reason. |
 
 ## Coding Workshop Example
 

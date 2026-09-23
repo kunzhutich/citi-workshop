@@ -2942,6 +2942,9 @@ HTTP path was verified with curl through the Vite proxy rather than with a brows
 BUILD-PLAN section 14 allows this gap to be documented rather than closed; closing it
 means Playwright, and the natural time is M6 when there is a full lifecycle to walk.
 
+*(M6 closed it. The first browser run found a defect every jsdom test had passed — see
+that phase's gotchas.)*
+
 ### 7. Glossary
 
 **SPA (single-page application)** — the server sends one HTML file and the JavaScript
@@ -3055,3 +3058,939 @@ has, since it has no stylesheets.
 
 **FAB (floating action button)** — the round button pinned above the mobile bottom bar.
 Here it opens "Report an issue" for employees.
+
+---
+
+## Phase M6 — Persona screens
+
+M5 built the frame and left every navigation item pointing at a placeholder. M6 fills
+them: the report questionnaire, the incident detail page every persona shares, the four
+ticket lists, and the four screens a facility admin maintains the system from.
+
+It also closes the gap M5 recorded. M5's 112 Vitest tests run in jsdom, which has no
+layout engine — they can prove what `useBreakpoint` *decides* at 375 px but not that
+anything is laid out at 375 px, because nothing is laid out at all. This phase adds
+Playwright, and the first thing it found was a defect that only exists in a browser.
+
+**Verified against local PostgreSQL only.** 199 frontend tests (up from 112), 607
+backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
+What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+### 0. The carry-over: a column nothing could read
+
+[BUILD-PLAN section 7](BUILD-PLAN.md) asks the report questionnaire to pre-fill the
+location from where you last reported something, and M4 implemented the half of that
+which lives in the database. `services/incident_service.py` has kept three columns
+current on every successful create since then:
+
+```python
+reporter.last_building_id = building.id
+reporter.last_floor_id = floor.id if floor is not None else None
+reporter.last_seat_id = seat.id if seat is not None else None
+```
+
+`tests/integration/test_incidents.py` asserted it, and the assertion passed, because it
+read the columns straight off the ORM object:
+
+```python
+db_session.refresh(employee)
+assert employee.last_building_id == building.id
+```
+
+What no test asked was whether a **client** could see them — and none could. `UserRead`
+does not carry them, `CurrentUserRead` inherits from `UserRead`, and `/auth/me` returns
+`CurrentUserRead`. Three columns were written on every report, for a feature whose only
+consumer had no way to read them.
+
+This is a different shape of miss from M3's and M4's. Those were wrong behaviour that a
+test agreed with. This was correct behaviour that stopped one layer short of being
+usable, and it stayed invisible for two phases because the layer it stopped at is the
+one nothing existed to call yet.
+
+The fix is three fields, and *where* they go is the interesting part:
+
+```python
+class CurrentUserRead(UserRead):
+    """The caller's own record, with their engineer profile when they have one.
+
+    The three `last_*_id` fields are on *this* model rather than on `UserRead`
+    deliberately. They exist so the report questionnaire can pre-fill where you
+    were the last time you reported something, which is only ever a question
+    about yourself; an admin listing accounts has no business being told where
+    each of them sits.
+    """
+```
+
+`UserRead` is what `GET /users` returns to an admin, one row per account. Putting a
+person's usual desk on that model would turn a user-administration screen into a seating
+chart, which is not what anyone asked for and not something anyone consented to. The
+accompanying test asserts the reachability rather than the column, which is what the
+original test should have done:
+
+```python
+after = client.get("/api/v1/auth/me", headers=employee_headers).json()["user"]
+assert after["last_building_id"] == str(building.id)
+```
+
+### 1. What was built
+
+#### The API client — `src/api/`
+
+M5 had `auth.ts` and `health.ts`. M6 adds one module per domain, mirroring
+`app/routers/`, each a thin typed function per endpoint.
+
+| File | Responsibility |
+| --- | --- |
+| [api/incidents.ts](../frontend/src/api/incidents.ts) | List, read, create, edit, transition, assign, pick up, escalate, clear escalation, activity. |
+| [api/notes.ts](../frontend/src/api/notes.ts) | Writing notes. Reading them happens through `fetchActivity`, which merges them with events. |
+| [api/categories.ts](../frontend/src/api/categories.ts) | The two-level tree, and an admin's edits to it. |
+| [api/facilities.ts](../frontend/src/api/facilities.ts) | Buildings, floors, seats, the bulk insert, and the whole tree in one call. |
+| [api/engineers.ts](../frontend/src/api/engineers.ts) | The roster, creation with its one-time password, and an engineer's own availability. |
+| [api/users.ts](../frontend/src/api/users.ts) | Listing accounts, changing a role, deactivating. |
+| [api/types.ts](../frontend/src/api/types.ts) | Grown from four interfaces to the twin of every Pydantic schema. |
+| [api/queryKeys.ts](../frontend/src/api/queryKeys.ts) | Every cache key, as widening prefixes so one invalidation can cover a family. |
+
+One change to an M5 file, and it is load-bearing:
+
+```ts
+export const apiClient = axios.create({
+  // ...
+  paramsSerializer: { indexes: null },
+});
+```
+
+FastAPI reads a repeatable query parameter as `status=OPEN&status=CLOSED`. Axios's
+default is `status[]=OPEN&status[]=CLOSED`, which arrives as a parameter the API has
+never heard of and is silently ignored — a status filter that appears to work and
+returns everything.
+
+#### Presentation helpers — `src/display/`
+
+| File | Responsibility |
+| --- | --- |
+| [display/labels.ts](../frontend/src/display/labels.ts) | Every enum's human wording, and the ordered lists filters offer. |
+| [display/time.ts](../frontend/src/display/time.ts) | "2h ago" for a list, a full local date and time for a detail page. |
+| [display/statusColor.ts](../frontend/src/display/statusColor.ts) | The status palette, shared by the chips and by the workflow buttons. |
+
+Called `display/` and not the conventional `lib/` because the scaffold's `.gitignore`
+blocks any directory named `lib` — line 18, a rule meant for Python build output. A
+`src/lib/` would have type-checked, linted, passed its tests and never reached the
+repository. See the gotchas.
+
+#### Shared components — `src/components/`
+
+| File | Responsibility |
+| --- | --- |
+| [StatusChip](../frontend/src/components/StatusChip.tsx), [PriorityChip](../frontend/src/components/PriorityChip.tsx), [EscalatedFlag](../frontend/src/components/EscalatedFlag.tsx) | A ticket's state, drawn the same way on every screen. |
+| [ResponsiveDialog](../frontend/src/components/ResponsiveDialog.tsx) | Every dialog in the app. Full screen below 900 px. |
+| [QueryState](../frontend/src/components/QueryState.tsx) | The loading, error and empty states, written once. |
+| [PageHeader](../frontend/src/components/PageHeader.tsx) | One `h1` per screen, in the same place, with the screen's own actions. |
+| [SnackbarContext](../frontend/src/components/SnackbarContext.ts) / [SnackbarProvider](../frontend/src/components/SnackbarProvider.tsx) | The app's one-line confirmations. Split for the same Fast Refresh reason `AuthContext` is. |
+
+#### The questionnaire — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [ReportPage.tsx](../frontend/src/features/incidents/ReportPage.tsx) | The five questions, revealing as each is answered. |
+| [ReportSection.tsx](../frontend/src/features/incidents/ReportSection.tsx) | One numbered question. |
+| [SelectableCard.tsx](../frontend/src/features/incidents/SelectableCard.tsx) | One choice in a grid of them, behaving as a radio button. |
+| [LocationPicker.tsx](../frontend/src/features/incidents/LocationPicker.tsx) | Building, floor and seat, asked at the precision the category needs. |
+| [CategoryIcon.tsx](../frontend/src/features/incidents/CategoryIcon.tsx) + [categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts) | Turning `categories.icon` into a component. |
+| [reportSchema.ts](../frontend/src/features/incidents/reportSchema.ts) | The title and description bounds, mirroring `app/schemas/incident.py`. |
+
+#### The detail page — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [IncidentDetailPage.tsx](../frontend/src/features/incidents/IncidentDetailPage.tsx) | The layout, the three queries, and which dialog is open. |
+| [WorkflowStepper.tsx](../frontend/src/features/incidents/WorkflowStepper.tsx) | Where the ticket is in its life. Four steps; BLOCKED is not one of them. |
+| [ActivityTimeline.tsx](../frontend/src/features/incidents/ActivityTimeline.tsx) | Events and notes as one stream, internal notes shaded and labelled. |
+| [NoteComposer.tsx](../frontend/src/features/incidents/NoteComposer.tsx) | Adding a note, with the staff-only switch when the API allows one. |
+| [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) | `WorkflowButtons`, `ContextualButtons`, and the two shapes they render in. |
+| [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) | Who, where, when, and why it is blocked or closed. |
+| [TransitionDialog.tsx](../frontend/src/features/incidents/TransitionDialog.tsx) | Exactly the fields `required_fields` named. |
+| [AssignDialog.tsx](../frontend/src/features/incidents/AssignDialog.tsx) | Engineers by specialty then load, with the API's warnings. |
+| [AssignButton.tsx](../frontend/src/features/incidents/AssignButton.tsx) | The same dialog, from a row in a list. |
+| [EditIncidentDialog.tsx](../frontend/src/features/incidents/EditIncidentDialog.tsx), [EscalateDialog.tsx](../frontend/src/features/incidents/EscalateDialog.tsx), [ClearEscalationDialog.tsx](../frontend/src/features/incidents/ClearEscalationDialog.tsx), [PriorityDialog.tsx](../frontend/src/features/incidents/PriorityDialog.tsx) | The four actions that are not status changes. |
+
+#### The lists — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [IncidentsPage.tsx](../frontend/src/features/incidents/IncidentsPage.tsx) | All four ticket lists. They differ by one preset. |
+| [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts) | The filters, stored in the URL and nowhere else. |
+| [IncidentFilterBar.tsx](../frontend/src/features/incidents/IncidentFilterBar.tsx) | Inline on desktop, a bottom drawer on a phone. |
+| [IncidentTable.tsx](../frontend/src/features/incidents/IncidentTable.tsx) | Eight columns and server-side sorting, for a desktop. |
+| [IncidentCardList.tsx](../frontend/src/features/incidents/IncidentCardList.tsx) | The same tickets as cards, for a phone. |
+
+#### The admin screens
+
+| File | Responsibility |
+| --- | --- |
+| [features/facilities/FacilitiesPage.tsx](../frontend/src/features/facilities/FacilitiesPage.tsx) | A tree of buildings and floors, and the selected floor's seats. |
+| [features/facilities/FacilityDialogs.tsx](../frontend/src/features/facilities/FacilityDialogs.tsx) | Building, floor, seat, and the bulk paste. |
+| [features/categories/CategoriesPage.tsx](../frontend/src/features/categories/CategoriesPage.tsx) | Groups with their subcategories nested beneath. |
+| [features/categories/CategoryDialog.tsx](../frontend/src/features/categories/CategoryDialog.tsx) | One dialog for four cases, showing only the fields that exist. |
+| [features/engineers/EngineersPage.tsx](../frontend/src/features/engineers/EngineersPage.tsx) | The roster, and adding to it. |
+| [features/engineers/EngineerRoster.tsx](../frontend/src/features/engineers/EngineerRoster.tsx) | The table both Engineers and Team render. |
+| [features/engineers/TeamPage.tsx](../frontend/src/features/engineers/TeamPage.tsx) | A lead's view: who has room, then what needs an owner. |
+| [features/engineers/TemporaryPasswordDialog.tsx](../frontend/src/features/engineers/TemporaryPasswordDialog.tsx) | The one-time password, with a copy button. |
+| [features/engineers/CapacityBar.tsx](../frontend/src/features/engineers/CapacityBar.tsx) | How much of an engineer's soft limit is spoken for. |
+| [features/users/UsersPage.tsx](../frontend/src/features/users/UsersPage.tsx) | Role changes and deactivation. |
+
+#### The shell grows two controls
+
+[TicketSearchField](../frontend/src/layout/TicketSearchField.tsx) and
+[AvailabilityToggle](../frontend/src/layout/AvailabilityToggle.tsx), both desktop-only.
+At 375 px the app bar holds a title and one control, and that control is the drawer
+button — see M5's reasoning about which corner a thumb reaches.
+
+#### Tests — 199 frontend and 12 end-to-end, up from 112 and none
+
+| File | Count | What it pins down |
+| --- | --- | --- |
+| `features/incidents/IncidentActions.test.tsx` | 12 | That the actions come from the API — including a label the backend invented, rendered unchanged — and the two spellings of assign. |
+| `features/incidents/TransitionDialog.test.tsx` | 10 | Which inputs each `required_fields` list produces, the conditional duplicate field, and a 422 landing on the input the API named. |
+| `features/incidents/useIncidentFilters.test.tsx` | 14 | The URL round trip, an unreadable value being ignored, paging reset, and a preset that cannot be filtered away. |
+| `features/incidents/ReportPage.test.tsx` | 9 | The progressive reveal, changing a group clearing its subcategory, which location fields each `location_detail` asks for, and what is posted. |
+| `features/incidents/LocationPicker.test.tsx` | 9 | The three precision levels, the "Room" relabelling, and the cascade that clears a stale floor or seat. |
+| `features/incidents/WorkflowStepper.test.tsx` | 9 | Four steps, blocked as an error state on the second, and the reopen count. |
+| `features/engineers/sortForAssignment.test.ts` | 6 | Specialty before load, load before name, and that someone on leave stays in the list. |
+| `display/labels.test.ts`, `display/time.test.ts` | 18 | That no raw enum reaches a screen, and that an absent timestamp renders as an em dash rather than "Invalid Date". |
+| `e2e/lifecycle.spec.ts` | 1 × 2 widths | The acceptance criterion, end to end, in a browser. |
+| `e2e/assignment.spec.ts` | 1 | The assign-and-close branch, plus escalation. |
+| `e2e/responsive.spec.ts` | 5 × 2 widths | The geometry jsdom cannot see. |
+
+Added to `package.json`: `@playwright/test` and `@types/node`, both dev-only. No new
+runtime dependency — the bundle grows because there are sixty more components, not
+because anything was installed.
+
+### 2. Why it is shaped this way
+
+#### Two API answers decide what every persona sees
+
+The incident detail page is one component. An employee, an engineer and an admin opening
+the same ticket get the same JSX, and what differs is the data:
+
+```tsx
+<WorkflowButtons transitions={transitions.data ?? []} ... />
+{incident.can_escalate ? <Button ...>Escalate</Button> : null}
+```
+
+`allowed-transitions` returns the moves this caller can make *now*, each with the label
+to print on its button. The `can_*` flags on `GET /incidents/{id}` cover everything that
+is not a status change. There is no role check in the page, no status check, no table
+mapping "reporter + RESOLVED" to "Confirm fixed".
+
+Follow what that buys. `workflow.py` has two rows from RESOLVED to CLOSED, split by
+actor: the reporter's is labelled "Confirm fixed" and records `CONFIRMED_FIXED`, the
+assignee's is labelled "Close ticket" and records `CLOSED_BY_ENGINEER`. The frontend
+knows about neither. Each user's browser asks what it may do and prints the answer, and
+the two of them see different buttons on the same screen because the API sent different
+lists.
+
+The same holds for the dialog. `TransitionDialog` renders inputs from
+`transition.required_fields`:
+
+```tsx
+const requires = (field: string) => transition.required_fields.includes(field);
+// ...
+{requires('resolution_summary') ? <TextField label="What did you do?" ... /> : null}
+```
+
+Adding `"reason"` to the OPEN → IN_PROGRESS row of `app/workflow.py` would make that
+dialog collect a reason, with no React change at all.
+
+**Rejected:** a `TRANSITIONS` constant in the frontend mirroring the backend's, the way
+`features/auth/schemas.ts` mirrors the password length. The distinction M5 drew holds
+here: a length bound is a constant and a workflow is a decision. A mirrored constant
+that drifts produces a server error on a field the form thought was fine — visible and
+recoverable. A mirrored workflow that drifts produces a button that 409s, or worse, a
+button that is *missing* for someone entitled to press it, which nobody reports because
+it looks like the feature does not exist.
+
+#### The one rule the UI does read: which spelling of "assign"
+
+`ContextualButtons` has exactly one line that is not a `can_*` flag:
+
+```tsx
+const canPickUp = incident.can_assign && user.role === 'ENGINEER' && !incident.assignee;
+```
+
+This deserves explaining, because it looks like the thing the previous section says not
+to do.
+
+`assignment.can_assign` means "may change this ticket's assignee at all". It is true for
+an admin, for a LEAD, and for a SENIOR on an unassigned open ticket — the last because
+they may pick it up, even though they may not hand it to anyone else. So one flag covers
+two different buttons, and something has to choose between them.
+
+What it does **not** do is re-derive a permission. `can_assign` is still the gate;
+`role === 'ENGINEER'` and "has no assignee" only pick the spelling. A JUNIOR never
+reaches this line with a true flag. And a SENIOR who opens the full dialog and picks
+somebody else is refused **by the API**, with the message `services/assignment.py`
+writes, shown in the dialog. Copying "only a LEAD may assign others" into the page to
+pre-empt that would be the second copy of a rule, for the sake of avoiding an error that
+explains itself.
+
+#### BLOCKED is not a step
+
+`WorkflowStepper` has four steps — Open, In progress, Resolved, Closed — and renders
+BLOCKED as the "In progress" step in an error state, with the reason beneath it.
+
+A fifth column would say something false. It would imply a ticket passes *through*
+blocked on its way to resolved, when `workflow.py` only ever goes back to IN_PROGRESS
+from it:
+
+```
+IN_PROGRESS → BLOCKED    "Mark blocked"
+BLOCKED     → IN_PROGRESS "Resume work"
+```
+
+Blocked is in-progress work that has stalled, and drawing it as a stage between starting
+and finishing is the wrong mental model in a picture whose whole job is to convey the
+model.
+
+The reopen count sits outside the stepper for the mirror-image reason. A ticket reopened
+twice has walked back through steps it had already completed, and the stepper shows only
+where it is now — so "In progress" on a twice-reopened ticket would look like a ticket
+nobody has ever finished. `Reopened ×2` under it says what the four steps cannot.
+
+#### One list component, four screens
+
+My Tickets, All Tickets, My Queue and Unassigned differ by a title, a sentence, and one
+or two API filters:
+
+```tsx
+<IncidentsPage
+  title="My queue"
+  preset={{ mine: 'assigned' }}
+  ...
+/>
+```
+
+The `preset` is spread **after** the user's filters in `toQuery`, so it cannot be
+filtered away: My Queue narrowed to OPEN is still My Queue.
+
+Four components would have been four places to fix a column, four filter bars, four
+paging controls — and the three that are not the one someone is currently looking at
+would get the fix late or not at all.
+
+#### Filters live in the URL, and only in the URL
+
+```ts
+const [searchParams, setSearchParams] = useSearchParams();
+const filters = useMemo<IncidentFilters>(() => ({ ... }), [searchParams]);
+```
+
+There is no `useState` mirroring this. The address bar *is* the state, so the back
+button, a reload and a pasted link all produce the same screen, and there is no second
+copy to fall out of step.
+
+The practical reason is that a filtered list is a thing people send each other — "the
+blocked tickets in SFO-1" should be a link — and the structural reason arrives in M7,
+when the dashboard's chart segments and KPI tiles become links into exactly these views.
+A chart that can only say "there are 14 blocked tickets" is a worse chart than one whose
+bar you can click.
+
+The search box is the single exception, and it holds a local copy because a request per
+keystroke would put a full-text query on the database for every letter. It is
+reconciled with the URL **during render** rather than in an effect:
+
+```tsx
+if (filters.q !== termFromUrl) {
+  setTermFromUrl(filters.q);
+  setSearch(filters.q);
+}
+```
+
+React re-runs the component before touching the DOM, so there is no flash of the stale
+term and no second render pass. An effect would produce both, and
+`react-hooks/set-state-in-effect` says so.
+
+#### A table and a card list, not one responsive table
+
+The desktop list has eight columns. At 375 px those are either unreadable or a
+horizontal scroll that hides half of them, so the phone gets
+[IncidentCardList](../frontend/src/features/incidents/IncidentCardList.tsx) instead —
+four facts per card, the whole card a link, a target a thumb can hit.
+
+They page differently, and that is deliberate rather than an oversight. A table has
+numbered pages; a card list has "Load more", because scrolling and then losing your
+place to a page control is the wrong feel on a phone. So the screen calls both hooks and
+lets `enabled` decide which one fetches:
+
+```tsx
+const paged = useIncidents(query, !isMobile);
+const accumulated = useIncidentsInfinite(query, isMobile);
+```
+
+Both are called on every render so the hook order never changes when the viewport
+crosses 900 px — a conditional hook is a crash, not a layout bug.
+
+**Rejected:** `@mui/x-data-grid`, which BUILD-PLAN section 10 suggests. It brings column
+resizing, density controls and virtualisation, none of which a 25-row page needs, at a
+package size comparable to the rest of the application — and M5's notes already flag the
+bundle as one to watch. It would also have solved only the desktop half, leaving the
+card list to be written anyway.
+
+#### The timeline is built by hand
+
+BUILD-PLAN section 10 asks for MUI's `Timeline`. It lives in `@mui/lab`, whose only
+release compatible with Material UI 9 is `9.0.0-beta.9`. A whole additional package, at
+beta, in a project graded on stability, for a vertical rule and a column of dots — the
+component is about sixty lines of `Box` without it.
+
+What the hand-built version does carry is the thing that matters: INTERNAL notes are
+shaded, bordered and labelled "Internal". Note that this is **presentation only**. An
+employee's `/activity` response contains no internal notes to hide, because
+`services/visibility.py` filters them in the query. If one reaches this component, the
+viewer is entitled to it.
+
+#### `useState` in the questionnaire, react-hook-form everywhere else
+
+Every other form in the app uses react-hook-form with a zod resolver, which is the house
+pattern from M5. The report questionnaire does not, and the reason is what
+react-hook-form is *for*: keeping values out of React state so typing in one field does
+not re-render the form.
+
+This form is the opposite case. Four of its five answers decide what is **shown** next —
+choosing a group reveals its subcategories, choosing a subcategory reveals the location
+fields that group requires — so all four have to be watched, and watching them
+re-renders exactly as much as `useState` does. What would be left is `Controller`
+wrappers around four card grids that are not `<input>`s at all.
+
+The zod schema is kept for the two fields that *are* ordinary text, and the API's 422
+maps onto the inputs by field name exactly as it does on the auth screens.
+
+#### The questionnaire asks what the category says to ask
+
+`LocationPicker` decides which of building, floor and seat to show from the group's
+`location_detail`, which is a column an admin edits on the Categories screen:
+
+| `location_detail` | Building | Floor | Seat |
+| --- | --- | --- | --- |
+| BUILDING | required | behind "Add more detail" | behind "Add more detail" |
+| FLOOR | required | required | optional |
+| SEAT | required | required | required |
+
+And it relabels the seat field "Room" for meeting rooms, filtering to
+`seat_type = MEETING_ROOM`, because a room problem reported against a desk is the wrong
+question asked twice.
+
+The three fields are one component rather than three because they are not independent: a
+floor only exists inside a building, a seat only inside a floor, and changing a building
+has to clear both. Split into three, that cascade would live in whichever parent used
+them — which is two parents, since the edit dialog uses the same picker.
+
+`services/incident_service.py` enforces all of it again, and its 422 names the field.
+This component decides what to *ask*; it never decides what is valid.
+
+#### Workflow buttons are coloured by their outcome
+
+The first working version of the detail page put a large blue "Cancel ticket" in an
+employee's actions card — because it was the only transition available to a reporter on
+their own open ticket, and every transition button was `contained` and primary. Cancel
+read as the recommended action.
+
+The fix reuses something that already existed. `display/statusColor.ts` holds the
+status palette the chips are drawn from, and a transition's `to_status` is in its
+response, so:
+
+```tsx
+color={statusButtonColor(transition.to_status)}
+```
+
+"Resolve" is the green of the Resolved chip. "Mark blocked" is the orange of Blocked.
+"Cancel ticket" and "Close ticket" are the neutral grey of Closed. The button is
+coloured like the state it produces, which is information rather than decoration, and it
+introduces no rule — the mapping was already there.
+
+The one wrinkle is that Material UI spells neutral differently for the two components:
+a chip wants `default` (a filled grey) and a button wants `inherit`. Hence two functions
+over one table rather than one function and a cast.
+
+#### The admin screens each take the shape of their data
+
+**Facilities** is two panes because the data is a tree whose leaves are a table. A floor
+has forty desks; forty desks nested inside an expander is a scroll, not a list. The tree
+answers "where am I" and the table answers "what is here". The whole hierarchy arrives
+in one `GET /facilities/tree`, so expanding a building and selecting a floor are both
+instant — a facility is tens of rows, and paginating it would cost a request per click
+and buy nothing.
+
+**Categories** nests subcategories under their groups because the nesting *is* the
+model, and because it is the order the questionnaire asks the two questions in. An
+accordion per group mirrors what a reporter sees, and "which group is this under?" never
+has to be asked.
+
+**Engineers** ends its create flow in a dialog rather than a snackbar. The temporary
+password exists in that one response and nowhere else — the database holds a bcrypt hash
+— so a confirmation that disappears after five seconds is the wrong container for the
+only copy of a credential. It is rendered monospaced, where `l` and `1` are
+distinguishable, with a copy button, because an admin retyping it into a chat window is
+how a working account becomes a support ticket.
+
+**Users** offers two controls per row because two is what the API allows. Email is the
+sign-in identity and the key every audit trail is read by, so changing it would be an
+account migration; a password can only be set by its owner. The controls are disabled on
+your own row, matching `_reject_self_change` — locking the last admin out is the failure
+with no recovery path from inside the application.
+
+#### "Remove", never "Delete"
+
+Every destructive button on the admin screens says Remove, and reports what actually
+happened:
+
+```tsx
+const result = await deleteCategory.mutateAsync(category.id);
+notify(result.detail, result.deactivated ? 'warning' : 'success');
+```
+
+`DeleteResult` carries `deleted` and `deactivated` separately because the API does one
+or the other depending on whether anything references the row. A category an incident
+was filed under is deactivated so that ticket keeps its category. Labelling the button
+"Delete" would promise something the system deliberately does not always do.
+
+#### Mutations invalidate a whole prefix
+
+```ts
+function invalidateIncidents(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: queryKeys.incidents.all });
+}
+```
+
+`['incidents']` is the prefix of every incident key — the lists, the detail, the
+allowed transitions, the activity — and TanStack Query matches by prefix, so one call
+re-reads all of them.
+
+That is broader than strictly necessary and it is the right default here. A single
+transition can change the ticket, the moves available on it, its activity **and** its
+membership of any list filtered by status. Working out which of those a given move
+touched would put the workflow's side effects in a second place, which is the thing this
+codebase spends the most effort not doing. The exception is assignment, which also
+invalidates `['engineers']`, because `active_ticket_count` has just changed for two
+people and every capacity bar drawn from it is stale.
+
+#### Playwright, and what it is for
+
+The Vitest suite runs in jsdom, which parses HTML and runs JavaScript but has no layout
+engine. Every `getBoundingClientRect()` it returns is zero by zero. So
+`AppShell.test.tsx` can prove that at a stubbed 375 px the shell *decides* to render a
+bottom bar — a real and useful assertion — and can prove nothing about whether the
+result is usable at 375 px, because nothing is laid out at all.
+
+That is the first reason. The second is more pointed: **three defects in this project
+were visible only over HTTP.** M5's refresh-reuse rollback passed its test suite and
+failed against a real server, because the test client shares one session where
+production gives each request its own. The same class of gap is why
+`tests/conftest.py` sets `expire_on_commit=False`.
+
+So M6 adds real-browser tests, and they found a fourth. See the gotchas.
+
+**Two projects, one viewport each.** 1440×900 and 375×812, the two widths BUILD-PLAN
+section 10 names. The mobile project uses a plain viewport rather than
+`devices['iPhone 13']`, because a device preset also brings touch emulation and a mobile
+user agent — and a failure under all three at once is ambiguous about which caused it.
+The layout switch is on width alone.
+
+**Three browser contexts, not one page signing in and out.** Each context has its own
+cookie jar, so the employee's session and the engineer's session exist simultaneously
+and a test moves between them in one statement. Signing out and in between every step
+would work, and would mean a bug in `POST /auth/logout` failing a test about resolving a
+ticket.
+
+**Accounts are created through the API, per worker, with a unique suffix.** Not through
+the database, because a fixture that writes rows directly can produce states the
+application cannot — and then the test proves something about a state that never occurs.
+Not through the UI, because sign-up and engineer creation have their own tests, and
+re-driving them at the top of every lifecycle test would make a failure there look like
+a failure here. They are deactivated on teardown; the tickets they created stay, because
+they are ordinary data.
+
+**Queries are by role and visible text**, never by CSS class or position. A test that
+clicks `.MuiButton-root:nth-child(2)` passes after a change that moves the button
+somewhere useless. There is exactly one `data-testid` in the application, on the detail
+page's status chip, and it exists because "In progress" appears twice on that page — in
+the chip and as the stepper's current step — so "what status is this ticket?" has no
+unambiguous accessible query. The alternative is a test that knows which match comes
+first, which is a test that breaks on a layout change.
+
+### 3. How the pieces connect
+
+**Resolving a ticket.** The trace worth knowing, because it touches the workflow, the
+two API answers the UI is built from, and the cache.
+
+```
+Engineer presses "Resolve" on /tickets/<id>
+  │
+  ├─ IncidentActions.WorkflowButtons
+  │     the button exists because GET /allowed-transitions returned
+  │     {to_status: "RESOLVED", action_label: "Resolve",
+  │      required_fields: ["resolution_summary"]}
+  │     its colour is statusButtonColor("RESOLVED") -> success, the green of
+  │     the Resolved chip
+  │  onTransition(transition)
+  │
+  ├─ IncidentDetailPage        setDialog({kind: 'transition', transition})
+  ├─ TransitionDialog          requires('resolution_summary') -> true
+  │                            renders one field: "What did you do?"
+  │                            (no table here maps Resolve to that field —
+  │                             required_fields did)
+  │  submit
+  │
+  ├─ useTransition(id).mutateAsync({to_status: 'RESOLVED', resolution_summary})
+  │  └─ api/incidents.performTransition
+  │       POST /api/v1/incidents/<id>/transitions
+  │         apiClient request interceptor -> Authorization: Bearer ...
+  │         │
+  │         ├─ routers/incidents.create_transition
+  │         ├─ incident_service.perform_transition
+  │         │    workflow.resolve_actors(incident, user) -> {ASSIGNEE}
+  │         │    workflow.select_transition(IN_PROGRESS, RESOLVED, {ASSIGNEE})
+  │         │      -> the row whose allowed_actors contains ASSIGNEE
+  │         │    _require_transition_fields  resolution_summary present ✓
+  │         │    _apply_transition_effects   status = RESOLVED, resolved_at = now
+  │         │    repository.add_event        STATUS_CHANGED, IN_PROGRESS -> RESOLVED
+  │         └─ session.commit()
+  │       <- 200 IncidentRead
+  │
+  ├─ onSuccess: invalidateQueries({queryKey: ['incidents']})
+  │     prefix match, so all four re-fetch:
+  │       ['incidents','detail',id]                     -> status RESOLVED,
+  │                                                        can_add_note still true
+  │       ['incidents','detail',id,'allowed-transitions']
+  │                                                     -> now "Confirm fixed" for
+  │                                                        the reporter, "Close
+  │                                                        ticket" for this engineer
+  │       ['incidents','detail',id,'activity']          -> the new event
+  │       ['incidents','list',{...}]                    -> the row's status column
+  │
+  ├─ notify('INC-000482: resolve.')                 snackbar, top on a phone
+  └─ re-render
+       StatusChip              success/green
+       WorkflowStepper         activeStep 2, steps 0–1 completed
+       ActionsCard             the buttons the *new* allowed-transitions returned
+```
+
+The step to notice is the second query. The engineer did not tell the page what to
+offer next; the page asked again and got a different answer, and it would have got a
+different one still if a reporter were looking at the same screen.
+
+**Reporting an issue**, which is where the category tree drives the form:
+
+```
+/report
+  ├─ useCategoryTree()     GET /categories        cached 1 hour (reference data)
+  ├─ useFacilityTree()     GET /facilities/tree   cached 1 hour
+  │
+  ├─ step 1  group cards from tree.groups, icon via categoryIcons.ts
+  │     click "Hardware"  ->  setGroupId, setCategoryId(null)
+  ├─ step 2  revealed: group.children
+  │     click "Monitor"   ->  setCategoryId
+  ├─ step 3  revealed: LocationPicker, locationDetail = group.location_detail
+  │     Hardware is FLOOR -> building and floor required, seat optional
+  │     pre-filled from user.last_building_id / last_floor_id / last_seat_id
+  ├─ step 4  revealed once the location is complete for that detail level
+  ├─ step 5  revealed once title and description are non-blank
+  │
+  └─ submit
+       reportTextSchema.safeParse  -> field errors, or
+       POST /api/v1/incidents
+         incident_service.create_incident
+           subcategory, not a group                       else 422 category_id
+           location matches the group's location_detail    else 422 floor_id/seat_id
+           reporter.last_*_id = this location              <- the carry-over above
+       <- 201 IncidentRead
+       notify('INC-000482 created.')
+       navigate('/tickets/<id>')
+```
+
+**Filtering a list**, which is shorter and lives entirely in the URL:
+
+```
+User ticks "Blocked" in the status filter
+  ├─ IncidentFilterBar  setFilters({statuses: ['BLOCKED']})
+  ├─ useIncidentFilters  builds URLSearchParams, page resets to 1
+  │                      setSearchParams(params, {replace: true})
+  ├─ the URL is now /tickets?status=BLOCKED
+  ├─ useSearchParams re-renders IncidentsPage
+  ├─ toQuery(filters, preset) -> {status: ['BLOCKED'], sort: '-created_at', page: 1, ...}
+  ├─ useIncidents(query)  key ['incidents','list',{...}] — a new key, so a fetch
+  │     GET /api/v1/incidents?status=BLOCKED&sort=-created_at&page=1&page_size=25
+  │       paramsSerializer {indexes: null} — NOT status[]=BLOCKED, which FastAPI
+  │       would ignore, returning every ticket and looking like a broken filter
+  └─ IncidentTable re-renders
+
+  ...and the URL is now something the user can send to someone else.
+```
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Which workflow buttons a user sees | `GET /incidents/{id}/allowed-transitions`, rendered by [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) |
+| What a workflow dialog collects | `required_fields` on that response, rendered by [TransitionDialog.tsx](../frontend/src/features/incidents/TransitionDialog.tsx) |
+| Which non-workflow actions a user sees | the `can_*` flags on `GET /incidents/{id}` |
+| Which spelling of assign — "Pick up" or "Assign…" | [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) — `can_assign` plus the role, presentation only |
+| Whether a ticket is blocked, and why | rendered by [WorkflowStepper.tsx](../frontend/src/features/incidents/WorkflowStepper.tsx); decided by `app/workflow.py` |
+| Which location fields the questionnaire asks for | the group's `location_detail`, applied in [LocationPicker.tsx](../frontend/src/features/incidents/LocationPicker.tsx) |
+| Which location fields are **valid** | `app/services/incident_service.py` — the 422 is the authority |
+| Whether a seat is called "Desk" or "Room" | [display/labels.ts](../frontend/src/display/labels.ts) — `seatFieldLabel` |
+| Title and description bounds, client side | [reportSchema.ts](../frontend/src/features/incidents/reportSchema.ts) |
+| Title and description bounds, **authoritatively** | `app/schemas/incident.py` |
+| Who may read an INTERNAL note | `app/services/visibility.py`, in the query. The timeline only styles them |
+| What a status is called, and what colour it is | [display/labels.ts](../frontend/src/display/labels.ts), [display/statusColor.ts](../frontend/src/display/statusColor.ts) |
+| What colour a workflow button is | `display/statusColor.ts`, keyed on the transition's `to_status` |
+| What a list is filtered by | the URL query string, read by [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts) |
+| What a list screen is *for* | the `preset` prop in [App.tsx](../frontend/src/App.tsx) |
+| Which rows a list may show at all | `app/services/visibility.py` — `apply_visibility`, before any user filter |
+| How engineers are ordered in the assign dialog | [features/engineers/hooks.ts](../frontend/src/features/engineers/hooks.ts) — `sortForAssignment` |
+| Who may actually be assigned | `app/services/assignment.py`. The dialog offers; the API decides |
+| Whether a delete deletes or deactivates | the API's `DeleteResult`, reported by the screen |
+| Which cache entries a mutation invalidates | the feature's `hooks.ts`, keyed through [api/queryKeys.ts](../frontend/src/api/queryKeys.ts) |
+| Which icons a category may use | [features/incidents/categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts) |
+| Where a dialog is full screen | [components/ResponsiveDialog.tsx](../frontend/src/components/ResponsiveDialog.tsx) — one place, so no screen forgets |
+| Where confirmations appear | [components/SnackbarProvider.tsx](../frontend/src/components/SnackbarProvider.tsx) — top on a phone, bottom on desktop |
+
+### 5. How to change it
+
+**To add a workflow transition** — still one row and one test, and now no frontend
+change at all:
+
+1. `backend/v1/app/workflow.py`: add a `Transition` to `TRANSITIONS`.
+2. `backend/v1/tests/unit/test_workflow.py`: the suite parametrises over `TRANSITIONS`,
+   so add the allowed and denied actor cases.
+3. Nothing else. The button appears with its `action_label`, coloured by its
+   `to_status`, and `TransitionDialog` collects whatever `required_fields` names — as
+   long as the field is one of the five it knows how to render. A genuinely new field
+   needs a sixth branch there and a field on `TransitionRequest`.
+
+**To add a field to a ticket** — five files, in this order:
+
+1. `app/models/incident.py` and an Alembic revision.
+2. `app/schemas/incident.py`: the create, update and read models.
+3. `app/services/incident_service.py`: whatever validates it.
+4. [api/types.ts](../frontend/src/api/types.ts): the twin on `Incident`.
+5. The screens: [ReportPage.tsx](../frontend/src/features/incidents/ReportPage.tsx) to
+   collect it, [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) to
+   show it, [EditIncidentDialog.tsx](../frontend/src/features/incidents/EditIncidentDialog.tsx)
+   to correct it.
+
+**To add a list filter** — four places, all small:
+
+1. `app/routers/incidents.py`: the query parameter, on `get_incident_query`.
+2. `app/repositories/incidents.py`: the `WHERE` clause.
+3. [api/incidents.ts](../frontend/src/api/incidents.ts): the field on `IncidentQuery`.
+4. [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts):
+   read it from `searchParams`, write it back in `setFilters`, count it in
+   `activeCount`; then a control in
+   [IncidentFilterBar.tsx](../frontend/src/features/incidents/IncidentFilterBar.tsx).
+
+**To add a ticket list screen**: a `<Route>` rendering `<IncidentsPage>` with a
+`preset`, plus a path in [routes.ts](../frontend/src/routes.ts) and an item in
+[navigation.ts](../frontend/src/layout/navigation.ts). No new list component.
+
+**To add a category icon**: one entry in
+[categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts). It appears in
+the admin's picker automatically, because `CATEGORY_ICON_NAMES` is the table's keys.
+
+**To add an end-to-end test**: a file in `frontend/e2e/`, importing `test` from
+`./fixtures/test` rather than from `@playwright/test` — that is what supplies the three
+signed-in pages. Use the helpers in `fixtures/ticket.ts` to reach a state rather than
+re-driving the questionnaire by hand.
+
+**To run the end-to-end tests against a different stack**: `E2E_BASE_URL` for the
+origin, `E2E_ADMIN_EMAIL` and `E2E_ADMIN_PASSWORD` for the account that creates
+engineers. The suite reuses an already-running dev server and starts one if there is
+none.
+
+### 6. Gotchas
+
+**The first thing Playwright found was a snackbar sitting on the controls.** The mobile
+lifecycle test failed at "Start work" with Playwright's clearest possible message:
+
+```
+<div class="MuiSnackbarContent-root"> intercepts pointer events
+```
+
+The engineer had just pressed "Pick up", which confirms with a snackbar. The snackbar
+was anchored bottom-centre with `bottom: 72px` — clear of the shell's 56 px bottom
+navigation, which is what it was written for — and the incident detail page's sticky
+action bar sits at `bottom: 56px`, in exactly that space. "You have picked this ticket
+up" covered "Start work".
+
+Every jsdom test passed. They always would: jsdom has no layout, so nothing can overlap
+anything, and a `fixed` element is just a `<div>` in the tree.
+
+The fix moves the snackbar to the **top** on a phone:
+
+```tsx
+anchorOrigin={
+  isMobile
+    ? { vertical: 'top', horizontal: 'center' }
+    : { vertical: 'bottom', horizontal: 'center' }
+}
+```
+
+Material Design puts snackbars at the bottom, and this deliberately does not, because on
+a phone this application puts its *controls* at the bottom — the navigation bar, the
+report FAB, and the detail page's action bar. A confirmation that covers the buttons it
+is confirming is worse than no confirmation at all.
+
+**`lib/` is gitignored by the scaffold.** Line 18 of `.gitignore`, a rule from the
+standard Python template meant for `build/lib/`, matches a directory named `lib`
+anywhere in the tree — including `frontend/src/lib/`. The presentation helpers were
+written there first. They type-checked, linted, passed their tests and were invisible to
+`git add`; the only symptom was `git status` staying quiet.
+
+They live in `src/display/` now. If a future phase wants the conventional `src/lib/`,
+the fix is a negation in `.gitignore` — but renaming avoided editing scaffold config
+for a directory name.
+
+**Axios sends `status[]=OPEN` unless you tell it not to.** FastAPI reads a repeatable
+query parameter as `status=OPEN&status=CLOSED`; axios's default serialisation is
+`status[]=OPEN&status[]=CLOSED`, which arrives as a parameter the API does not declare
+and is silently dropped. The filter does nothing and the list returns everything, which
+looks like a filter that "isn't working yet" rather than a bug. `paramsSerializer:
+{ indexes: null }` on the shared client fixes it for every caller.
+
+**MUI puts the required asterisk in the accessible name.** A required `TextField`
+labelled "Building" has the accessible name `"Building *"`, so
+`getByLabel('Building', { exact: true })` finds nothing. The first version of the
+Playwright helper did exactly that, skipped the field because its "is it visible?"
+check said no, and failed three steps later on a form that had never been filled in.
+Match labels as a prefix, and make a field that must exist assert its own presence
+rather than skipping quietly.
+
+**`getByRole('button')` matches the `SelectableCard`s.** The questionnaire's group,
+subcategory and priority cards are `ButtonBase` with `aria-pressed`, which is correct —
+a card that behaves as a radio button should be reachable by keyboard and announced as
+pressed — but it means `getByRole('button', { name: 'Monitor' })` matches a card, and
+`{ name: /^Hardware/ }` is needed because a group card's accessible name includes its
+hint.
+
+**The mobile bottom navigation items are buttons, not links.** `AppShell` drives them
+through `BottomNavigation`'s `onChange` and `navigate`, so there is no anchor element.
+`getByRole('link', { name: 'Home' })` finds the *drawer's* link on mobile and nothing in
+the bottom bar.
+
+**`@mui/lab` has no stable release for Material UI 9.** `Timeline`, `TreeView` and the
+rest are on `9.0.0-beta.x`. Anything reaching for them should either build the thing by
+hand — as `ActivityTimeline` does — or accept a beta dependency deliberately.
+
+**MUI v9 renames icons, and the error does not say so.** M5 recorded this for
+`AddCircleOutline`; M6 hit it twice more. `HelpOutline` is `HelpOutlined` and
+`ChatBubbleOutline` is `ChatBubbleOutlineOutlined`. The failure is TypeScript's "cannot
+find module", which reads like a missing package.
+
+**A capitalised local holding a component trips `react-hooks/static-components`.**
+`CategoryIcon` looks up a component from a table and renders it. Written as
+`const Icon = lookup(name); return <Icon {...props} />` the rule objects, because it
+cannot tell a lookup from a definition — and defining a component during render really
+does remount its subtree on every keystroke. `createElement(lookup(name), props)` says
+what is actually happening.
+
+**Playwright's fixture parameter must be a destructuring pattern**, even an empty one:
+Playwright reads the source of that parameter to work out which fixtures a function
+depends on. `async ({}, provide, workerInfo) => {}` is required and
+`no-empty-pattern` objects, hence the one `eslint-disable-next-line` in `e2e/`. The
+second parameter is renamed from Playwright's `use` to `provide` for a related reason:
+a function called `use` outside a component trips `react-hooks/rules-of-hooks`.
+
+**The end-to-end suite writes to the development database.** It creates accounts with a
+unique suffix, creates tickets, and deactivates the accounts afterwards — it never drops
+or truncates anything, and the tickets stay. That is a deliberate difference from the
+pytest suite, which recreates `acme_incidents_test` on every run. Point it elsewhere
+with `E2E_BASE_URL` if that matters.
+
+**Two queries on every list screen, one of them idle.** `useIncidents` and
+`useIncidentsInfinite` are both called on every render, with `enabled` deciding which
+fetches. That is not waste — a disabled query issues no request — and it is what keeps
+the hook order stable when a window is resized across 900 px. A conditional hook is a
+crash, not a layout glitch.
+
+**The bundle has grown.** M6 adds no runtime dependency, and the JavaScript still grows
+because there are now sixty more components. Route-level `React.lazy` remains the lever,
+and the admin screens remain the natural split point; M7 adds `@mui/x-charts`, which is
+when it will matter.
+
+### 7. Glossary
+
+**End-to-end test** — a test that drives the real application in a real browser against
+a real server and a real database, rather than rendering a component in isolation. It is
+the only kind that can catch two correct things overlapping.
+
+**Playwright** — the browser automation library these tests use. It drives Chromium,
+waits for elements rather than sleeping, and fails with the reason — including "this
+other element intercepts pointer events", which is how the snackbar defect announced
+itself.
+
+**Browser context** — an isolated browser session: its own cookies, its own storage. The
+tests give each persona one, so three people can be signed in at once.
+
+**Fixture** — in Playwright, a value a test declares in its arguments and the framework
+supplies. `worker` scope means once per parallel worker; the default is once per test.
+
+**Viewport** — the size of the browser window's content area. The two projects set 1440
+× 900 and 375 × 812, and nothing else differs between them.
+
+**`getByRole`** — Playwright's and Testing Library's preferred query: find the element by
+what it *is* to an assistive technology ("a button named Resolve") rather than by class
+or position. A test written this way breaks when the interface becomes unusable, which
+is when it should.
+
+**`data-testid`** — an attribute added purely so a test can find something. Used once
+here, on the detail page's status chip, because two elements on that page legitimately
+have the same accessible text.
+
+**Progressive disclosure** — showing the next question only once the previous one is
+answered, on one page. Distinct from a wizard, which puts each step on its own page and
+makes going back a navigation.
+
+**`useSearchParams`** — React Router's hook for the URL query string, read and written
+like state. Using it *as* the state is what makes a filtered list bookmarkable.
+
+**TanStack Query key** — the array identifying a cached query. Keys nest, so
+`['incidents']` is a prefix of `['incidents', 'detail', id]` and invalidating the former
+invalidates the latter.
+
+**Invalidation** — marking cached data stale so it is re-fetched. The alternative is
+writing the new value into the cache by hand, which means the client reconstructing what
+the server just did.
+
+**`useInfiniteQuery`** — TanStack Query's hook for "load more": it keeps the pages
+fetched so far and appends the next one, rather than replacing.
+
+**Optimistic** — updating the interface before the server confirms. The availability
+select does this in appearance only, reverting on failure, because a control that does
+nothing for 300 ms reads as broken.
+
+**Debounce** — waiting for a pause in typing before acting. The list's search box waits
+350 ms, so a five-letter query is one full-text search rather than five.
+
+**Soft limit** — a bound that warns rather than refuses. `max_active_tickets` is one:
+assigning past it succeeds and returns a warning, because an admin who has decided to
+overload a lead is making a judgement the system should record, not overrule.
+
+**Sticky / fixed positioning** — CSS that takes an element out of the page's flow and
+pins it to the viewport. The phone's action bar is `fixed`, which is why the detail page
+reserves the height it occupies — otherwise the last line of the note composer would sit
+underneath it permanently.
+
+**Pointer-events interception** — one element sitting over another and receiving the
+clicks meant for it. Invisible to a test framework without layout; the first thing a
+real browser notices.
+
+**Accessible name** — the text an assistive technology announces for a control. Usually
+its label or its content, and it is what `getByRole(..., {name})` matches — including,
+for a required Material UI field, the asterisk.
+
+**`aria-pressed`** — the attribute marking a toggle button as on or off. The
+questionnaire's cards carry it, which is what makes a grid of styled buttons behave like
+a radio group for a screen reader.
+
+**Full-text search vs ticket-number search** — `GET /incidents?q=` branches on the
+shape of the term: something like `INC-000482` or a bare number is looked up by ticket
+number, anything else goes to PostgreSQL's `websearch_to_tsquery`. One box, two
+searches, decided on the server.

@@ -81,6 +81,9 @@ export function EngineersPage() {
           label="Level"
           value={level}
           onChange={(event) => setLevel(event.target.value as EngineerLevel | '')}
+          // `theme.ts` makes every text field full width, which is right for
+          // forms and wrong for a filter sitting next to a switch.
+          fullWidth={false}
           sx={{ minWidth: 180 }}
         >
           <MenuItem value="">Every level</MenuItem>

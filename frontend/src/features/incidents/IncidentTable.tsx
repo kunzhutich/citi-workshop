@@ -36,6 +36,32 @@ import { incidentPath } from '../../routes';
  * rather than a list, which is the kind of wrong that looks right.
  */
 
+/**
+ * How much room each column gets.
+ *
+ * The table is laid out `fixed` rather than letting the browser size columns
+ * to their content. With `auto`, one long category — "Building & Facilities >
+ * Temperature/HVAC" — widened its column until Assignee and Updated were
+ * pushed off the right-hand edge of a 1440px screen, scrolling inside the
+ * container where nobody would look for them.
+ *
+ * Title takes whatever is left, which is why it has no entry here. Everything
+ * else truncates with its full value in a `title` attribute.
+ */
+const COLUMN_WIDTHS = {
+  ticket: 105,
+  // Wide enough for the "In progress" chip, which is the longest of the five
+  // and was clipping to "In progre…" at 110.
+  status: 128,
+  // The priority chip carries an icon as well as its label, so it needs more
+  // room than the status chip's plain text.
+  priority: 118,
+  category: 175,
+  location: 125,
+  assignee: 120,
+  updated: 100,
+} as const;
+
 /** Columns the API can sort by, and the parameter each one sends. */
 const SORTABLE = {
   ticket_number: 'ticket_number',
@@ -70,31 +96,34 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
 
   return (
     <TableContainer component={Paper} variant="outlined">
-      <Table size="small" aria-label="Tickets">
+      <Table size="small" aria-label="Tickets" sx={{ tableLayout: 'fixed', minWidth: 900 }}>
         <TableHead>
           <TableRow>
             <SortableHeader
               column="ticket_number"
               label="Ticket"
+              width={COLUMN_WIDTHS.ticket}
               sortedBy={sortedBy}
               descending={descending}
               onSort={changeSort}
             />
             <TableCell>Title</TableCell>
-            <TableCell>Status</TableCell>
+            <TableCell width={COLUMN_WIDTHS.status}>Status</TableCell>
             <SortableHeader
               column="priority"
               label="Priority"
+              width={COLUMN_WIDTHS.priority}
               sortedBy={sortedBy}
               descending={descending}
               onSort={changeSort}
             />
-            <TableCell>Category</TableCell>
-            <TableCell>Location</TableCell>
-            <TableCell>Assignee</TableCell>
+            <TableCell width={COLUMN_WIDTHS.category}>Category</TableCell>
+            <TableCell width={COLUMN_WIDTHS.location}>Location</TableCell>
+            <TableCell width={COLUMN_WIDTHS.assignee}>Assignee</TableCell>
             <SortableHeader
               column="updated_at"
               label="Updated"
+              width={COLUMN_WIDTHS.updated}
               sortedBy={sortedBy}
               descending={descending}
               onSort={changeSort}
@@ -113,8 +142,8 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                   {incident.reference}
                 </Link>
               </TableCell>
-              <TableCell sx={{ maxWidth: 320 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <TableCell>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
                   <Typography variant="body2" noWrap title={incident.title}>
                     {incident.title}
                   </Typography>
@@ -128,18 +157,22 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                 <PriorityChip priority={incident.priority} />
               </TableCell>
               <TableCell>
-                <Typography variant="body2" noWrap>
-                  {incident.category.group_name ? `${incident.category.group_name} › ` : ''}
-                  {incident.category.name}
+                <Typography variant="body2" noWrap title={categoryPath(incident)}>
+                  {categoryPath(incident)}
                 </Typography>
               </TableCell>
               <TableCell>
-                <Typography variant="body2" noWrap>
+                <Typography variant="body2" noWrap title={incident.location.path}>
                   {incident.location.path}
                 </Typography>
               </TableCell>
               <TableCell>
-                <Typography variant="body2" noWrap color={incident.assignee ? undefined : 'text.secondary'}>
+                <Typography
+                  variant="body2"
+                  noWrap
+                  title={incident.assignee?.full_name ?? 'Unassigned'}
+                  color={incident.assignee ? undefined : 'text.secondary'}
+                >
                   {incident.assignee?.full_name ?? 'Unassigned'}
                 </Typography>
               </TableCell>
@@ -156,18 +189,32 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
   );
 }
 
+/** "Hardware > Monitor", or just the subcategory if the group is missing. */
+function categoryPath(incident: IncidentListItem): string {
+  const { group_name: group, name } = incident.category;
+  return group ? `${group} \u203a ${name}` : name;
+}
+
 interface SortableHeaderProps {
   column: SortableColumn;
   label: string;
+  width: number;
   sortedBy: string;
   descending: boolean;
   onSort: (column: SortableColumn) => void;
 }
 
-function SortableHeader({ column, label, sortedBy, descending, onSort }: SortableHeaderProps) {
+function SortableHeader({
+  column,
+  label,
+  width,
+  sortedBy,
+  descending,
+  onSort,
+}: SortableHeaderProps) {
   const active = sortedBy === SORTABLE[column];
   return (
-    <TableCell sortDirection={active ? (descending ? 'desc' : 'asc') : false}>
+    <TableCell width={width} sortDirection={active ? (descending ? 'desc' : 'asc') : false}>
       <TableSortLabel
         active={active}
         direction={active && descending ? 'desc' : 'asc'}

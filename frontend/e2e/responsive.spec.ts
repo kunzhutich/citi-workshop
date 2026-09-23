@@ -7,9 +7,9 @@ import { reportIssue } from './fixtures/ticket';
  * The things a browser can check and jsdom cannot.
  *
  * jsdom has no layout engine. Every box it reports is zero by zero, so the
- * 112 Vitest tests can prove that `useBreakpoint` *decides* "mobile" below
- * 900px — they stub `matchMedia` to say so — but not that anything is
- * actually laid out at 375px, because nothing is laid out at all.
+ * Vitest suite can prove that `useBreakpoint` *decides* "mobile" below 900px —
+ * it stubs `matchMedia` to say so — but not that anything is actually laid
+ * out at 375px, because nothing is laid out at all.
  *
  * These are therefore assertions about geometry: which navigation surface is
  * on screen, whether a page scrolls sideways, whether a dialog fills a phone,

@@ -152,6 +152,10 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
               (selected as IncidentStatus[]).map(statusLabel).join(', ') || 'Any',
             displayEmpty: true,
           },
+          // `displayEmpty` draws "Any" inside the field while nothing is
+          // selected, and an unshrunk label is drawn in the same place — the
+          // two overlapped into "Ätnays". Pinning the label up fixes it.
+          inputLabel: { shrink: true },
         }}
       >
         {INCIDENT_STATUSES.map((option) => (
@@ -177,6 +181,7 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
               (selected as IncidentPriority[]).map(priorityLabel).join(', ') || 'Any',
             displayEmpty: true,
           },
+          inputLabel: { shrink: true },
         }}
       >
         {INCIDENT_PRIORITIES.map((option) => (
