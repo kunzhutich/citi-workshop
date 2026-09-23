@@ -15,7 +15,20 @@ export interface EscalatedFlagProps {
  * open, in progress or blocked, and the two facts need to be readable at once.
  */
 export function EscalatedFlag({ reason }: EscalatedFlagProps) {
-  const chip = <Chip label="Escalated" color="error" size="small" icon={<FlagIcon />} />;
+  // Not a `UniformChip`: it now leads a title rather than sitting in a column
+  // of its own, so a pinned width would push every escalated title along by a
+  // different amount than the word needs. `flexShrink: 0` is the part that
+  // matters in that position — beside a long `noWrap` title the flag is the
+  // thing flexbox would otherwise squash.
+  const chip = (
+    <Chip
+      label="Escalated"
+      color="error"
+      size="small"
+      icon={<FlagIcon />}
+      sx={{ flexShrink: 0 }}
+    />
+  );
 
   if (!reason) {
     return chip;

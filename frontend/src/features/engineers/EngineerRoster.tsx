@@ -11,7 +11,7 @@ import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
 
 import type { CategoryTree, Engineer } from '../../api/types';
-import { levelLabel } from '../../layout/roleLabels';
+import { LevelChip } from '../../components/LevelChip';
 import { availabilityLabel } from '../../display/labels';
 import { CapacityBar } from './CapacityBar';
 
@@ -65,7 +65,7 @@ export function EngineerRoster({ engineers, categories, renderActions }: Enginee
                 ) : null}
               </TableCell>
               <TableCell>
-                <Chip size="small" variant="outlined" label={levelLabel(engineer.level)} />
+                <LevelChip level={engineer.level} />
               </TableCell>
               <TableCell>
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, maxWidth: 260 }}>

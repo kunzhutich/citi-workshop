@@ -58,14 +58,18 @@ export function IncidentCardList({ incidents }: IncidentCardListProps) {
                 </Typography>
               </Box>
 
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {incident.title}
-              </Typography>
+              {/* The flag leads the title here too, so it is in the same place
+                  on every card rather than at the end of a sentence. */}
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
+                {incident.is_escalated ? <EscalatedFlag /> : null}
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  {incident.title}
+                </Typography>
+              </Box>
 
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1 }}>
                 <StatusChip status={incident.status} />
                 <PriorityChip priority={incident.priority} />
-                {incident.is_escalated ? <EscalatedFlag /> : null}
               </Box>
 
               <Typography variant="caption" color="text.secondary">

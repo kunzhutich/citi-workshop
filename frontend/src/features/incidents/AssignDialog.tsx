@@ -14,7 +14,7 @@ import { describeError } from '../../api/errors';
 import type { AssignResult, Engineer } from '../../api/types';
 import { QueryState } from '../../components/QueryState';
 import { ResponsiveDialog } from '../../components/ResponsiveDialog';
-import { levelLabel } from '../../layout/roleLabels';
+import { LevelChip } from '../../components/LevelChip';
 import { availabilityLabel } from '../../display/labels';
 import { CapacityBar } from '../engineers/CapacityBar';
 import { sortForAssignment, useEngineers } from '../engineers/hooks';
@@ -169,7 +169,7 @@ function EngineerRow({
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
             <Typography variant="subtitle2">{engineer.full_name}</Typography>
-            <Chip size="small" variant="outlined" label={levelLabel(engineer.level)} />
+            <LevelChip level={engineer.level} />
             {isSpecialtyMatch ? <Chip size="small" color="success" label="Specialty" /> : null}
             {isCurrent ? <Chip size="small" color="primary" label="Assigned" /> : null}
           </Box>

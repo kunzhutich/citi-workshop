@@ -67,22 +67,26 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
             </Typography>
           </Box>
 
-          <Typography variant="body1" sx={{ mt: 0.25 }}>
-            <Link
-              component={RouterLink}
-              to={incidentPath(incident.id)}
-              state={ticketLinkState}
-              underline="hover"
-              color="inherit"
-            >
-              {incident.title}
-            </Link>
-          </Typography>
+          {/* The flag leads the title, so it sits in one place down a list of
+              cards instead of after however long this ticket's title is. */}
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mt: 0.25 }}>
+            {incident.is_escalated ? <EscalatedFlag /> : null}
+            <Typography variant="body1">
+              <Link
+                component={RouterLink}
+                to={incidentPath(incident.id)}
+                state={ticketLinkState}
+                underline="hover"
+                color="inherit"
+              >
+                {incident.title}
+              </Link>
+            </Typography>
+          </Box>
 
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
             <StatusChip status={incident.status} />
             <PriorityChip priority={incident.priority} />
-            {incident.is_escalated ? <EscalatedFlag /> : null}
             <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
               {incident.location.path}
             </Typography>

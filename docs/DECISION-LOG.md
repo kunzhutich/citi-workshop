@@ -2746,3 +2746,72 @@ suite. The options are to delete the suite's own tickets in teardown — which
 needs SQL, because the application has no endpoint for deleting an incident and
 should not have one — or to keep clearing it by hand between phases. That is
 the owner's call and is recorded here rather than taken.
+
+## D53 — Chips: one width per family, and the arrows come off
+
+**Section 3 of the brief.** Equal width and height for the status, priority and
+level chips; more padding inside them; the priority icons removed; CRITICAL
+filled rather than outlined; the escalation flag moved to the front of the
+title.
+
+### The widths are measured, and now asserted
+
+`src/components/UniformChip.tsx` is the one place that decides a chip's size.
+Each family is pinned to its longest label plus 12px of padding either side,
+rounded up to a multiple of four — taken by rendering the real screens with the
+widths set to zero and reading the boxes back, not by counting characters:
+
+| family | longest | measured | pinned |
+| --- | --- | --- | --- |
+| status | In progress | 88.8 | 92 |
+| priority | Medium | 73.3 | 76 |
+| level | Senior | 62.8 | 64 |
+
+Three numbers in a comment is exactly the arrangement S6's contrast figures
+were in when three of them silently stopped being true
+([D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)),
+so `e2e/chips.spec.ts` asserts them in a real browser at both viewports. A font
+change moves these and nothing else would notice.
+
+**A `styled()` base rather than a `MuiChip` override in `theme.ts`.** The rule
+is for three families, not for every chip. Specialty chips, the inbox's "New"
+badge and the escalation flag all say something whose length is real
+information and keep their natural width.
+
+### The priority arrows come off, and the justification they had was wrong
+
+`PriorityChip`'s comment said the icons were there because "colour alone fails
+for the roughly one person in twelve with a red-green deficiency". That is true
+of colour alone, and this chip has never been colour alone — it carries the
+word *Critical*. WCAG 1.4.1 is about colour being the **only** visual means of
+conveying information; the label was always the other one. The icons were a
+third channel behind a second, and four of them down a table column cost more
+than they bought.
+
+**Filling CRITICAL is the better version of what the arrows were reaching
+for.** The row people most need to find is now the only one with a solid block
+of colour in it — a difference in *form*, not in hue, which survives a
+red-green deficiency and a monochrome printout. The other three stay outlined
+so an ordinary list does not become a wall of blocks.
+
+### The escalation flag leads the title
+
+Trailing it, the flag sat wherever that row's title happened to end, so a
+column of escalated tickets had its flags scattered across the width: the one
+thing in the row you want to find by glance was the one thing with no fixed
+position. It now leads the title in the table, the card list and the home
+screens' rows.
+
+**What it costs, stated because it is visible.** The flag takes about 100px out
+of the title cell, so an escalated ticket's title truncates sooner. Two things
+offset it and neither fully: the status and priority columns were sized against
+their longest *word* and carried slack for the icon that is now gone, so both
+are cut to the chip's pinned width plus a cell's padding — 124 and 108, from
+128 and 118 — and the room goes to the title. The remainder is the real price
+of the alignment the brief asked for, and is worth checking on a screen before
+it is accepted.
+
+**The detail page's flag did not move.** It sits in the chip row under the
+heading, and the brief's reason — "so rows line up" — has nothing to align
+there. Putting a chip inline before an `<h1>` would cost the heading to buy
+nothing.

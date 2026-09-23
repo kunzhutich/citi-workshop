@@ -51,12 +51,15 @@ import { useTicketLinkState } from './backTarget';
  */
 const COLUMN_WIDTHS = {
   ticket: 105,
-  // Wide enough for the "In progress" chip, which is the longest of the five
-  // and was clipping to "In progre…" at 110.
-  status: 128,
-  // The priority chip carries an icon as well as its label, so it needs more
-  // room than the status chip's plain text.
-  priority: 118,
+  // Both chip columns are now the chip's pinned width plus a cell's 16px of
+  // padding each side, and nothing more. They used to be sized against the
+  // longest *word* — "In progress" clipped to "In progre…" at 110 — and the
+  // priority column carried extra slack for an icon the redesign removed.
+  // `UniformChip` makes the width a constant, so the column can be one too,
+  // and the room that frees goes to the title, which is what the escalation
+  // flag now shares a cell with.
+  status: 92 + 32,
+  priority: 76 + 32,
   category: 175,
   location: 125,
   assignee: 120,
@@ -146,11 +149,16 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                 </Link>
               </TableCell>
               <TableCell>
+                {/* The flag leads the title rather than trailing it. Trailing, it
+                    sat wherever that row's title happened to end, so a column of
+                    escalated tickets had its flags scattered across the width —
+                    the one thing in the row you want to find by glance was the
+                    one thing with no fixed position. */}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                  {incident.is_escalated ? <EscalatedFlag /> : null}
                   <Typography variant="body2" noWrap title={incident.title}>
                     {incident.title}
                   </Typography>
-                  {incident.is_escalated ? <EscalatedFlag /> : null}
                 </Box>
               </TableCell>
               <TableCell>

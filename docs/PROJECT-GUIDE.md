@@ -8338,3 +8338,119 @@ saturated than anything in the interface: a bar has no label leaning against it.
 | **Relative luminance** | The 0–1 brightness figure WCAG contrast is built from. Not the same as OKLCH `L`; the contrast ratio is `(lighter + 0.05) / (darker + 0.05)` of these. |
 | **Snapping a colour** | Holding hue and saturation and moving lightness until a threshold is met, rather than choosing a new colour. What keeps a re-derived palette recognisably the same palette. |
 | **Ordinal ramp** | One hue, several steps, light to dark, for categories that genuinely have an order — priority here. Distinct from a *sequential* ramp (continuous magnitude), whose lightest step may fade into the surface; an ordinal one's may not, because every step is a mark someone has to see. |
+
+---
+
+## Phase R3 — The redesign brief, section 3: the shared chips
+
+*Section 3 is four small requests that are one component: the status, priority and
+level chips should be one width per family, roomier inside, the priority arrows should
+go, CRITICAL should be filled, and the escalation flag should lead a title rather than
+trail it. Done per-screen it would have been done three times and got three answers,
+which is why the brief groups it here.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `components/UniformChip.tsx` | **New.** The one place a chip's width and padding are decided. A `styled(Chip)` taking a `family`, plus the three pinned widths. |
+| `components/StatusChip.tsx` | Draws on `UniformChip`. Otherwise unchanged. |
+| `components/PriorityChip.tsx` | Icons gone; CRITICAL filled, the other three outlined. |
+| `components/LevelChip.tsx` | **New.** Was a bare `<Chip variant="outlined">` written out at two call sites. |
+| `components/EscalatedFlag.tsx` | Keeps its natural width and gains `flexShrink: 0`, which is what stops a long title squashing it. |
+| `features/incidents/IncidentTable.tsx` | Flag before the title; both chip columns cut to the pinned width plus a cell's padding. |
+| `features/incidents/IncidentCardList.tsx`, `features/home/HomeTicketRow.tsx` | Flag before the title. |
+| `features/engineers/EngineerRoster.tsx`, `features/incidents/AssignDialog.tsx` | Use `LevelChip`. |
+| `e2e/chips.spec.ts` | **New.** Widths, fills, icon absence and flag alignment, in a browser, at both viewports. |
+
+Decision: [D53](DECISION-LOG.md#d53--chips-one-width-per-family-and-the-arrows-come-off).
+
+### 2. Why it is shaped this way
+
+**A width is a measurement, so it was measured.** The three pinned widths come from
+rendering the real screens with `CHIP_WIDTH` set to zero and reading the boxes back.
+Counting characters would have been a guess about Roboto's metrics; the numbers that
+came out — 88.8, 73.3, 62.8 — are what the font actually does at 13px with 12px of
+padding either side.
+
+**And then asserted, because a comment is not a test.** This project has already had
+three measured numbers rot in a comment while the suite stayed green (D48). `e2e/chips.spec.ts`
+re-measures in a browser at 1440 and 375.
+
+**`styled()`, not a theme override.** The rule is for three families, not for every
+chip in the application. A `MuiChip` override in `theme.ts` would have pinned the
+specialty chips and the inbox's "New" badge too, whose lengths are real information.
+
+**The arrows came off, and the reason they were there did not survive contact.** The
+comment justifying them said colour alone fails a red-green reader — true, and this chip
+was never colour alone: it carries the word *Critical*. Filling CRITICAL is the better
+answer to the same worry, because it is a difference in form rather than hue.
+
+### 3. How the pieces connect
+
+```
+UniformChip.tsx
+  CHIP_WIDTH = { status: 92, priority: 76, level: 64 }   ← measured, asserted in e2e
+  LABEL_PADDING = 12                                      ← the "they are tight" fix
+     │  styled(Chip) → minWidth, centred label
+     ├─ StatusChip    family="status"    colour from display/statusColor.ts
+     ├─ PriorityChip  family="priority"  variant = CRITICAL ? filled : outlined
+     └─ LevelChip     family="level"     outlined, no colour
+
+IncidentTable.tsx
+  COLUMN_WIDTHS.status   = 92 + 32   ← the chip, plus a TableCell's padding
+  COLUMN_WIDTHS.priority = 76 + 32     the slack that used to hold an icon is gone
+```
+
+The chip decides its width; the column is told what the chip decided. Before this the
+column was sized against the longest *word* and the chip against nothing, so the two
+could drift apart — and had.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How wide a chip of each family is | `components/UniformChip.tsx` | `CHIP_WIDTH` |
+| How much room a chip's label gets | `components/UniformChip.tsx` | `LABEL_PADDING` |
+| Which families are uniform, and which are not | `components/UniformChip.tsx` | `ChipFamily` — three members, deliberately |
+| Which priority is filled | `components/PriorityChip.tsx` | the `variant` expression |
+| That any of the above is still true | `e2e/chips.spec.ts` | — |
+| Where the escalation flag sits | the three list components | the flag precedes the title element |
+
+### 5. How to change it
+
+**To add a status, priority or level:** nothing here changes unless the new label is
+longer than the family's current longest. If it is, set that family's `CHIP_WIDTH` to
+zero, run the app, read the natural widths, and pin the new maximum — then update
+`e2e/chips.spec.ts`, which names the numbers.
+
+**To make another chip uniform:** add a member to `CHIP_WIDTH` and pass the new `family`.
+Think first about whether its content has a meaningful length; if it does, it belongs
+with the specialty chips, which are deliberately left alone.
+
+**To change the padding:** `LABEL_PADDING` moves all three families and therefore all
+three pinned widths. Re-measure; do not adjust the widths by arithmetic.
+
+### 6. Gotchas
+
+**The pinned widths and the table's column widths are two numbers that must agree.**
+`IncidentTable` writes them as `92 + 32` and `76 + 32` rather than `124` and `108` so
+that the relationship is visible, but it is still a copy — there is no import. If
+`CHIP_WIDTH` moves, that file has to move with it.
+
+**An escalated ticket's title truncates sooner.** The flag takes about 100px out of the
+cell it now shares with the title. Tightening the two chip columns gave some of that
+back; the rest is the price of the alignment. It is most visible on
+`/tickets?is_escalated=true`, where every row carries a flag.
+
+**`family` must not reach the DOM.** It is a transient prop, filtered out by
+`shouldForwardProp`. Without that filter React warns about an unknown attribute on a
+`<div>` and the warning appears once per chip, which on a full ticket list is fifty.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Transient prop** | A prop a `styled()` component consumes to decide its own CSS and must not pass down to the DOM element. Emotion and Material UI filter them with `shouldForwardProp`. |
+| **`minWidth` vs `width`** | `minWidth` lets a chip grow if its label is somehow longer than expected; a fixed `width` would clip it. Since the pinned value *is* the longest label, every chip lands on exactly that width, and an unexpected one degrades by being wide rather than by being unreadable. |
+| **Filled vs outlined chip** | Material UI's two chip variants: a block of colour with white text, or a coloured border and label on the surface behind it. The distinction is a channel independent of hue, which is why CRITICAL uses it. |
