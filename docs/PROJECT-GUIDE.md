@@ -4091,7 +4091,7 @@ BUILD-PLAN section 11 lists eight business questions and one endpoint each. All 
 exist, all eight are computed by PostgreSQL rather than by Python, and all eight are
 tested against a fixture world small enough to check by hand.
 
-**Verified against local PostgreSQL only.** 664 backend tests (up from 609), ruff check
+**Verified against local PostgreSQL only.** 665 backend tests (up from 609), ruff check
 and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
 that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
@@ -4106,7 +4106,7 @@ that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.m
 | `app/models/incident.py` | Gained a module-level `format_reference(ticket_number)`; the `Incident.reference` property now calls it. |
 | `app/main.py` | Mounts `reports.router` under `/api/v1`. |
 | `tests/factories.py` | `make_incident` gained `created_at`, `escalated_at` and `blocked_reason_type`; new `make_event`. |
-| `tests/integration/test_reports.py` | 55 tests. The fixture table at the top of the file is the specification the assertions are read off. |
+| `tests/integration/test_reports.py` | 56 tests. The fixture table at the top of the file is the specification the assertions are read off. |
 
 The endpoints, and the question each answers:
 
@@ -4227,6 +4227,38 @@ know which kind of report they are looking at; three things make that cheap:
 Each half is written down once — `_window_clauses()` and `_scope_clauses()` in
 `app/repositories/reports.py`.
 
+#### Present tense means *live*, not merely *flagged*
+
+The two halves of `/reports/blocked-escalated` were filtered differently, and only
+one of them was right. "Blocked" is a status, so `status == BLOCKED` drops closed
+work without anyone having to think about it. "Escalated" is a boolean column, and
+the escalated half asked for `is_escalated` and nothing else.
+
+That column is raised by `escalate` and lowered by exactly one thing,
+`clear_escalation`. **Closing or resolving a ticket does not clear it**, on purpose:
+the flag is a fact about the ticket's history and `incident_events` records both
+`ESCALATED` and `ESCALATION_CLEARED`. So the usual ending — an engineer fixes the
+thing that was escalated about and the ticket closes, with no admin ever clicking
+Clear — left a row flagged for ever.
+
+Until D9 the thirty-day window hid this: stale escalations aged out and nobody saw
+them pile up. Removing the window did not create the bug, it uncovered one that was
+always there. Uncovered, it is worse than untidy — `ESCALATED_TICKET_LIMIT` caps the
+list at 50, so fifty closed-but-flagged tickets would push every live escalation off
+the end of the panel, and `escalated_total` would count work nobody can act on.
+
+Both the list and the count now also require `ACTIVE_INCIDENT_STATUSES` — the same
+tuple in `app/models/enums.py` that defines an engineer's `active_ticket_count` and
+the capacity warnings in `services/assignment.py`, so "active" means one thing
+everywhere. The two terms sit in one helper, `_live_escalation_clauses()`, shared by
+the count and the list, because a count and a list that filtered differently is
+precisely the defect being fixed.
+
+The alternative — clear `is_escalated` when a ticket closes — was rejected: it
+changes the state machine to satisfy a report, it destroys a fact the detail screen
+and `GET /incidents?is_escalated=` both read, and it gives the flag a second writer.
+See [decision D10](DECISION-LOG.md).
+
 #### Where "blocked since" comes from
 
 There is no `blocked_at` column, deliberately: `incident_service.py` clears
@@ -4312,6 +4344,8 @@ survive the trip.
 | Which reports are admin-only | `app/routers/reports.py` → `dependencies=[ADMIN_ONLY]` per route |
 | Who may be an assignee (hence `/reports/me`'s shape) | `app/services/assignment.py` |
 | When a ticket became blocked | `app/repositories/reports.py` → `_blocked_since` |
+| What counts as an escalation somebody can still act on | `app/repositories/reports.py` → `_live_escalation_clauses` |
+| What counts as live work, application-wide | `app/models/enums.py` → `ACTIVE_INCIDENT_STATUSES` |
 | What counts as "kept informed" | `app/repositories/reports.py` → `_first_public_staff_note` + `communication` |
 | Which roles are staff for that purpose | `app/repositories/reports.py` → `STAFF_ROLES` |
 | Hours, rounding, percentages, `NULL` handling | `app/repositories/reports.py` → `_hours`, `_rounded`, `_percentage` |
@@ -4376,6 +4410,17 @@ chart with a period that was never applied. That is deliberate.
 **A window of 30 days spans 31 calendar days.** Both ends are inclusive, matching
 `GET /incidents`'s `created_from`/`created_to`. `test_summary_reports_created_and_closed_for_every_day_in_the_window`
 asserts `len(per_day) == 31`, which looks off by one until you remember that.
+
+**`is_escalated` is never cleared by closing a ticket.** Only `clear_escalation` lowers
+it, so a closed ticket can and often does still carry the flag, its reason and its
+`escalated_at`. That is deliberate — it is history, and the detail screen and
+`GET /incidents?is_escalated=` both read it. The consequence is that **`is_escalated` on
+its own never means "needs attention"**: any present-tense query over it has to add a
+status filter, which is what `_live_escalation_clauses()` exists for. `/reports/summary`'s
+`escalated_total` deliberately does not add one, because it is a period report counting
+what happened during the window. If you add a third place that reads the flag, decide
+which of those two questions you are asking before you write the `WHERE`. See
+[decision D10](DECISION-LOG.md).
 
 **`CLOSED` keeps `resolved_at`.** Closing a ticket does not erase the fact that it was
 resolved first, so `communication.resolved_total` counts closed tickets too, and

@@ -312,3 +312,81 @@ thirty-day window in the query string, because a dashboard with a period picker
 will, and it must make no difference.
 
 **Reversible.** Yes, symmetrically with D5: `_scope_clauses()` is one function.
+
+## D10 — An escalation flag that outlives the work it was about
+
+**Question.** `/reports/blocked-escalated` filtered its two halves differently.
+The blocked half asks for `status == BLOCKED`, so closed work drops out of it by
+construction. The escalated half asked only for `is_escalated`, with no status
+term at all. Should a ticket that was escalated and then closed still be
+reported as escalated?
+
+**The defect.** `Incident.is_escalated` is raised by `escalate` and lowered by
+exactly one thing: `clear_escalation`
+(`app/services/incident_service.py`). Resolving or closing a ticket does not
+touch it. The common case is not an admin clicking Clear — it is an engineer
+fixing the thing that was escalated about, and the ticket closing with the flag
+still standing. Those rows then stayed in the report for ever.
+
+**This is a latent defect D9 exposed, not one D9 introduced.** Under D5 the
+report was window-scoped, so a stale escalation aged out of the default
+thirty-day view after thirty days and nobody saw the accumulation. The bug was
+already there — the filter was always wrong — and the window was concealing it.
+D9 removed the window for good reasons that still hold, and the concealment went
+with it. Without a status filter the stale rows now accumulate without limit,
+bounded only by `ESCALATED_TICKET_LIMIT = 50`: once fifty closed-but-flagged
+tickets exist they crowd live escalations out of the list entirely, and
+`escalated_total` counts work nobody can act on. Reverting D9 would re-hide this
+rather than fix it.
+
+**Chosen.** Both the escalated list and `escalated_total` now also require
+`Incident.status.in_(ACTIVE_INCIDENT_STATUSES)` — OPEN, IN_PROGRESS, BLOCKED.
+The constant already existed in `app/models/enums.py`, where M3 defined it for
+an engineer's `active_ticket_count` and `services/assignment.py`'s capacity
+warnings, so "active" still means one thing across the whole application. The
+two terms live in one helper, `_live_escalation_clauses()` in
+`app/repositories/reports.py`, shared by the count and the list so they cannot
+drift apart — which is the shape of this bug in the first place.
+
+**Why this is right, not merely convenient.** BUILD-PLAN section 10 puts the
+escalated tickets in the admin dashboard's "Needs attention" panel, each row
+carrying an inline Assign button. A closed ticket cannot be assigned and needs
+no attention. And D9 already settled the tense of this endpoint: it answers
+"what *is* escalated and why" in the present. A flag that survives the ticket is
+history, and history is not what a live queue is for. This also restores the
+symmetry the report should always have had — both halves now describe live work,
+one via a status and one via a status plus a flag.
+
+**Alternative considered and rejected: clear `is_escalated` when a ticket
+closes.** It would fix the report and it is a one-line change in
+`_apply_transition_effects`. Rejected on three grounds. It is a state-machine
+change made to satisfy a reporting problem, and the workflow is the one thing in
+this codebase that is deliberately data rather than code. It destroys
+information: "this ticket was escalated before it was fixed" is a fact worth
+keeping on the row, and `GET /incidents?is_escalated=` and the incident detail
+screen both read the column. And it would be a second writer to the flag, so
+"what clears an escalation" would stop having one answer — `clear_escalation`
+raises `NOT_ESCALATED` precisely because it expects to be the only one. The
+event log records `ESCALATED` and `ESCALATION_CLEARED` either way; the column is
+the current-state copy, and a report that wants current state can say so itself.
+
+**Deliberately not changed.** The blocked half, which was already correct. The
+workflow, the service layer and the schema of `Incident`. And two other counts
+of `is_escalated` that have the same shape but a different question behind them:
+`summary.escalated_total` (a period report — "how many of the tickets raised
+this month were escalated" is a question about the period, and a ticket
+escalated and since closed genuinely was) and `personal_counts.escalated` on
+`/reports/me`. The second is arguably the same bug and is noted for the owner
+rather than fixed here, because it is a different endpoint with its own
+assertions and this change was meant to be surgical.
+
+**Regression test.**
+`test_escalated_list_drops_a_ticket_that_was_closed_while_still_flagged` in
+`tests/integration/test_reports.py`. It adds a CLOSED and a RESOLVED incident,
+both with `is_escalated` still True and both escalated *more recently* than the
+fixture's two live escalations, so a missing filter puts them at the head of the
+list rather than out of sight at the end of it. It asserts `escalated_total ==
+2`, a list of exactly two rows, and their titles and statuses. Against the
+unfixed code it fails with `assert 4 == 2`.
+
+**Reversible.** Yes: one function, `_live_escalation_clauses()`.

@@ -12,13 +12,13 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, M7 pass 1 complete
+**Last updated:** 2026-09-23, M7 pass 1 complete (plus the D9 and D10 corrections)
 **Current branch:** `m7-dashboards-demo-data`
 **Phase in progress:** M7, pass 2 of 3. Pass 1 (report endpoints) is done and
 committed; passes 2 and 3 are `seed_demo` and the dashboards.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
-11, computed with SQL aggregates. 664 backend tests (609 + 55 new), ruff check
+11, computed with SQL aggregates. 665 backend tests (609 + 56 new), ruff check
 and ruff format clean. Every new test asserts a number worked out by hand from
 the fixture table at the top of `tests/integration/test_reports.py`.
 
@@ -28,6 +28,17 @@ questions, so a ticket blocked or opened long before the default thirty days
 must still appear; they now filter on `building_id` only, and carry a `scope`
 rather than a `window` in the response. The other six reports are unchanged.
 D5 and D7 are amended in place to point at D9.
+
+**Corrected again ([D10](DECISION-LOG.md)):** `/reports/blocked-escalated`
+filtered its escalated half on `is_escalated` alone, with no status filter,
+while its blocked half filtered `status == BLOCKED`. Since nothing but
+`clear_escalation` ever lowers that flag, a ticket escalated and then closed
+stayed in the report for ever. The escalated list and `escalated_total` now also
+require `ACTIVE_INCIDENT_STATUSES`. A latent defect D9 exposed rather than one
+D9 introduced: the old thirty-day window had been ageing the stale rows out of
+sight. One new test —
+`test_escalated_list_drops_a_ticket_that_was_closed_while_still_flagged` —
+which fails `assert 4 == 2` against the unfixed code.
 
 **M6 verified independently:** 609 backend tests, 211 frontend tests,
 12 Playwright tests (2 deliberate viewport skips), ruff check + format clean,
@@ -90,3 +101,6 @@ them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
 - M7's report tests need `make_incident(created_at=..., escalated_at=...,
   blocked_reason_type=...)` and `make_event(...)` in `tests/factories.py`; all
   four were added in pass 1 and are additive, so no existing test changed.
+- `is_escalated` is cleared only by `clear_escalation`, never by closing a
+  ticket, so any present-tense query over that flag needs a status filter too.
+  See D10 and `_live_escalation_clauses()` in `app/repositories/reports.py`.
