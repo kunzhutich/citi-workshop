@@ -1801,3 +1801,39 @@ router unmounting a real component.
 
 **Reversible.** Yes: delete `onMutate` and the `wasUnread` flag, and the badge
 goes back to being right within thirty seconds instead of immediately.
+
+## D33 — An inbox is not a dashboard, so it cannot share a dashboard's cache
+
+**Question.** `main.tsx` sets a global TanStack Query `staleTime` of 30 seconds.
+Should the notification feed inherit it?
+
+**What went wrong.** It did inherit it, and the end-to-end tests caught the
+consequence: navigating to the inbox within thirty seconds of the previous visit
+rendered the *previous* contents. The unread badge — which polls on its own
+schedule — had already moved on. So the list and the badge beside it disagreed,
+which is precisely the failure the shared query-key prefix was chosen to prevent.
+
+**Chosen.** `useNotificationFeed` overrides the global default with
+`staleTime: 0`. The override is local to the one hook, not a change to the global
+default.
+
+**Why.** Thirty seconds of cache is right for a dashboard: its numbers describe a
+month, nobody is waiting on them, and re-fetching on every navigation would be
+waste. An inbox is the opposite. It is the screen people open *because* something
+told them a thing had arrived, so the one guarantee it owes is that it shows what
+is there now. A cache that is correct for the common case and wrong for the
+attention case is worse than no cache, because the failure only appears when
+someone is actually watching.
+
+**Why not raise it globally.** The dashboard's 30 seconds is load-bearing —
+`/reports/*` runs eight aggregate queries against Aurora at `min_capacity = 0`,
+and a dashboard that re-queried on every navigation would wake a sleeping
+database repeatedly. The right shape is one default with a documented exception,
+not a default chosen to suit its least typical consumer.
+
+**How it was found.** Not by reading the code. The end-to-end suite navigated
+away and back inside the window and saw the stale list. This is the fourth time
+in this project that a defect invisible to unit tests was caught by driving the
+application — see D24 and D25 for the others.
+
+**Reversible.** One line in `frontend/src/features/notifications/hooks.ts`.

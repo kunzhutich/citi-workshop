@@ -67,6 +67,16 @@ export function useNotificationFeed(query: NotificationQuery) {
       const loaded = lastPage.page * lastPage.page_size;
       return loaded < lastPage.total ? lastPage.page + 1 : undefined;
     },
+    // **Overriding the application's global 30-second `staleTime`** (set in
+    // `main.tsx`), and this screen is the reason the override exists. Thirty
+    // seconds of cache is right for a dashboard, where the numbers are about a
+    // month and nobody is waiting on them. It is wrong for an inbox: this is
+    // the screen people open *because* the bell told them something arrived,
+    // and inheriting the default meant navigating here within half a minute of
+    // the last visit showed the previous contents — a list that disagreed with
+    // the badge beside it, which is the exact failure the shared cache prefix
+    // was chosen to prevent. Found by the end-to-end tests; see D33.
+    staleTime: 0,
   });
 }
 
