@@ -22,8 +22,10 @@ import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-rout
 import { useAuth } from '../auth/AuthContext';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { paths } from '../routes';
+import { AvailabilityToggle } from './AvailabilityToggle';
 import { DrawerAccountSection } from './DrawerAccountSection';
 import { activeNavPath, navItemsFor, reportNavItem } from './navigation';
+import { TicketSearchField } from './TicketSearchField';
 import { UserMenu } from './UserMenu';
 
 /** Width of the permanent desktop drawer, in pixels. */
@@ -124,6 +126,11 @@ export function AppShell() {
             The account lives at the foot of the drawer instead. On desktop,
             where reach is not a constraint, the avatar menu keeps its
             conventional corner.
+
+            The search box and the availability select are desktop-only for
+            the same reason the bottom bar exists: a 375px app bar fits a
+            title and one control. On a phone, search lives inside each list's
+            filter drawer, where it is one tap from the tickets it filters.
           */}
           {isMobile ? (
             <IconButton
@@ -135,7 +142,11 @@ export function AppShell() {
               <MenuIcon />
             </IconButton>
           ) : (
-            <UserMenu user={user} />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <TicketSearchField />
+              {user.role === 'ENGINEER' ? <AvailabilityToggle user={user} /> : null}
+              <UserMenu user={user} />
+            </Box>
           )}
         </Toolbar>
       </AppBar>
