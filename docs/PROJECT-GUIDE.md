@@ -759,10 +759,10 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | Which spelling of assign — "Pick up" or "Assign…" | `features/incidents/IncidentActions.tsx` | presentation only; `can_assign` is still the gate |
 | Which workflow buttons a **list row** shows | `features/incidents/InlineTransitionButtons.tsx` | asks the same endpoint; `only` filters what is drawn and can never add to it |
 | Whether a ticket is blocked, and why | `features/incidents/WorkflowStepper.tsx` | renders it; `app/workflow.py` decides it |
-| Which location fields the questionnaire asks for | `features/incidents/LocationPicker.tsx` | from the group's `location_detail`; **valid** is decided by the 422 from `incident_service.py` |
+| Which location fields the questionnaire asks for | `features/incidents/LocationPicker.tsx` | from the group's `location_detail`; **valid** is decided by the 422 from `app/services/incident_service.py` |
 | Whether a seat is called "Desk" or "Room" | `display/labels.ts` | `seatFieldLabel` |
 | Title and description bounds, client side | `features/incidents/reportSchema.ts` | mirrors `app/schemas/incident.py` |
-| What an audit event *reads as* | `features/incidents/ActivityTimeline.tsx` | prefers `from_label`/`to_label`, which `resolve_event_labels` fills |
+| What an audit event *reads as* | `features/incidents/ActivityTimeline.tsx` | prefers `from_label`/`to_label`, which `app/services/incident_service.py::resolve_event_labels` fills |
 | Who may read an INTERNAL note | `app/services/visibility.py` | in the query. The timeline only *styles* them |
 | Which icons a category may use | `features/incidents/categoryIcons.ts` | `CATEGORY_ICON_NAMES` |
 
