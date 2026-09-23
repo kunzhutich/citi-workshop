@@ -14,45 +14,93 @@ import { createTheme } from '@mui/material/styles';
 export const theme = createTheme({
   palette: {
     mode: 'light',
-    primary: { main: '#1f3a93' },
-    secondary: { main: '#6d28d9' },
-    background: { default: '#f4f6fa', paper: '#ffffff' },
 
     /*
-     * The status palette, pinned and contrast-checked.
+     * The palette the redesign brief asks for: a cream page, a brown primary,
+     * and a third colour to sit between them.
      *
-     * These four were Material UI's defaults until S6, when an axe run over
-     * the ticket list found the OPEN chip failing: white on `#0288d1` is
-     * 3.86:1, and a 13px chip label needs 4.5:1. `warning` was worse at 3.11.
-     * `chartPalette.ts` had been validated since M7; this half of the palette
-     * never had been, because it was never written down — it was whatever the
-     * library shipped.
+     * `background.paper` stays pure white deliberately. The brief changes the
+     * *page* background; cards sitting a shade lighter than the page is what
+     * makes them read as cards, and it has a second benefit worth stating —
+     * `features/dashboard/chartPalette.ts` is validated against the surface
+     * its marks are painted on, which is `background.paper`. Holding that one
+     * colour still means the chart palette's numbers move only because we
+     * chose to change the hues, never because the surface moved underneath
+     * them. A warm off-white here would be a defensible taste call and would
+     * invalidate every figure in that file.
+     */
+    primary: { main: '#73362a' },
+
+    /*
+     * The third colour: a warm ochre, in two steps rather than one.
      *
-     * One number decides both variants. A filled chip is white text on the
-     * colour and an outlined chip is the colour on white, so both are the
-     * colour's contrast against white, and one check covers both.
+     * The brief suggests `#a9743a` and asks for a mid-tone usable for
+     * secondary surfaces, hover states and chart series. One token cannot be
+     * all three, because `secondary.main` in this application is always a
+     * *surface with white text on it* — the account avatar's initials
+     * (`layout/UserMenu.tsx`, `layout/DrawerAccountSection.tsx`) and the note
+     * dot on the activity timeline. White on `#a9743a` is 4.00:1, which fails
+     * AA for the 15px initials.
      *
-     * **Checked against two backgrounds, not one.** The first attempt at this
-     * used `#0277bd`, which is 4.80 against white and passes — and 4.43
-     * against `background.default` (#f4f6fa), which does not. An outlined chip
-     * sits on the page as often as on a card, so both surfaces have to clear
-     * the bar. That second number is what axe caught, on the ticket detail
-     * page, after the first fix.
+     * So `main` is the ochre hue snapped down until white text on it clears
+     * the bar (5.56:1), and `light` keeps the brief's literal value for the
+     * places nothing sits on top: hover washes and tints.
      *
-     *              vs #ffffff   vs #f4f6fa
-     *   info     #026da8   5.59       5.17   (was #0288d1: 3.86 / 3.56)
-     *   warning  #b45309   5.02       4.64   (was #ed6c02: 3.11 / 2.87)
-     *   success  #2e7d32   5.13       4.75   (unchanged; already passed)
-     *   error    #d32f2f   4.98       4.61   (unchanged; already passed)
+     * Ochre rather than the two alternatives the brief offers, and the reason
+     * is measurable rather than a matter of taste. The third colour has two
+     * jobs — an accent beside the brown, and the hue the charts are drawn from
+     * — and only one candidate does both with the same colour.
      *
-     * The two that passed are pinned anyway, so that a library upgrade cannot
-     * quietly move them and so this comment can say what was measured rather
-     * than what was changed.
+     *            OKLCH hue   from primary   chroma as given   as a chart step
+     *   ochre       66.3°        33.7°          0.100           #b46d00
+     *   clay        40.4°         7.9°          0.097           #d74c00
+     *   olive      114.8°        82.3°          0.065           #7f8900
+     *
+     * A chart mark needs chroma of at least 0.10 or it reads as grey at bar
+     * size. Ochre is already there, so its chart step is the same colour one
+     * shade stronger. Clay has to travel to a vivid orange-red that is no
+     * longer a brown and collides with the error chip — and as an accent it is
+     * eight degrees from the primary, close enough to read as the app bar
+     * slightly faded. Olive gives the most separation of the three and is the
+     * furthest from its own chart step: a muted sage in the interface and a
+     * chartreuse in the charts, which is two colours wearing one name.
+     *
+     * See D48 for the full derivation and what a different choice would cost.
+     */
+    secondary: { main: '#8b5f30', light: '#a9743a' },
+
+    background: { default: '#f0eada', paper: '#ffffff' },
+
+    /*
+     * The status palette, re-derived for the cream page.
+     *
+     * S6 pinned these four against white *and* against the page, because an
+     * outlined chip sits on both — `PriorityChip` is outlined, and it is on
+     * every row of every list. The page was `#f4f6fa` then and is `#f0eada`
+     * now, which is darker: relative luminance 0.824 against 0.920. Three of
+     * the four quietly stopped passing.
+     *
+     *              vs #ffffff   vs #f0eada
+     *   info     #026da8   5.59       4.66   (unchanged — already cleared)
+     *   warning  #a94e08   5.56       4.63   (was #b45309: 5.02 / 4.18 FAIL)
+     *   success  #2c7730   5.54       4.62   (was #2e7d32: 5.13 / 4.27 FAIL)
+     *   error    #c72a2a   5.54       4.61   (was #d32f2f: 4.98 / 4.15 FAIL)
+     *
+     * The three were **re-derived, not re-picked**: each was walked down its
+     * own hue at constant saturation until it cleared 4.6 against the new
+     * page, which is 4.5 plus enough headroom that a rounding cannot decide
+     * it. Hue drift is 0.2° at worst, so these are the same four colours at a
+     * darker step rather than four new ones. Clearing the cream page clears
+     * white automatically, the cream being the harder of the two.
+     *
+     * Filled chips are white text on the colour and outlined chips are the
+     * colour on a surface, so one number still covers both variants — which is
+     * why the table has two columns and not four.
      */
     info: { main: '#026da8' },
-    warning: { main: '#b45309' },
-    success: { main: '#2e7d32' },
-    error: { main: '#d32f2f' },
+    warning: { main: '#a94e08' },
+    success: { main: '#2c7730' },
+    error: { main: '#c72a2a' },
   },
   typography: {
     // Roboto and Inter are both self-hosted in `fonts.ts`. Roboto is first, so
@@ -180,6 +228,31 @@ export const theme = createTheme({
            * This is instruction text that merely happens to live inside one.
            */
           '&.Mui-disabled': { color: current.palette.text.secondary },
+        }),
+      },
+    },
+    MuiToggleButton: {
+      styleOverrides: {
+        root: ({ theme: current }) => ({
+          /*
+           * An unselected toggle wears a text token, not `action.active`.
+           *
+           * Material UI colours it `rgba(0, 0, 0, 0.54)`, which resolves to
+           * `#6e6c64` on the cream page — 4.38:1, and the label is 13px, so it
+           * needs 4.5. It passed on the old near-white page at 4.61 and failed
+           * the moment the background warmed up.
+           *
+           * Found by the axe run over the notification inbox, **not** by
+           * `theme.test.ts`: that asserts the slots this application chooses,
+           * and this colour is a library default we never named. The two
+           * checks cover different ground and both are needed.
+           *
+           * `text.secondary` is the token the label should have had anyway —
+           * it is text — and it is 5.40:1 on the page and 5.74:1 on a card.
+           * The selected state is untouched; Material UI gives it
+           * `primary.main` on a tint, which the palette already checks.
+           */
+          '&:not(.Mui-selected)': { color: current.palette.text.secondary },
         }),
       },
     },

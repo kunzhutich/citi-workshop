@@ -31,38 +31,59 @@ import type { IncidentPriority } from '../../api/types';
  *
  * Validator results, all against `#ffffff`:
  *
- * * `#2a78d6,#eb6834` as a categorical pair — every check passes; worst CVD
- *   ΔE 24.7, normal-vision ΔE 33.6, both above the 8 and 15 floors.
- * * `#86b6ef,#5598e7,#2a78d6,#184f95` as an ordinal ramp — every check passes;
- *   monotone lightness, all step gaps above 0.06, light end 2.11:1 against the
- *   surface, hue spread 3°.
+ * * `#b46d00,#007ca5` as a categorical pair — every check passes; worst CVD
+ *   ΔE 18.9 under protanopia, normal-vision ΔE 24.6, both well above the 8 and
+ *   15 floors, and both slots clear the 0.10 chroma floor and 3:1 on the
+ *   surface.
+ * * `#ff9e0d,#d48100,#aa6600,#814d00` as an ordinal ramp — every check passes;
+ *   monotone lightness, all step gaps above 0.06, light end 2.07:1 against the
+ *   surface, hue spread 1°.
  *
- * A five-colour set following the *status chip* colours was tried first and
- * failed: blocked-orange beside resolved-green measures ΔE 3.2 under protanopia,
- * well under the floor, and closed-grey falls below the chroma floor. Those two
- * are adjacent in workflow order and workflow order is not ours to rearrange,
- * so the status chart uses one colour and lets its axis labels carry identity.
- * The chips are unaffected: they carry a word, so their colour never has to
- * stand alone.
+ * **These were re-derived for the new palette, not recoloured by hand.** The
+ * theme's third colour is an ochre at OKLCH hue 66°; the ramp and slot 1 are
+ * steps on that hue, found by taking the most chromatic in-gamut colour at
+ * each target lightness and then letting the validator accept or reject it.
+ * Three things the derivation settled that guesswork would not have:
+ *
+ * 1. **The primary brown cannot be a chart colour.** `#73362a` is OKLCH L
+ *    0.411 — below the 0.43 light-mode band — and chroma 0.089, below the 0.10
+ *    floor, so it reads as grey at chart size. Pushed to a passing chroma at
+ *    its own hue (33°) it becomes `#ce2700`, a vivid red-orange that is no
+ *    longer brown and collides with the error red. The brand's darkest colour
+ *    is a good colour for a filled app bar and a bad one for a bar chart.
+ * 2. **The second slot has to be cool.** Brown against ochre measures fine on
+ *    paper but leaves the two warm hues carrying a two-series chart; the pair
+ *    actually shipped is warm against cool, which is what survives protanopia
+ *    with room to spare.
+ * 3. **The ramp's light end is a floor, not a preference.** The first attempt
+ *    started at L 0.82 (`#ffb15c`) and failed at 1.80:1 — "Low" would have
+ *    dissolved into the white card. L 0.78 is the lightest step that clears
+ *    2:1, and the other three are evenly spaced below it.
+ *
+ * The previous pair, `#2a78d6,#eb6834`, still passes every check: the card
+ * surface did not move, so nothing forced this change. It changed because a
+ * blue-and-orange chart inside a cream-and-brown application looks like it was
+ * imported from somewhere else.
  */
 
 /** Categorical slot 1. Every single-series bar chart, and "created" on the flow chart. */
-export const SERIES_PRIMARY = '#2a78d6';
+export const SERIES_PRIMARY = '#b46d00';
 
 /** Categorical slot 2. The second series on the flow chart, and nothing else. */
-export const SERIES_SECONDARY = '#eb6834';
+export const SERIES_SECONDARY = '#007ca5';
 
 /**
  * The priority ramp, least to most urgent.
  *
- * Four steps of one blue hue. The lightest step is the ramp's floor for a light
- * surface — going lighter would let "Low" dissolve into the card behind it.
+ * Four steps of one ochre hue — the theme's third colour. The lightest step is
+ * the ramp's floor for a light surface, not a choice: one step lighter is
+ * 1.80:1 against a white card, and "Low" dissolves into it.
  */
 export const PRIORITY_RAMP: Record<IncidentPriority, string> = {
-  LOW: '#86b6ef',
-  MEDIUM: '#5598e7',
-  HIGH: '#2a78d6',
-  CRITICAL: '#184f95',
+  LOW: '#ff9e0d',
+  MEDIUM: '#d48100',
+  HIGH: '#aa6600',
+  CRITICAL: '#814d00',
 };
 
 /**
