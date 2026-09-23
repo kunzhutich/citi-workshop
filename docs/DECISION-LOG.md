@@ -1272,3 +1272,126 @@ for a deliberate change rather than folded into a flake fix.
 
 **Reversible.** Yes, and cheaply — the helper is additive and every call site
 is one line. Nothing in `src/` changed; this is a test-suite change only.
+
+## D25 — A test that reported a permission was enforced without checking it
+
+**Question.** `e2e/assignment.spec.ts:25` asserts that a JUNIOR engineer sees
+neither "Pick up" nor "Assign…" on a ticket. It passes. Does it pass because
+the permission rule holds, or because the assertion is made before the page
+could have shown either button?
+
+**Finding — because of the second.** The two assertions are absences:
+
+```ts
+await openTicket(juniorPage, reference);
+await expect(juniorPage.getByRole('button', { name: 'Pick up', exact: true })).toHaveCount(0);
+await expect(juniorPage.getByRole('button', { name: 'Assign…' })).toHaveCount(0);
+```
+
+`openTicket` waits on the ticket's reference, which comes from the `incident`
+query. The buttons are in `ActionsCard`, which the detail page keeps behind a
+**second** `QueryState`, on `allowed-transitions`
+(`IncidentDetailPage.tsx:206`). Until that query lands the entire card is a
+spinner, so "there is no Pick up button" is true of every ticket in the
+application, for every role, including an admin's. The assertion had no way to
+tell the permission rule from the network.
+
+That the buttons themselves are drawn from `incident.can_assign` rather than
+from the transitions payload makes no difference: it is the *card* they live
+in that the transitions query gates.
+
+**Proof, before any change.** A temporary spec (`e2e/_proof.spec.ts`, deleted
+after use) held `allowed-transitions` back with `page.route` and re-ran the
+assertion exactly as it stands today. Four cases, on the desktop project:
+
+1. **Transitions delayed 8s, rule in place** — the assertion passes. Asserted
+   in the same breath that `[role="status"][aria-busy="true"]` was *not* zero,
+   so the page was provably mid-flight at the moment it passed.
+2. **Transitions delayed 8s, rule deleted** — the assertion still passes. The
+   rule's absence was simulated at the wire: the incident response was fetched
+   and re-fulfilled with `can_assign: true`, which is what the page would
+   receive if `assignment.can_assign` stopped excluding a JUNIOR. The same test
+   then waited for the page to finish and found **both** buttons present,
+   `toHaveCount(1)` each. So a test that had just reported "a junior cannot
+   take this ticket" was looking at a page on which a junior could.
+3. **Rule deleted, assertion as fixed below** — fails, in 15s, with
+   `Expected: 0 / Received: 1` on `getByRole('button', { name: 'Pick up' })`.
+4. **Transitions delayed 3s, rule in place, assertion as fixed** — passes.
+
+Cases 1 and 2 are the defect. Cases 3 and 4 are the fix having teeth. The
+backend was never edited: simulating the rule's absence in the response keeps
+this a test-suite change, and it is the same signal a real regression would
+produce.
+
+**Chosen.** Establish the region before asserting about its contents:
+
+```ts
+await expect(juniorPage.getByRole('heading', { name: 'Actions' })).toBeVisible();
+await expectNothingLoading(juniorPage);
+```
+
+`ActionsCard` renders that heading whatever it holds — it is above the branch
+that chooses between the buttons and "There is nothing for you to do on this
+ticket." — so waiting for it is exactly "the thing that would show the buttons
+has rendered", and it cannot be satisfied by a spinner. `expectNothingLoading`
+(D24) adds that no sibling query is still in flight. Both, because the helper's
+own docstring asks for a positive wait beside it: on its own it is also
+satisfied by a page that has not started loading.
+
+**Why a heading and not a longer timeout, or a `waitForResponse`.** A timeout
+is a guess about a machine, and this is not a timing bug at all — the assertion
+is wrong on a fast machine too, it is just wrong invisibly. `waitForResponse`
+on `allowed-transitions` would work and would tie the test to a URL; the page
+already says when it has finished, in the markup, and that statement survives
+a route being renamed.
+
+**The seven borderline tests D24 left alone.** D24 recorded a count but never
+enumerated them, so the list was re-derived here against its own two
+descriptions — "reach query-driven content through a retrying assertion that
+happens to rescue them" and "take a layout measurement while a sibling panel is
+still resolving". Ten tests match. They are written out below so the list is
+not lost a second time.
+
+*Fixed, being the same shape as the defect above — an absence asserted without
+first establishing the thing that would show it:*
+
+| Test | Why it is the same shape |
+| --- | --- |
+| `accessibility.spec.ts` "a ticket detail page" | "No violations" is an absence, and a region that is still a spinner contributes no markup to fail on. The scan waits on the stepper, which belongs to the `incident` query; the actions card and the activity timeline are two further queries, and the timeline is a list — which is where the `list` violation S6 §1 records was found. |
+| `accessibility.spec.ts` "the assign dialog, which is a list of people" | The roster is a query of its own (`AssignDialog.tsx:103`). The dialog is on screen before it lands, so the scan can cover everything *except* the list the test is named after, and pass. |
+| `responsive.spec.ts` "no screen scrolls sideways" | "Does not scroll sideways" is an absence, and the first of its three measurements is taken on the detail page immediately after reporting a ticket — a two-column grid that is still a pair of spinners is narrow enough to satisfy any ruler. The other two measurements each already follow a wait for the widest thing on their screen. |
+
+Each fix is one call to `expectNothingLoading`.
+
+**Honest limit on that second group.** Unlike `assignment.spec.ts:25`, these
+three were *not* caught checking nothing. A second temporary spec measured the
+busy-region count at each old wait point on this machine: the detail page had
+zero busy regions with its timeline and actions card already rendered, the
+assign dialog had zero inside it with its list present, and the overflow
+measurement's `scrollWidth` was 1440 both before and after the page settled.
+They are checking what they name today. What they do not do is *guarantee* it —
+the guarantee is an accident of the API answering three requests at once on an
+idle VDI, which is precisely the accident D24 watched break under load. The
+fixes were taken because they cost one line and no runtime (the helper returns
+immediately when the count is already zero), not because a failure was
+observed. Recording the distinction matters more than the fixes do.
+
+*Left alone, as fragile at worst:*
+
+| Test | Why the absence cannot be vacuous |
+| --- | --- |
+| `dashboards.spec.ts` "gives a junior the sentence instead of a queue they cannot use" | The closest relative of the defect — a JUNIOR is asserted to see no "Pick up" — and it is sound for a reason the assignment test did not have. "Pick up" exists only inside `UnassignedInSpecialties`, the *other arm* of the `mayPickUp ? … : …` ternary at `EngineerHomePage.tsx:166`, and the test first waits for the else-arm's sentence to be visible. The absence is a statement about which branch rendered, not about when it did. |
+| `dashboards.spec.ts` "shows a senior their own work and an unassigned queue they may take" | The same ternary from the other side: the queue heading is asserted visible before the sentence is asserted absent. |
+| `dashboards.spec.ts` "draws both sections, with charts and real numbers" | The two raw `.count()` reads are each preceded by a retrying `toBeVisible()` on `.first()` of the same selector, and a bar and its label are emitted in one render commit. |
+| `accessibility.spec.ts` "every workflow action on a ticket is reachable by keyboard" | `expect(action).toBeVisible()` is a positive, and a loading page fails it. |
+| `responsive.spec.ts` "the workflow stepper runs across on desktop and down on a phone" | Comparative geometry, not an absence: both boxes must exist, and no loading state yields two boxes in the wrong relative position. |
+| `responsive.spec.ts` "a dialog fills a phone and is a panel on a desktop" | Measures a dialog it has waited for. The exposure is MUI's grow transition, which is fragility, not vacuity. |
+| `responsive.spec.ts` "the phone keeps the ticket actions in reach" | `toBeInViewport` retries and fails outright on a button that is not there. |
+
+The four tail `horizontalOverflow` measurements in `dashboards.spec.ts` were
+considered with them and left: each follows a positive wait for that screen's
+own query-driven content, and widening a permission fix into a rewrite of the
+dashboard suite is the scope creep D24 declined for this very test.
+
+**Nothing in `src/` changed, and no application bug was found.** The rule works;
+only the test was silent about it. Reversible: four call sites, one line each.

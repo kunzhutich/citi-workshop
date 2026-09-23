@@ -7427,6 +7427,24 @@ at the markup its own title names — the facilities tree, the ticket list, the
 charts. Seven scans in this file were in that state. A green axe run is only
 worth what the page under it was.
 
+**A negative assertion passes on an empty page — so it has to earn its
+emptiness.** `expect(x).not.toBeVisible()` and `expect(x).toHaveCount(0)` are
+true of a screen that has rendered nothing at all, which makes them the one
+assertion shape that can report a rule is enforced without ever consulting it.
+`assignment.spec.ts` asserted that a JUNIOR sees no "Pick up" or "Assign…"
+after waiting only on the ticket's own query, while both buttons live in
+`ActionsCard` behind a *second* `QueryState` on `allowed-transitions`
+(`IncidentDetailPage.tsx:206`). Delete the permission rule and the test still
+passed; the spinner satisfied it just as well as the rule did. The fix is the
+rule for every absence in this suite: **first wait for the thing that would
+show it** — here `getByRole('heading', { name: 'Actions' })`, which
+`ActionsCard` renders whatever it holds — and only then assert it is not there.
+`expectNothingLoading` belongs beside that wait, not instead of it: on its own
+it is also satisfied by a page that has not begun loading. When a screen draws
+one of two branches, waiting for the other branch's content does the same job —
+which is why the junior-home test in `dashboards.spec.ts` is sound and this one
+was not. [D25](DECISION-LOG.md#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it).
+
 ### 7. Glossary
 
 **axe-core** — the accessibility rule engine behind most automated checkers. It
