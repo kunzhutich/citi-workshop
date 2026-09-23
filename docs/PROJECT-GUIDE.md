@@ -76,6 +76,11 @@ organised **layer-first**: `routers/` (HTTP), `services/` (rules), `repositories
 one module per domain. A router validates and delegates; it decides nothing. A service
 decides everything and commits nothing. A router commits.
 
+> The backend is layer-first and the frontend is feature-first — the two halves are
+> organised on different axes because they have different reasons to change. The full
+> directory tree is in [the README's Code layout section](../README.md#code-layout) and
+> is not repeated here; what follows is why the layers exist rather than what is in them.
+
 **3. PostgreSQL** holds ten tables and is not merely a store. Constraints that can be
 expressed in the schema are expressed there (a `BLOCKED` ticket cannot exist without a
 blocked reason), the full-text search document is a generated column the application
