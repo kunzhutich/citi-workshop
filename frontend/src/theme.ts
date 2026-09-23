@@ -24,6 +24,12 @@ declare module '@mui/material/Chip' {
   }
 }
 
+declare module '@mui/material/LinearProgress' {
+  interface LinearProgressPropsColorOverrides {
+    workflow: true;
+  }
+}
+
 /**
  * The single source of global styling.
  *

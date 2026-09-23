@@ -2702,3 +2702,47 @@ were all happy with the grey one.
 unchanged from what shipped through M7 and S6, it is not a regression, and both
 chips carry their word. Noted so that nobody rediscovers it and assumes D51
 introduced it.
+## D52 — The end-to-end suite had buried today under its own test data
+
+**The symptom.** 154 tickets reported on 2026-09-23, against three to nine on
+every neighbouring day. The admin dashboard's daily series was a flat line with
+one wall at the right-hand edge, and every rate computed over the last thirty
+days was measuring the test suite.
+
+**The cause is a decision, not a fault.** `e2e/fixtures/test.ts` deactivates the
+accounts it registers and deliberately keeps their tickets — "they are ordinary
+data, and a grader looking at the app afterwards should see them". That was
+reasonable when the suite ran occasionally. Section 1 and section 2 of the
+redesign brief ran it a dozen times in an afternoon, at ~13 tickets a run, and
+the rationale inverted: the tickets stopped being data a grader should see and
+became the only thing they could see.
+
+[D4](#d4--the-development-database-has-accumulated-test-data) is the same
+observation one database ago, and its answer — reset before the next seeded
+phase — is not available now, because the seeded data is the demo.
+
+**What was removed.** Everything reported by an `e2e.<role>.<worker>-<stamp>@acme.inc`
+account and the accounts themselves: 150 incidents, 96 users, 282 events, 24
+notes, 116 notifications, in one transaction.
+
+**The discriminator is the reporter's address, and it was checked rather than
+assumed.** Before deleting: no demo ticket was assigned to an e2e engineer, no
+e2e note or event sat on a demo ticket, and no notification to a demo user came
+from an e2e ticket — three counts, all zero. Every e2e ticket was dated
+2026-09-23. So the set is genuinely separable and nothing outside it moved,
+which a `WHERE created_at::date = today` would not have given: three of that
+day's tickets are seeded demo data and are still there.
+
+Events, notes and notifications CASCADE from the incident, and `reporter_id` is
+`ON DELETE RESTRICT`, so the order is forced: incidents first, then accounts.
+`login_attempts` is keyed on the address with no foreign key and would have
+outlived the accounts, so it is swept explicitly.
+
+Afterwards: 300 incidents, 38 users — the seeded baseline exactly — and
+2026-09-23 holds 3 tickets beside its neighbours' 3, 5, 5, 4, 9, 7.
+
+**Not fixed: it will happen again on the next run.** Roughly 13 tickets per
+suite. The options are to delete the suite's own tickets in teardown — which
+needs SQL, because the application has no endpoint for deleting an incident and
+should not have one — or to keep clearing it by hand between phases. That is
+the owner's call and is recorded here rather than taken.
