@@ -201,7 +201,13 @@ def rotate_session(session: Session, raw_refresh_token: str) -> tuple[User, str,
 
     if stored.revoked_at is not None:
         revoked = user_repository.revoke_all_refresh_tokens(session, stored.user_id, now=now)
-        session.flush()
+        # Committed here, not flushed. This request is about to fail, so the
+        # router never reaches its own `session.commit()` and `get_db` closes
+        # the session without one — which would roll the revocation straight
+        # back. Ending every session is a security response to a replayed
+        # token, so it has to outlive the request that triggered it. This is
+        # the one place a service commits on its own.
+        session.commit()
         logger.warning(
             "Refresh token reuse detected for user %s; revoked %d active session(s)",
             stored.user_id,
