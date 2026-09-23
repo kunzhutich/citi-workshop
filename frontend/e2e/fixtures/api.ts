@@ -14,9 +14,18 @@ import type { APIRequestContext } from '@playwright/test';
 /** Password used for every account these tests create. */
 export const TEST_PASSWORD = 'PlaywrightLifecycle2026!';
 
-/** The seeded facility admin. Overridable, because a fresh clone's differs. */
-export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'henry@acme.inc';
-export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'AcmeLocalDev2026!';
+/**
+ * The seeded facility admin.
+ *
+ * `playwright.config.ts` sets both of these for the local stack, and an
+ * explicit environment variable overrides it. The fallbacks below are what a
+ * fresh clone with its own `seed_admin` account would replace, and are
+ * deliberately not a working local credential — a wrong password here costs a
+ * run and then a fifteen-minute lockout, so it should fail on the first
+ * request with a message that says what to do.
+ */
+export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'admin@acme.inc';
+export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? '';
 
 export interface Account {
   email: string;

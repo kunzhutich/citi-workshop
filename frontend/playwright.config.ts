@@ -1,6 +1,30 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
+ * The admin account the fixtures create test data with.
+ *
+ * Set here rather than left to `e2e/fixtures/api.ts`'s defaults, which still
+ * name `henry@acme.inc` on the retired `acme_incidents_dev` database. The
+ * local API runs against `acme_demo` permanently (`backend/v1/.env`), whose
+ * facility admin is the seeded demo account.
+ *
+ * Failing to set it is not a clean failure. Every run spends two bad sign-ins
+ * on the address, ten inside fifteen minutes trips `login_attempts`, and the
+ * suite then dies with a 429 that looks nothing like a credentials problem —
+ * which cost a full run to work out once. Committing the values is what stops
+ * anyone having to remember.
+ *
+ * `??=`, so an explicit environment variable still wins. That is how the
+ * deployed smoke run in `docs/DEPLOYMENT-CHECKLIST.md` points the same suite
+ * at a different stack. The password is the one `seed_demo` gives every
+ * account it invents and is already published in
+ * `src/features/auth/demoAccounts.ts`; this is a local sandbox, and if this
+ * application ever held anything real both files are the first to delete.
+ */
+process.env.E2E_ADMIN_EMAIL ??= 'demo.admin@acme.inc';
+process.env.E2E_ADMIN_PASSWORD ??= 'AcmeDemo2026!';
+
+/**
  * End-to-end tests, in a real browser, over real HTTP.
  *
  * The Vitest suite runs in jsdom, which has no layout engine: it can prove
