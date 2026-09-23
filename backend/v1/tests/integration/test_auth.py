@@ -7,11 +7,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import AuthenticationError
 from app.models.enums import UserRole
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.security.dependencies import REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH
 from app.security.tokens import hash_refresh_token
+from app.services import auth_service
 from tests.factories import DEFAULT_PASSWORD, auth_header, login, make_engineer, make_user
 
 REGISTER = "/api/v1/auth/register"
@@ -233,6 +235,48 @@ def test_reusing_a_revoked_token_kills_every_session(
         )
     ).all()
     assert live == [], "every session for the user must be revoked"
+
+
+def test_reuse_revocation_is_committed_not_merely_flushed(
+    client: TestClient, db_session: Session
+) -> None:
+    """The mass revocation must survive the request that triggers it failing.
+
+    `test_reusing_a_revoked_token_kills_every_session` above cannot catch a
+    regression here. Every request in that test shares this test's session, so
+    a write that is only *flushed* is still visible to its assertions — while
+    in production each request gets its own session and `get_db` closes it
+    without committing, discarding the revocation entirely.
+
+    So this asserts the mechanism rather than the outcome: the reuse path
+    commits on its own, because its caller never will.
+    """
+    user = make_user(db_session, email="replay-commit@acme.inc")
+    first = client.post(
+        LOGIN, json={"email": "replay-commit@acme.inc", "password": DEFAULT_PASSWORD}
+    )
+    stolen = first.cookies[REFRESH_COOKIE_NAME]
+    client.post(REFRESH)  # legitimate rotation; `stolen` is now revoked
+
+    commits: list[None] = []
+    real_commit = db_session.commit
+
+    def counting_commit() -> None:
+        commits.append(None)
+        real_commit()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(db_session, "commit", counting_commit)
+        with pytest.raises(AuthenticationError):
+            auth_service.rotate_session(db_session, stolen)
+
+    assert commits, "the revocation must be committed, since the failing request cannot"
+    live = db_session.scalars(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None)
+        )
+    ).all()
+    assert live == []
 
 
 def test_expired_refresh_token_is_rejected(client: TestClient, db_session: Session) -> None:

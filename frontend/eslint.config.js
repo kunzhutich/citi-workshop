@@ -37,7 +37,7 @@ export default defineConfig([
   },
   {
     // Vitest runs these in Node, and test files legitimately export nothing.
-    files: ['**/*.test.{ts,tsx}', 'src/test/**/*.ts'],
+    files: ['**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
     rules: { 'react-refresh/only-export-components': 'off' },
   },
   {

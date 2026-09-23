@@ -85,6 +85,19 @@ Browse to <http://localhost:3000>. Interactive API docs are at
 <http://localhost:8000/api/v1/docs> — note the `/api/v1` prefix, which the application
 owns in both environments because CloudFront forwards the full path to the Lambda.
 
+The app opens at the sign-in screen. Two ways in:
+
+- **Create an employee account** — "Create one with your ACME address". Self-registration
+  is open to `@acme.inc` addresses only and always produces an EMPLOYEE.
+- **Use the admin from step 3** — its temporary password is flagged
+  `must_change_password`, so the first sign-in goes straight to a change-password screen
+  and offers no way past it. That is the gate working, not a fault.
+
+`npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod`,
+`@hookform/resolvers`, `@fontsource/inter` and `@fontsource/roboto` (both typefaces are
+self-hosted and bundled, not fetched from a CDN; Roboto renders and Inter is the
+fallback).
+
 ### 5. Run the checks
 
 ```sh
@@ -95,6 +108,9 @@ cd backend/v1
 cd ../frontend
 npm run lint && npm test
 ```
+
+As of M5: **606 backend tests** and **112 frontend tests**, all passing. The backend
+suite takes about five minutes, most of it bcrypt hashing at cost 12.
 
 The backend suite needs the same PostgreSQL server. It creates its own database
 (`acme_incidents_test`, from `POSTGRES_TEST_NAME`) and **drops and recreates it on every
@@ -118,7 +134,9 @@ POSTGRES_TEST_NAME=acme_incidents_mine .venv/bin/python -m pytest
 | `/api/v1/health` healthy but every other call 500s | Same cause: the connection works, the schema is elsewhere. |
 | `password authentication failed for user "postgres"` | Step 1's `ALTER USER` was skipped, or `POSTGRES_PASS` does not match. |
 | `database "acme_incidents_dev" does not exist` | Step 1's `createdb` was skipped. |
-| Login succeeds, then every request 403s with `PASSWORD_CHANGE_REQUIRED` | Working as designed for a seeded account. Call `POST /api/v1/auth/change-password`. |
+| Signing in lands on a change-password screen with no way out | Working as designed for a seeded or admin-created account: `must_change_password` is set, and the API answers 403 `PASSWORD_CHANGE_REQUIRED` everywhere outside `/auth` until it is cleared. Complete the form. |
+| The app sits on "Restoring your session…" | The first request of a page load is `POST /api/v1/auth/refresh`. Locally that is instant, so a hang means uvicorn is not running or the Vite proxy is not reaching it — check `curl localhost:3000/api/v1/health`. |
+| `Failed to resolve import "zod"` or `"react-hook-form"` | M5 added three frontend dependencies. Run `npm install` in `frontend/`. |
 
 ## Coding Workshop Example
 

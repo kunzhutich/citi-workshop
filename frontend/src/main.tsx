@@ -6,6 +6,9 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
+import { AuthProvider } from './auth/AuthProvider';
+// Side-effect import: registers the @font-face rules theme.ts relies on.
+import './fonts';
 import { theme } from './theme';
 
 const queryClient = new QueryClient({
@@ -25,13 +28,17 @@ if (!container) {
   throw new Error('Root container #root is missing from index.html');
 }
 
+// AuthProvider sits inside BrowserRouter because the guards it feeds are
+// routes, and outside App because every route depends on the session.
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <BrowserRouter>
-          <App />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
         </BrowserRouter>
       </ThemeProvider>
     </QueryClientProvider>
