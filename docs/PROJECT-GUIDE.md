@@ -7289,6 +7289,7 @@ Tab 2…n → brand link, search, account menu   (header landmark, white focus r
 | What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each |
 | What a stepper step says about its state | `features/incidents/WorkflowStepper.tsx` | `describeStepState` |
 | Which accessibility rules the build enforces | `frontend/e2e/accessibility.spec.ts` | `WCAG_AA` |
+| What "the screen has finished loading" means to an e2e test | `frontend/e2e/fixtures/test.ts` | `expectNothingLoading` |
 
 ### 5. How to change it
 
@@ -7308,10 +7309,13 @@ It will carry the request id without doing anything: the context variable is
 already set. Do not put an email address, a token or a password in either.
 
 **To add a screen to the accessibility suite** — one `test` in
-`e2e/accessibility.spec.ts` calling `expectNoViolations(page)`. If the screen has
-a state that only appears after an interaction — a dialog, a drawer, a revealed
-section — scan that state too, and scope the assertion with the `include`
-argument so a failure elsewhere is not reported against it.
+`e2e/accessibility.spec.ts` calling `expectNoViolations(page)`. Wait for the
+screen with `expectNothingLoading(page)` before scanning, not for a heading: a
+scan that runs while the screen is still a `QueryState` spinner passes without
+ever having looked at the markup the test names ([D24](DECISION-LOG.md#d24--a-heading-is-not-a-signal-that-the-data-arrived)).
+If the screen has a state that only appears after an interaction — a dialog, a
+drawer, a revealed section — scan that state too, and scope the assertion with
+the `include` argument so a failure elsewhere is not reported against it.
 
 **To add a chart** — give it `role="img"` and an `aria-label` from a `summarise`
 function, and a table twin behind the same `ToggleButtonGroup` the other two
@@ -7386,6 +7390,42 @@ nothing focusable in it at all.
 **The 404 page returns HTTP 200.** CloudFront rewrites extension-less paths to
 `/index.html` so deep links survive a reload, so the server cannot know the path
 is not a route. Only the router can, and by then the response has been sent.
+
+**A heading is not a signal that the data arrived.** `PageHeader`,
+`PeriodScopeHeading` and `CurrentScopeHeading` are all mounted outside every
+`QueryState`, and the two scope headings render literal fallbacks ("the
+selected period", "now") until the server says otherwise — so on the admin
+dashboard **nine** busy loading regions are still on the page at the moment
+`getByRole('heading', { name: /Reported/ })` becomes visible, and `.first()`
+matches the static heading rather than the chart's. An e2e test that waits on
+a heading and then reads query-driven content is racing the network. Wait with
+`expectNothingLoading` from `e2e/fixtures/test.ts` instead. This cost the suite
+one run in three on one test before it was found.
+[D24](DECISION-LOG.md#d24--a-heading-is-not-a-signal-that-the-data-arrived).
+
+**`expect(await locator.count())` is not a Playwright assertion.** Awaiting the
+value first turns a web-first assertion, which retries until the `expect`
+timeout, into a plain comparison that gets exactly one chance. The suite's
+fifteen-second timeout does not apply to it. That single character of
+difference is what made D24's race a hard failure rather than a slow pass, and
+it is invisible on the page: write `await expect(locator).not.toHaveCount(0)`.
+The same trap applies to `isVisible()`, `count()`, `innerText()` and
+`boundingBox()` — none of them retry.
+
+**Not every `role="status"` is a loading state.** `@mui/x-charts` gives every
+chart a permanently-empty `role="status"` live region inside
+`MuiChartsSurface-root` to announce what a tooltip is pointing at, so five of
+them sit on the admin dashboard for as long as the charts do and a plain
+`getByRole('status')` count never reaches zero there. Our own two waiting
+states — `QueryState`'s pending branch and `FullPageProgress` — are the ones
+that also set `aria-busy`, which is why `expectNothingLoading` selects on it.
+
+**An axe scan that runs too early passes.** This is the quiet half of D24: a
+scan of a screen that is still a `QueryState` spinner finds nothing wrong,
+because a spinner is accessible. The test goes green while never having looked
+at the markup its own title names — the facilities tree, the ticket list, the
+charts. Seven scans in this file were in that state. A green axe run is only
+worth what the page under it was.
 
 ### 7. Glossary
 

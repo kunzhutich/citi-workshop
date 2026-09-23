@@ -1176,3 +1176,99 @@ the application no easier to use with a keyboard.
    broken, which is the expensive direction to be wrong in.
 
 **Reversible.** Not applicable; this is verification.
+
+## D24 — A heading is not a signal that the data arrived
+
+**Question.** `e2e/accessibility.spec.ts`'s "every chart has a text
+alternative, and one of them is a table" failed intermittently on the `mobile`
+project and passed when the same command was run again, so the e2e suite
+reported 71 passed / 1 failed instead of 72. Raise the `expect` timeout, or
+change what the test waits for?
+
+**Finding — it was never a timeout.** The line that fails is not the one that
+looks slow:
+
+```ts
+const charts = adminPage.getByRole('img');
+expect(await charts.count()).toBeGreaterThan(0);   // Expected: > 0, Received: 0
+```
+
+`count()` is awaited *before* it is handed to `expect`, so this is an ordinary
+value comparison and Playwright never retries it. The line has **zero**
+tolerance, not the suite's fifteen seconds — which is why a busier machine
+turns it red and why raising `expect.timeout` would have changed nothing at
+all. Measured over six consecutive runs of that file it failed twice, both
+times on that line, both times in under six seconds.
+
+What the test waited for first was
+`getByRole('heading', { name: /Reported/ }).first()`. That matches "Reported in
+this period" — `PeriodScopeHeading`, which `AdminDashboardPage.tsx:131` mounts
+*outside* every `QueryState` and which renders a literal fallback ("the
+selected period") until the server tells it the window. It is on screen before
+any of the dashboard's report requests has returned, and it precedes the flow
+chart's own heading in the DOM, so `.first()` always picks the static one.
+Meanwhile every `role="img"` in the application is inside a chart and every
+chart is inside a `QueryState`, whose pending branch renders a spinner instead
+of its children. Instrumented, **nine** busy loading regions were still on the
+page at the instant that heading became visible.
+
+Holding the report responses back by four seconds turns the flake into a
+deterministic failure carrying the identical message, and the same four-second
+hold passes once the test waits for the screen rather than for the heading.
+That is the before-and-after this entry rests on.
+
+**Chosen.** One helper, `expectNothingLoading(page)` in `e2e/fixtures/test.ts`,
+asserting that `[role="status"][aria-busy="true"]` has count zero, called after
+`goto` on every screen whose content arrives from a query. The non-retrying
+`count()` became a web-first `await expect(charts).not.toHaveCount(0)` in the
+same edit.
+
+**Why not simply extend the timeout.** Three reasons, in increasing order of
+importance. It would not have worked, because there is no timeout on the
+failing line to extend. A timeout is a guess about a machine — the number that
+is comfortable on this VDI is not the number that is comfortable on a loaded CI
+runner — whereas "nothing on this page is still loading" is a statement about
+the page, and it becomes true at the same moment whatever the hardware is
+doing. And the bad wait was quietly weakening the test as well as destabilising
+it: the loop over `charts.all()` inspects whichever charts happen to exist at
+that instant, so a run in which only some of the five had rendered was an
+under-check indistinguishable from a real pass.
+
+**Why `aria-busy`, and not `role="status"` on its own.** The obvious selector
+is wrong, in a way worth recording because it would be rediscovered. Every
+chart from `@mui/x-charts` carries its own permanently-empty `role="status"`
+live region inside `MuiChartsSurface-root`, used to announce what a tooltip is
+pointing at; five of them sit on the admin dashboard for as long as the charts
+do. A plain `getByRole('status')` count therefore never reaches zero on the one
+screen the helper was written for, and a check that can never pass is worse
+than no check. Both of this application's waiting states — `QueryState`'s
+pending branch and `FullPageProgress` — also set `aria-busy`, and the chart
+regions do not, so `aria-busy` is what separates "waiting" from "wired for
+announcements".
+
+**Where else the pattern was.** All of `e2e/` was audited against the same
+shape: a `goto` followed by a wait on something that renders before any query
+resolves, and then a read of query-driven content. Twelve tests had it and all
+twelve are fixed here — ten in `accessibility.spec.ts` (the employee home, the
+ticket list, the admin dashboard scan, the four admin screens, the two mobile
+drawers, and the chart test this entry started with) and two in
+`dashboards.spec.ts`.
+For the axe tests the symptom was the mirror image and quieter: scanning while
+the screen is still a spinner *passes*, so those tests were not checking the
+markup they name. `dashboards.spec.ts`'s "hides Needs your attention" was the
+sharpest of them — it read `isVisible()` with no wait at all, on a heading that
+is absent rather than hidden while its query is in flight, so the assertion it
+ends with was very nearly vacuous.
+
+Seven further tests are recorded as borderline and deliberately left alone:
+they reach query-driven content through a retrying assertion that happens to
+rescue them, or take a layout measurement while a sibling panel is still
+resolving. `assignment.spec.ts:25` is the one worth a second look later — it
+asserts that a JUNIOR does *not* see "Pick up" or "Assign…", but those buttons
+come from a different query than the one it waited for, so the spinner can
+satisfy the assertion instead of the permission rule. That is a false pass
+rather than a flake, it is not the shape this entry is about, and it is left
+for a deliberate change rather than folded into a flake fix.
+
+**Reversible.** Yes, and cheaply — the helper is additive and every call site
+is one line. Nothing in `src/` changed; this is a test-suite change only.
