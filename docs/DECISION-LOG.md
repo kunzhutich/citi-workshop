@@ -2000,3 +2000,57 @@ Verified by reverting the fix and watching it fail —
 **Not yet reflected in data.** The two existing databases were seeded before this
 fix, so neither has departed employees until it is reseeded. The cloud database
 will get it from the first seed.
+
+## D36 — The deployed app could not be signed into, and only the deployed app
+
+**The symptom.** Sign in with a temporary password, change it when asked, sign
+in again with the new one — and land back on the change-password screen. Every
+time. The password was correct and the API was answering correctly.
+
+**Found by** the repo owner, on the deployed URL, within minutes of it going
+live. Reproduced headless against the same URL: login → change-password →
+login → `/change-password`, with `200 /auth/login` and `200 /auth/me` in the
+network log. Both succeeding, and the loop still happening.
+
+**The cause.** `/auth/me` carried **no `Cache-Control` header at all**. RFC 9111
+§4.2.2 permits a cache to invent a freshness lifetime when the server gave none,
+so the browser answered the second `/auth/me` from its own store — with the body
+from *before* the password change, in which `must_change_password` was still
+true. `RequireAuth` did exactly what it should with the data it was given.
+
+CloudFront was not at fault: the `/api/v1*` behaviour uses the managed
+CachingDisabled policy and every response showed `x-cache: Miss`. The cache was
+in the browser.
+
+**Why no test caught it.** Locally the Vite dev proxy does not cache, so the
+whole class of defect is invisible in development, in the unit suites and in the
+end-to-end suite — all of which run against the dev server. This is the first
+defect in this project that *could only* appear once deployed.
+
+**The fix.** `NoStoreMiddleware` in `app/main.py` sets `Cache-Control: no-store`
+on every API response. Registered outside `RequestLogMiddleware` so that
+responses raised before any router runs carry it too — verified on a 401 as well
+as a 200.
+
+`no-store` rather than `no-cache`: `no-cache` permits storing the response and
+revalidating, a weaker promise than is wanted for per-user responses that carry
+session state.
+
+**Guarded by** `test_every_api_response_refuses_to_be_cached`, which asserts the
+header on both a success and an error.
+
+**The wider lesson.** Five phases of looking at screens found defects the suites
+could not see. This one could not be found by looking at a screen *locally*
+either — only on the deployed thing. Worth remembering that "it works in dev" and
+"it works" are different claims, and that the gap between them is not always
+about data or scale.
+
+## D37 — CloudFront compression enabled
+
+The workshop organisers approved changes to the Terraform, so `compress = true`
+is now set on the API behaviours and the default behaviour. CloudFront defaults
+it off. The React bundle is 976 kB raw against 301 kB gzipped, paid on every cold
+visit; JSON API responses gzip well too.
+
+This was recorded in `docs/INFRA-CHANGES.md` as proposed-not-applied pending that
+approval. It is now the fourth change to the provided Terraform.
