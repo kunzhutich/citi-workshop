@@ -95,6 +95,11 @@ export function DashboardFilterBar({ controls }: DashboardFilterBarProps) {
           value={filters.buildingId}
           onChange={(event) => setFilters({ buildingId: event.target.value })}
           sx={{ minWidth: 180, flex: '0 1 200px' }}
+          // Without `displayEmpty` the "Every building" option is selected but
+          // draws nothing, so the control reads as an unfilled field rather
+          // than as the state it is actually in. Pinning the label up keeps it
+          // from overlapping the text that now appears there.
+          slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
         >
           <MenuItem value="">Every building</MenuItem>
           {(facilities.data?.buildings ?? []).map((building) => (

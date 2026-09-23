@@ -68,7 +68,12 @@ export function BlockedByReasonPanel({ groups, total, buildingId }: BlockedByRea
         ) : (
           <Box sx={{ overflowX: 'auto', mt: 2 }}>
             <Table size="small" aria-label="Blocked tickets by reason">
-              <TableHead>
+              {/* `nowrap` on the headers: in the dashboard's narrow right-hand
+                  column "Waiting on" and "Average age" wrapped to two lines
+                  while "Tickets" and "Longest" did not, leaving four headings
+                  on three different baselines. The table already scrolls
+                  sideways when it has to. */}
+              <TableHead sx={{ '& th': { whiteSpace: 'nowrap' } }}>
                 <TableRow>
                   <TableCell>Waiting on</TableCell>
                   <TableCell align="right">Tickets</TableCell>

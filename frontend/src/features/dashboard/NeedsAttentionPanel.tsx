@@ -16,10 +16,24 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { AssignButton } from '../incidents/AssignButton';
+import { ACTIVE_STATUSES, currentListLink } from './listLinks';
 import { incidentPath } from '../../routes';
 
 /** How long a ticket may sit unowned before it belongs in this panel. */
 export const UNASSIGNED_HOURS = 24;
+
+/**
+ * How many rows each half of the panel shows.
+ *
+ * A cap, not a page. Against the demo data the unassigned half had twenty-six
+ * rows and the escalated half sixteen, which made the dashboard twelve
+ * thousand pixels tall on a phone and buried the blocked-by-reason panel
+ * underneath them. The panel's job is "here is what needs somebody" — six rows
+ * of that is a prompt to act, and thirty is a list to scroll past. The count in
+ * the heading is the real total either way, and the link under the rows opens
+ * all of them.
+ */
+const ROW_CAP = 6;
 
 export interface NeedsAttentionPanelProps {
   /** The live escalations, from `/reports/blocked-escalated`. */
@@ -32,6 +46,8 @@ export interface NeedsAttentionPanelProps {
   error: unknown;
   /** The moment the snapshot describes, so ages are measured against it. */
   asOf: string | undefined;
+  /** Carried into the "show all" links, which honour the same building. */
+  buildingId: string;
 }
 
 /**
@@ -60,9 +76,12 @@ export function NeedsAttentionPanel({
   isPending,
   error,
   asOf,
+  buildingId,
 }: NeedsAttentionPanelProps) {
   const now = asOf ? new Date(asOf) : new Date();
-  const stale = unassigned.filter((incident) => hoursSince(incident.created_at, now) >= UNASSIGNED_HOURS);
+  const stale = unassigned.filter(
+    (incident) => hoursSince(incident.created_at, now) >= UNASSIGNED_HOURS,
+  );
 
   return (
     <QueryState
@@ -94,7 +113,7 @@ export function NeedsAttentionPanel({
               <EmptyState title="Nothing is escalated" />
             ) : (
               <Stack spacing={1.5} sx={{ mt: 2 }}>
-                {escalated.map((ticket) => (
+                {escalated.slice(0, ROW_CAP).map((ticket) => (
                   <AttentionRow
                     key={ticket.incident_id}
                     incidentId={ticket.incident_id}
@@ -121,6 +140,15 @@ export function NeedsAttentionPanel({
                     groupId={null}
                   />
                 ))}
+                <ShowAll
+                  shown={Math.min(escalated.length, ROW_CAP)}
+                  total={escalatedTotal}
+                  to={currentListLink(buildingId, {
+                    escalatedOnly: true,
+                    statuses: ACTIVE_STATUSES,
+                  })}
+                  noun="escalated ticket"
+                />
               </Stack>
             )}
           </CardContent>
@@ -142,7 +170,7 @@ export function NeedsAttentionPanel({
               <EmptyState title="Nothing has been left waiting" />
             ) : (
               <Stack spacing={1.5} sx={{ mt: 2 }}>
-                {stale.map((incident) => (
+                {stale.slice(0, ROW_CAP).map((incident) => (
                   <AttentionRow
                     key={incident.id}
                     incidentId={incident.id}
@@ -159,6 +187,15 @@ export function NeedsAttentionPanel({
                     groupId={incident.category.group_id}
                   />
                 ))}
+                <ShowAll
+                  shown={Math.min(stale.length, ROW_CAP)}
+                  total={stale.length}
+                  to={currentListLink(buildingId, {
+                    statuses: ['OPEN'],
+                    assigneeId: 'unassigned',
+                  })}
+                  noun="unassigned ticket"
+                />
               </Stack>
             )}
           </CardContent>
@@ -247,6 +284,41 @@ function AttentionRow({
       </Box>
       <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
     </Box>
+  );
+}
+
+/**
+ * The line under a capped list.
+ *
+ * Rendered only when rows were left out, and it says how many rather than
+ * offering a bare "see all": a reader who can see six of six needs no link,
+ * and one who can see six of twenty-six needs to know that before they act on
+ * what is in front of them.
+ *
+ * The link carries no dates, for the same reason the tiles above it do not —
+ * the number it stands behind was never windowed. See `listLinks.ts`.
+ */
+function ShowAll({
+  shown,
+  total,
+  to,
+  noun,
+}: {
+  shown: number;
+  total: number;
+  to: string;
+  noun: string;
+}) {
+  if (total <= shown) {
+    return null;
+  }
+  return (
+    <Typography variant="body2" sx={{ pt: 0.5 }}>
+      <Link component={RouterLink} to={to} underline="hover">
+        Show all {total} {noun}
+        {total === 1 ? '' : 's'}
+      </Link>
+    </Typography>
   );
 }
 

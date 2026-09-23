@@ -60,6 +60,14 @@ const BAND_HEIGHT = 34;
 const AXIS_BAND = 34;
 
 /**
+ * Room at the bar end for its value label.
+ *
+ * The labels sit *outside* the bars, so the longest bar needs somewhere to put
+ * its number. Without this the chart drew it over the card's edge.
+ */
+const LABEL_GUTTER = 44;
+
+/**
  * A horizontal bar chart of one measure across some categories, with a table.
  *
  * **Horizontal, not vertical.** Every breakdown on this dashboard has long
@@ -95,6 +103,13 @@ export function BreakdownChart({
 }: BreakdownChartProps) {
   const [view, setView] = useState<'chart' | 'table'>('chart');
   const navigate = useNavigate();
+
+  // The value axis is stretched past the largest bar so that bar ends short of
+  // the plot's right edge. Without the headroom the longest bar runs flush to
+  // the edge and its outside label has nowhere to render — Material UI drops
+  // it, so the single most important number on the chart was the one missing.
+  const largest = Math.max(...data.map((datum) => datum.value), 0);
+  const axisMax = largest + Math.max(1, Math.ceil(largest * 0.15));
 
   const activate = (datum: BreakdownDatum | undefined) => {
     if (!datum) {
@@ -155,7 +170,7 @@ export function BreakdownChart({
             layout="horizontal"
             height={data.length * BAND_HEIGHT + AXIS_BAND}
             // Room for the category names; the value axis needs almost none.
-            margin={{ left: 4, right: 24, top: 4, bottom: 4 }}
+            margin={{ left: 4, right: LABEL_GUTTER, top: 4, bottom: 4 }}
             yAxis={[
               {
                 scaleType: 'band',
@@ -171,7 +186,7 @@ export function BreakdownChart({
                 },
               },
             ]}
-            xAxis={[{ min: 0, tickMinStep: 1 }]}
+            xAxis={[{ min: 0, max: axisMax, tickMinStep: 1 }]}
             series={[
               {
                 data: data.map((datum) => datum.value),
@@ -180,6 +195,14 @@ export function BreakdownChart({
                 // hovering. Zeroes are left unlabelled: a "0" floating at the
                 // axis reads as a mark rather than as an absence.
                 barLabel: (item) => (item.value ? String(item.value) : null),
+                // **Outside the bar, not centred in it.** Centred was the
+                // library's default and it put dark ink on a saturated fill:
+                // on the Critical bar — the darkest step of the priority ramp
+                // — the number was all but unreadable, and on a short bar it
+                // spilled past the end. Outside, every label sits on the card
+                // in the ordinary secondary ink, at the same contrast whatever
+                // colour the bar is and whatever its length.
+                barLabelPlacement: 'outside',
               },
             ]}
             borderRadius={BAR_RADIUS}

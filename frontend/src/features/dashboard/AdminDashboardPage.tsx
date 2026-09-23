@@ -398,6 +398,7 @@ export function AdminDashboardPage() {
             isPending={unassigned.isPending}
             error={unassigned.error}
             asOf={live.data?.scope.as_of}
+            buildingId={filters.buildingId}
           />
           <BlockedByReasonPanel
             groups={live.data?.blocked ?? []}

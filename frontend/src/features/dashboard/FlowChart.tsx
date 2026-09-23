@@ -6,7 +6,7 @@ import { LineChart } from '@mui/x-charts/LineChart';
 
 import type { DayCount } from '../../api/reports';
 import { EmptyState } from '../../components/QueryState';
-import { formatDate } from '../../display/time';
+
 import { SERIES_PRIMARY, SERIES_SECONDARY } from './chartPalette';
 
 export interface FlowChartProps {
@@ -42,6 +42,12 @@ const CHART_HEIGHT = 260;
 export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
   const hasAnything = perDay.some((day) => day.created > 0 || day.closed > 0);
 
+  // Label every Nth day rather than letting the axis drop whichever labels
+  // happen to collide. Left to itself it thinned August to every second day
+  // and kept every day in September, because the shorter labels fitted — an
+  // axis whose spacing changes halfway across reads as a rendering fault.
+  const tickEvery = Math.max(1, Math.ceil(perDay.length / 10));
+
   return (
     <Card sx={{ opacity: isStale ? 0.55 : 1, transition: 'opacity 150ms' }}>
       <CardContent>
@@ -60,15 +66,22 @@ export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
         ) : (
           <LineChart
             height={CHART_HEIGHT}
-            margin={{ left: 4, right: 12, top: 4, bottom: 4 }}
+            // Room on the right for the last tick label, which was clipped to
+            // "Se…" before this.
+            margin={{ left: 4, right: 28, top: 4, bottom: 4 }}
             xAxis={[
               {
                 scaleType: 'point',
                 data: perDay.map((day) => day.day),
-                valueFormatter: (value: string) => formatDate(value),
+                // Day and month only. The full date carries a year that is the
+                // same on every tick, and the extra six characters were enough
+                // to push the last label off the right edge of the card.
+                valueFormatter: (value: string, context) =>
+                  context.location === 'tick' ? shortDay(value) : longDay(value),
                 // Every day is a point; labelling every one would collide, so
                 // the axis thins them and the tooltip carries the rest.
                 tickLabelStyle: { fontSize: 11 },
+                tickInterval: (_value, index) => index % tickEvery === 0,
               },
             ]}
             yAxis={[{ min: 0, tickMinStep: 1, width: 36 }]}
@@ -101,4 +114,18 @@ export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
       </CardContent>
     </Card>
   );
+}
+
+/** "23 Aug" — what an axis tick has room for. */
+function shortDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+/** "23 Sep 2026" — what a tooltip has room to say in full. */
+function longDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
 }
