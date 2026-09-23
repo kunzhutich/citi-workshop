@@ -70,6 +70,13 @@ connection open, so there was no websocket to reject ([D30](./docs/DECISION-LOG.
 the initial schema; `login_attempts` came with S6's login lockout and `notifications`
 with S1.
 
+Two conventions are declared once in `app/models/base.py` and then inherited, and the
+exceptions are the interesting part. `UUIDPrimaryKeyMixin` gives a table a surrogate
+`id`; **ten of the twelve use it**, and the two that do not are `engineer_profiles`
+(keyed on `user_id`) and `login_attempts` (keyed on the email address).
+`TimestampMixin` gives `created_at` and `updated_at`; **eight of the twelve use it**, and
+the write-once tables omit `updated_at` to say so in the schema.
+
 | Table | What it holds | Added in |
 | --- | --- | --- |
 | `buildings` | Sites. The top of the location tree | `0001` |
@@ -77,12 +84,12 @@ with S1.
 | `seats` | Desks and meeting rooms on a floor — a seat is either, and the category decides which the form asks for | `0001` |
 | `categories` | A **two-level** tree: 5 groups, 32 subcategories. A subcategory declares the location detail its reports need | `0001` |
 | `users` | One row per person, carrying the role (`EMPLOYEE` / `ENGINEER` / `FACILITY_ADMIN`), the bcrypt hash and `must_change_password` | `0001` |
-| `engineer_profiles` | The engineer-only half of a user: level, specialties, availability, `max_active_tickets`. Keys on `user_id` — the one table with no surrogate UUID | `0001` |
+| `engineer_profiles` | The engineer-only half of a user: level, specialties, availability, `max_active_tickets`. Keys on `user_id` — it is an extension of a user, not an identity of its own | `0001` |
 | `refresh_tokens` | Hashed refresh tokens, rotated on every use, with reuse detection | `0001` |
 | `incidents` | The ticket: status, priority, escalation flag, reporter, assignee, location, and the lifecycle timestamps the reports are computed from | `0001` |
 | `incident_notes` | Public or `INTERNAL` notes. The visibility filter is a `WHERE` clause, so an employee's response never contains an internal row | `0001` |
 | `incident_events` | **Append-only.** Every accepted transition writes one, with from/to and reason. Every timing metric and every blocked age is read out of here rather than stored on the ticket | `0001` |
-| `login_attempts` | One row per email address, counting failed sign-ins for the lockout. **No foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./docs/DECISION-LOG.md)) | `0004` (S6) |
+| `login_attempts` | One row per email address, counting failed sign-ins for the lockout. Keyed on the `CITEXT` address, with **no foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./docs/DECISION-LOG.md)) | `0004` (S6) |
 | `notifications` | One row per thing a person was told: recipient, `NotificationType`, the incident it is about, the rendered sentence, and `read_at` | `0005` (S1) |
 
 Full schema: [BUILD-PLAN §3](./docs/BUILD-PLAN.md); the narrative version, in the order
