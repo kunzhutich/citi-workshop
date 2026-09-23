@@ -12,9 +12,47 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, M7 complete — all three passes
-**Current branch:** `m7-dashboards-demo-data`
-**Phase in progress:** none. M7 is finished. Next is M8 minus the deploy.
+**Last updated:** 2026-09-23, M8 (documentation) complete — the deploy is deferred
+**Current branch:** `m8-docs-and-demo`
+**Phase in progress:** none. M8 minus the deploy is finished. Next is stretch S6.
+
+**M8 verified:** `README.md` rewritten for this application (281 lines, ~160 of
+them the upstream Citi template, → ~615 lines that are about what was built);
+`docs/DEMO-SCRIPT.md` written; D15–D18 appended to the decision log; an M8
+section appended to the project guide. **No application file changed in this
+phase** — `git diff m7-dashboards-demo-data..` touches `README.md` and four
+files under `docs/` and nothing else — so the 683 / 271 / 25 figures carry over
+from M7 and no suite was re-run. The test suites were deliberately not run: the
+owner was using them.
+
+Every claim in the new documents was checked rather than copied. The route
+count (41 paths, 61 operations) was read out of the running OpenAPI document;
+the workflow table out of `app/workflow.py`, which has **eleven** rows against
+BUILD-PLAN §6's ten, because the plan's single "RESOLVED → CLOSED, assignee or
+admin" row ships as two; the six demo logins were confirmed against the stored
+hashes in `acme_demo` through `verify_password`; and every dashboard figure the
+demo script quotes was queried (21 blocked, 16 live escalations against 12 in
+the default 30-day period, 26 unassigned over 24 h, 318 incidents).
+
+**Three contradictions found and handled:**
+1. The template's README said "licensed under the MIT-0 License". `LICENSE` is,
+   and always was, **Apache-2.0**, `Copyright 2023 Citigroup, Inc.` The README
+   now says Apache-2.0 and says the old claim was wrong; `LICENSE` is untouched.
+   Worth reporting upstream.
+2. BUILD-PLAN §1 lists `@mui/x-data-grid`, `@mui/lab` and `dayjs`. **None is
+   installed.** The ticket table is a plain MUI `Table` and the activity feed is
+   built from `Box`; both files carry the reasoning at the top. The README
+   documents what shipped.
+3. The old README claimed "PostgreSQL 17" as a prerequisite. The development
+   machine runs **18.6**; CI runs 17; Aurora is 17.7. The README now says "17 or
+   newer" and names all three.
+
+**Not done, and the largest remaining M8 item:** BUILD-PLAN §15 also asks for a
+*front section* on `docs/PROJECT-GUIDE.md` — one coherent system overview, the
+data-model narrative, a complete rule-to-file map, an end-to-end request trace
+and a merged glossary, so the guide reads as a whole rather than as eight
+stitched-together phase logs. It was out of scope for this run. The guide is
+5,567 lines; this is a substantial piece of writing, not a tidy-up.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
 11, computed with SQL aggregates. 665 backend tests (609 + 56 new), ruff check
@@ -131,15 +169,16 @@ reviews.
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
 | `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
 | `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
-| `m8-docs-and-demo` | M8 minus deploy | not started |
+| `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide section — committed, **not pushed** |
 | `s6-hardening` … | stretch | not started |
 
 ## Remaining plan
 
 1. **M6** — verify when the other session finishes, commit, push.
 2. **M7** — ~~report endpoints~~, ~~`seed_demo`~~, ~~three dashboards~~. All done.
-3. **M8 minus deploy** — README rewrite, architecture diagram, role/permission
-   matrix, known limitations, demo script. Branch off `m7`. See decision D1.
+3. **M8 minus deploy** — ~~README rewrite~~, ~~architecture diagram~~,
+   ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~. Done. See
+   decision D1. Outstanding: the project guide's front section (above).
 4. **Stretch**, in order S6 → S1 → S3 → S2. See decision D2.
 
 The AWS deploy is not part of this run: no credentials. Every step that needs

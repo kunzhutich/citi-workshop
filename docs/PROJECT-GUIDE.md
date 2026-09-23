@@ -5274,3 +5274,294 @@ hundred pixels every time the date range changes.
 **Auto-fit grid** — `repeat(auto-fit, minmax(190px, 1fr))` in CSS Grid: as many equal
 columns as fit above a minimum width, re-flowing on their own. Five tiles become five
 columns on a desktop and one on a phone without a breakpoint per count.
+
+---
+
+## Phase M8 — The README, the demo script (deploy deferred)
+
+M8 in BUILD-PLAN section 15 is "final deploy, README, guide, demo script". No AWS
+credentials exist for this build, so the deploy half cannot run and is not attempted;
+[D1](DECISION-LOG.md) records that choice and `docs/DEPLOYMENT-CHECKLIST.md` holds every
+step that needs the cloud, with its command and its expected output. This phase is the
+other half: the documents a reviewer, and later you, will actually read.
+
+**Verified.** No application code changed — `git diff` for this phase touches `README.md`
+and four files under `docs/` and nothing else, so the 683 backend / 271 frontend / 25
+end-to-end figures carry over from M7 untouched and no suite was re-run for it. What *was*
+verified is every claim the new documents make: the route list was read out of the running
+OpenAPI document, the workflow table out of `app/workflow.py`, the test counts from the
+owner's own run, the demo logins out of `acme_demo` through the application's own
+`verify_password`, and every quoted dashboard figure by SQL against that database.
+
+**The one thing to understand before changing any of this**: the README is now a claim
+surface. Every sentence in it is checkable in one hop — a file path, a command, a number
+that can be re-queried. Section 6 lists what that cost and where it nearly went wrong.
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| [README.md](../README.md) | Rewritten end to end, 281 lines → ~615. The repository's front door for someone with fifteen minutes and no context. |
+| [docs/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
+| [docs/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
+| [docs/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
+| This section | The M8 entry in this guide. |
+
+**What the README now contains**, in the order a reviewer meets it: what the application
+does and for whom; the architecture as two Mermaid diagrams (deployed, then local) plus a
+table of how the two differ; the code layout and the three rules that each live in exactly
+one file; the three roles and a permission matrix; the workflow as a state diagram and as
+the eleven rows that are actually in the code; getting started, every command re-checked
+against the repository as it stands; testing — commands, current numbers, what each level
+covers, and eight named gaps; the trade-offs a reviewer is most likely to ask about; the
+known limitations; and one section covering the fork's origin, licence and attribution.
+
+**What was removed**, and it is most of the old file: the "Coding Workshop" title, the
+brief reproduced verbatim, a Roadmap section pointing at the *upstream* repository's issue
+tracker, and a Feedback section asking the reader to star the repository. [D15](DECISION-LOG.md)
+sets out the test each section was put to.
+
+**What was kept and corrected.** `LICENSE` is untouched and unmodifiable by us — Apache-2.0,
+`Copyright 2023 Citigroup, Inc.` The old README said "This library is licensed under the
+MIT-0 License", which was never true of this repository. The new one states Apache-2.0 and
+says in a parenthesis that the earlier claim was wrong, because a licence statement that
+changes without explanation is exactly what a reviewer should distrust.
+
+### 2. Why it is shaped this way
+
+**The architecture is two diagrams, not one.** `docs/full-stack.md` ships a single diagram
+with both environments folded into one picture ("AWS CloudFront (Local: Port 3000)"), plus
+DocumentDB and a LocalStack S3 that this project does not use. Folding them together hides
+the only thing about this topology worth explaining: local and deployed are *the same
+shape on purpose*, the browser talks to one origin in both, and the path `/api/v1/...` is
+byte-identical in both because CloudFront forwards the prefix unstripped and Vite's proxy
+does not rewrite it. Two diagrams and a difference table say that; one merged diagram
+cannot. The scaffold's Mongo and LocalStack boxes are absent because this project ships
+neither, and a diagram that draws components that do not exist is worse than no diagram.
+
+**The workflow section was written from `app/workflow.py`, not from BUILD-PLAN section 6.**
+They agree on nine rows and differ on one: the plan has a single "RESOLVED → CLOSED,
+assignee or admin, close_reason = CLOSED_BY_ENGINEER or ADMIN_CLOSED" row, and the code
+splits it into two rows, one per actor, so the recorded reason is a property of the table
+rather than a conditional in the service. The README documents eleven rows because eleven
+is what ships. The general rule for this repository: **the plan is the intent, the code is
+the contract, and documentation describes the contract.**
+
+**The permission matrix is BUILD-PLAN section 5, spot-checked against the code rather than
+copied.** Four rows were re-derived from source before being written down: `can_edit_content`
+(reporter, OPEN *and* unassigned), `can_change_priority` (reporter, OPEN — deliberately
+wider, it survives assignment), `ESCALATABLE_STATUSES`, and the note `EDIT_WINDOW` of 15
+minutes. Two facts that the matrix alone would mislead a reader about are called out in
+prose beneath it: every signed-in user may read every ticket (`apply_incident_visibility`
+returns the query unchanged, on purpose), and internal notes are filtered in SQL rather
+than in a serializer.
+
+**Testing is documented as commands, numbers, coverage-by-description, and gaps — in that
+order.** The rubric asks for "test artifacts (commands, results, and known gaps)
+documented clearly", and the gaps are the part a project is tempted to soften. Eight are
+named, including the four admin screens with no component tests and the fact that nothing
+has run against AWS. [D16](DECISION-LOG.md) explains why no coverage percentage is
+published: no coverage tooling is installed, and a number generated on the last day, which
+nobody then acts on, is worth less than an accurate list of what is missing.
+
+**Trade-offs are summarised with links, not re-explained.** The decision log is 18 entries
+and ~800 lines; a README that absorbed it would be read by nobody. Six decisions are
+summarised at a paragraph each — chosen because a reviewer would ask about them — and the
+rest are a link. The reversals are in, prominently: D5 and D7 chose one elegant rule, both
+entries flagged in writing the case that would break it, the case broke it, and
+[D9](DECISION-LOG.md) reversed it; D10 and D11 then found the latent defect the original
+rule had been concealing. A decision revisited when evidence arrived is the strongest
+thing in the log, and burying it would be the wrong instinct.
+
+**The demo script is a script, not a description.** Exact accounts, exact clicks, and the
+sentences to say in blockquotes, because the failure mode of a demo document is a
+presenter reading prose and improvising the clicks. It carries times, a three-minute setup
+section that has to happen before anyone is watching, a troubleshooting table, and a list
+of things the presenter will see that the script does not mention (318 incidents rather
+than 300, deactivated `e2e.*` accounts on the Users screen) so that nothing is discovered
+live. [D17](DECISION-LOG.md) covers why the whole thing runs on `acme_demo`;
+[D18](DECISION-LOG.md) covers the three-cookie-jar problem and how the logins were checked.
+
+### 3. How the pieces connect
+
+There are five documents and they are not interchangeable. A reader arrives through one of
+three doors:
+
+**A grader, fifteen minutes, no context.** `README.md` top to bottom. It answers what this
+is, how it is built, who may do what, how to run it, what is tested, what was traded away
+and what is missing — and links out rather than expanding. Nothing else is required
+reading, which is the constraint the rewrite was designed against.
+
+**Someone about to demo it.** `docs/DEMO-SCRIPT.md` — setup section first, hours before;
+then the walkthrough. It links back to the README only for installation.
+
+**You, later, changing something.** This guide, at the phase that built the thing you are
+changing; then `docs/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
+scaffold constraints that are not negotiable; then `docs/DEPLOYMENT-CHECKLIST.md` before
+anything reaches AWS.
+
+Tracing one claim end to end, which is the property the rewrite was trying to buy — the
+README says *"the frontend renders action buttons exclusively from `allowed-transitions`"*:
+
+`README.md` (Architecture → the three rules table)
+→ `backend/v1/app/workflow.py` `TRANSITIONS`, eleven `Transition` rows
+→ `app/routers/incidents.py` `GET /incidents/{id}/allowed-transitions`
+→ `app/services/incident_service.py` resolves the caller's actors, drops guarded moves
+→ `frontend/src/api/incidents.ts` typed fetch
+→ `frontend/src/features/incidents/IncidentActions.tsx` L44–62, one `<Button>` per entry
+  whose text **is** `transition.action_label` from the API — no label is spelled in the
+  frontend
+→ `frontend/src/features/incidents/TransitionDialog.tsx`, which builds its fields from
+  `required_fields`
+→ `backend/v1/tests/unit/test_workflow.py`, which parametrises over `TRANSITIONS` itself.
+
+Every hop is a file you can open. That is what "verified" means in section 1: not that the
+sentence sounded right, but that the chain was walked.
+
+### 4. Where the rules live
+
+The documentation map — which file answers which question, so no question has two homes:
+
+| Question | Document |
+| --- | --- |
+| What is this, how do I run it, what is tested, what is missing? | `README.md` |
+| How do I show it to someone in five minutes? | `docs/DEMO-SCRIPT.md` |
+| What was built in each phase, and why is it shaped this way? | `docs/PROJECT-GUIDE.md` (this file) |
+| Why was *this* call made, and what was rejected? | `docs/DECISION-LOG.md` (D1–D18) |
+| What does the scaffold force on us? | `CLAUDE.md` |
+| What was the plan, and what does each phase have to prove? | `docs/BUILD-PLAN.md` |
+| Where has the build got to? | `docs/BUILD-STATUS.md` |
+| What must be checked the first time credentials exist? | `docs/DEPLOYMENT-CHECKLIST.md` |
+| What did we change in the provided Terraform, and why? | `docs/INFRA-CHANGES.md` |
+| What is this project graded on? | `docs/full-stack.md` (the scaffold's, not ours) |
+
+Facts that live in more than one document, and which copy wins:
+
+| Fact | Authority | Who else states it |
+| --- | --- | --- |
+| The workflow transitions | `app/workflow.py` | README (all 11 rows), BUILD-PLAN §6 (10 rows, pre-split) |
+| Test counts | the suites themselves | README, BUILD-STATUS, this guide |
+| Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
+| Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
+| The API surface | the running OpenAPI document | README (41 paths / 61 operations), BUILD-PLAN §9 |
+
+### 5. How to change it
+
+**You added a workflow transition.** One row in `app/workflow.py`, one test — and then
+three documentation edits: the transition table in `README.md`, the state diagram above it
+if the new row adds an edge, and BUILD-PLAN §6 if you want the plan to stay honest. The
+frontend needs nothing.
+
+**You added or changed an endpoint.** The README quotes "41 paths / 61 operations"; re-derive
+it rather than adjusting it by hand:
+
+```sh
+cd backend/v1 && .venv/bin/python -c "
+from app.main import app
+spec = app.openapi()['paths']
+ops = sum(1 for p in spec for m in spec[p] if m in ('get','post','patch','put','delete'))
+print(len(spec), 'paths', ops, 'operations')"
+```
+
+(Note for FastAPI 0.141: `app.routes` holds lazy `_IncludedRouter` objects, so iterating it
+finds three routes and no endpoints. Read the OpenAPI document instead.)
+
+**The test numbers moved.** They appear in `README.md` (twice — the summary table at the
+top and the results table), `docs/BUILD-STATUS.md` and this guide's phase headers. Change
+all of them in one commit or they will disagree within a day.
+
+**You want the demo data fresh.** `seed_demo` will not top up or refresh:
+
+```sh
+sudo -u postgres dropdb acme_demo && sudo -u postgres createdb acme_demo
+cd backend/v1
+POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'migrate'}, None))"
+POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'seed_demo'}, None))"
+```
+
+Then re-check the figures the demo script quotes — they are all live counts.
+
+**You are about to demo.** Run the four pre-flight checks in DEMO-SCRIPT "Before you start
+→ Thirty seconds of dry run". The one that matters most is the date range: the seeded
+history is 90 days ending at seed time, so a dashboard opened weeks later shows an empty
+"Reported in this period" section under the default 30-day window, and looks broken when it
+is merely old.
+
+**Credentials arrived and you are deploying.** `docs/DEPLOYMENT-CHECKLIST.md` top to
+bottom, then update the README's status paragraph, the "Deployed (AWS) — designed and
+configured, not yet verified" heading, and known-limitation item 4. Those three are written
+to be changed together on that day.
+
+### 6. Gotchas
+
+- **`bcrypt.checkpw` against a stored hash returns False for the correct password.**
+  `app/security/passwords.py` reduces every password to a base64-encoded SHA-256 digest
+  before bcrypt — the `bcrypt_sha256` construction — so a naive check bypasses the pre-hash
+  and fails. The first pass at verifying the demo logins did exactly that and reported that
+  all six accounts had wrong passwords, which was nearly written into the demo script as a
+  warning. Always verify through `app.security.passwords.verify_password`.
+- **`acme_demo` is not only `seed_demo`'s output.** It holds 318 incidents, not 300, plus
+  deactivated `e2e.*` accounts, because Playwright was pointed at it during M7. Nothing is
+  broken; but any document quoting "300 incidents" is quoting the specification rather than
+  the database.
+- **Every "right now" figure in the demo script is perishable.** 21 blocked, 16 live
+  escalations, 26 unassigned over 24 hours — all true on 2026-09-23 and all drifting. The
+  script says to say "about twenty".
+- **Two Escalated numbers on one screen is correct and looks like a bug.** 16 live against
+  12 in the period. If a reader is going to be shown this page without narration, the alert
+  under the live tiles is the thing to point at.
+- **Mermaid renders on GitHub and in few other places.** VS Code needs an extension, and
+  plain `cat` shows a code fence. Both README diagrams are written to be readable as text
+  if they never render: node labels are full sentences, not `A`/`B`.
+- **README anchor links are generated from heading text.** `#known-gaps`, `#known-limitations`
+  and `#upstream-scaffold-and-licence` are linked from several places; renaming a heading
+  silently breaks them, and nothing in CI checks it.
+- **Line counts in commit messages age instantly.** This phase's say "281 → ~615"; treat
+  them as the shape of the change, not a measurement to re-verify.
+- **BUILD-PLAN's M8 also asks for a front section on this guide** — a single coherent
+  system overview, the data-model narrative, a complete rule-to-file map, one end-to-end
+  request trace and a merged glossary, to be read instead of eight stitched-together phase
+  logs. **That is not done.** It was out of scope for this run, it is a substantial piece of
+  writing against a 5,400-line file, and it is the largest remaining M8 item. `docs/BUILD-STATUS.md`
+  records it.
+
+### 7. Glossary
+
+**Mermaid** — a text-to-diagram syntax that GitHub renders natively inside a
+` ```mermaid ` code fence. `graph TD` draws boxes and arrows top-down;
+`stateDiagram-v2` draws a state machine. It is used here so the diagrams live in the same
+file as the prose and change in the same commit.
+
+**State diagram** — a picture of a state machine: the states a thing can be in, and the
+labelled transitions between them. The README's is generated by hand from `TRANSITIONS`
+and shows the nine distinct edges between five statuses; several edges carry more than one
+table row, because who you are changes what the move is called and what it records.
+
+**Apache License 2.0** — the licence this repository is under, inherited from the Citi
+scaffold. Permissive: you may use, modify and redistribute, including commercially. Its
+§4 obligations are the ones that matter to a fork — keep the licence text with the work,
+state that you changed files, and preserve attribution notices. Hence `LICENSE` untouched
+and a section of the README that says plainly which parts are the scaffold's.
+
+**MIT-0** — "MIT No Attribution", a permissive licence that drops even the attribution
+requirement. The old README claimed it; the repository has never been under it. The
+distinction matters precisely because MIT-0 would remove the obligation Apache-2.0 keeps.
+
+**DCO (Developer Certificate of Origin)** — a per-commit assertion that you wrote the
+contribution or have the right to submit it, made by signing a commit (`git commit -s`,
+which appends a `Signed-off-by:` line). Citi requires it on contributions to their
+repositories; `DCO.md` holds the text being agreed to.
+
+**Coverage instrumentation** — a tool that records which lines or branches ran during a
+test suite (`pytest-cov` for Python, `@vitest/coverage-v8` for the frontend). Neither is
+installed here, which is why the README names no percentage; see [D16](DECISION-LOG.md).
+
+**Cookie jar** — the store of cookies a browser profile keeps. Two windows of one profile
+share one jar, which is why three personas signed in at once need three *profiles* rather
+than three windows: the refresh cookie is scoped to `localhost:3000` and the second sign-in
+overwrites the first.
+
+**Pre-flight check** — a thing you verify before an audience exists, because its failure
+mode during a demo is indistinguishable from the application being broken. The demo
+script's are: health endpoint, a non-empty unassigned queue, and a dashboard whose date
+range still covers the seeded history.
