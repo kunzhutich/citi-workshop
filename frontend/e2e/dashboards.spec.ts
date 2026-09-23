@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { expect, test } from './fixtures/test';
+import { expect, expectNothingLoading, test } from './fixtures/test';
 import { reportIssue } from './fixtures/ticket';
 
 /**
@@ -93,6 +93,12 @@ test.describe('the employee home screen', () => {
     test.skip(isMobile(employeePage), 'the same data path; run once to keep the suite quick');
 
     await employeePage.goto('/');
+    // The section is absent, not hidden, while its query is in flight, and
+    // `isVisible` does not retry — so reading it straight off `goto` would
+    // record "not there yet" and call it "nothing is waiting". The assertion
+    // at the end of this test is only worth making once the screen has
+    // actually answered. See D24.
+    await expectNothingLoading(employeePage);
     const heading = employeePage.getByRole('heading', { name: 'Needs your attention' });
     const startedVisible = await heading.isVisible();
 
@@ -292,12 +298,19 @@ test.describe('the admin dashboard', () => {
     test.skip(isMobile(adminPage), 'the same requests; checked once on desktop');
 
     await adminPage.goto('/');
+    // `CurrentScopeHeading` renders outside every `QueryState`, with "now" as
+    // its fallback, so it proves only that the dashboard mounted. See D24.
     await expect(adminPage.getByTestId('current-scope-heading')).toBeVisible();
+    await expectNothingLoading(adminPage);
 
     // By role, not by label: "By building" is also a chart card whose view
     // toggle is labelled "How to show By building".
     await adminPage.getByRole('combobox', { name: 'Building' }).click();
+    // Option 0 is the hard-coded "Every building"; everything after it comes
+    // from `useFacilityTree`, which is not behind a `QueryState` of its own,
+    // so the menu is one item long until that query lands.
     const option = adminPage.getByRole('option').nth(1);
+    await expect(option).toBeVisible();
     const buildingLabel = (await option.innerText()).trim();
     await option.click();
 

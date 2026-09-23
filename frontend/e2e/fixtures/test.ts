@@ -163,4 +163,34 @@ export async function signIn(page: Page, account: Account): Promise<void> {
   await expect(page.getByRole('link', { name: 'ACME Facilities' })).toBeVisible();
 }
 
+/**
+ * Wait until nothing on the screen is still loading.
+ *
+ * The application has exactly two waiting states, and both mark themselves
+ * `role="status"` *and* `aria-busy`: `QueryState`'s pending branch
+ * (`src/components/QueryState.tsx`) and `FullPageProgress`, the session
+ * restore. So "no busy status region is left" is the screen's own statement
+ * that every query behind it has come back. A failed query and a snackbar are
+ * both `role="alert"`, so neither is mistaken for one still in flight.
+ *
+ * **`aria-busy` is load-bearing, not decoration.** `@mui/x-charts` gives every
+ * chart its own permanently-empty `role="status"` live region inside
+ * `MuiChartsSurface-root`, to announce what a tooltip is pointing at. Five of
+ * them sit on the admin dashboard for as long as the charts do, so a plain
+ * `getByRole('status')` count never reaches zero there — the check would fail
+ * on the one screen it was written for. Only our two waiting states are busy.
+ *
+ * **A heading proves nothing here.** `PageHeader`, `PeriodScopeHeading` and
+ * `CurrentScopeHeading` are all mounted *outside* every `QueryState`, and the
+ * scope headings carry literal fallbacks ("the selected period", "now"), so
+ * they render before a single request has returned. Waiting on one and then
+ * reading query-driven content is a race, not a wait — see D24.
+ *
+ * Pair it with a positive wait for something the screen renders at rest. On
+ * its own it would also be satisfied by a page that has not begun loading.
+ */
+export async function expectNothingLoading(page: Page): Promise<void> {
+  await expect(page.locator('[role="status"][aria-busy="true"]')).toHaveCount(0);
+}
+
 export { expect } from '@playwright/test';

@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 
-import { expect, test } from './fixtures/test';
+import { expect, expectNothingLoading, test } from './fixtures/test';
 import { reportIssue } from './fixtures/ticket';
 
 /**
@@ -111,6 +111,10 @@ test.describe('axe: every screen', () => {
   test('the employee home screen', async ({ employeePage }) => {
     await employeePage.goto('/');
     await expect(employeePage.getByRole('heading', { level: 1 })).toBeVisible();
+    // The greeting is outside every `QueryState`, so it is on screen while the
+    // four tiles and the recent-ticket list are still spinners. Scanning then
+    // would scan the spinners rather than the screen this test names.
+    await expectNothingLoading(employeePage);
 
     await expectNoViolations(employeePage);
   });
@@ -131,6 +135,8 @@ test.describe('axe: every screen', () => {
   test('the ticket list', async ({ employeePage }) => {
     await employeePage.goto('/tickets');
     await expect(employeePage.getByRole('heading', { level: 1 })).toBeVisible();
+    // `PageHeader` sits outside the `QueryState` that holds the list itself.
+    await expectNothingLoading(employeePage);
 
     await expectNoViolations(employeePage);
   });
@@ -152,7 +158,12 @@ test.describe('axe: every screen', () => {
     await adminPage.goto('/');
     await expect(adminPage.getByRole('heading', { level: 1 })).toBeVisible();
     // The charts are lazy-loaded; scanning before they arrive scans a spinner.
+    // The heading below only proves the chunk mounted: `/Reported/` matches
+    // "Reported in this period", which `PeriodScopeHeading` renders outside
+    // every `QueryState` and with a literal fallback for its dates. The wait
+    // that actually keeps the charts in the scan is the one after it. See D24.
     await expect(adminPage.getByRole('heading', { name: /Reported/ }).first()).toBeVisible();
+    await expectNothingLoading(adminPage);
 
     await expectNoViolations(adminPage);
   });
@@ -172,6 +183,10 @@ test.describe('axe: every screen', () => {
     test(`the ${name} screen`, async ({ adminPage }) => {
       await adminPage.goto(path);
       await expect(adminPage.getByRole('heading', { level: 1, name: heading })).toBeVisible();
+      // The heading is `PageHeader`, mounted outside the `QueryState` holding
+      // the tree or table these tests exist to scan — the facilities tree
+      // above all, which §1 records as having had the worst of it.
+      await expectNothingLoading(adminPage);
 
       await expectNoViolations(adminPage);
     });
@@ -221,6 +236,9 @@ test.describe('axe: the states a resting page does not show', () => {
     test.skip(!isMobile(employeePage), 'the drawer is the phone navigation');
 
     await employeePage.goto('/tickets');
+    // The scan below is of the whole page, not just the drawer, so the list
+    // behind it has to have arrived too.
+    await expectNothingLoading(employeePage);
     await employeePage.getByRole('button', { name: 'Open navigation' }).click();
     await expect(employeePage.getByRole('navigation', { name: 'Main' })).toBeVisible();
 
@@ -231,10 +249,14 @@ test.describe('axe: the states a resting page does not show', () => {
     test.skip(!isMobile(employeePage), 'the filter sheet is the phone layout');
 
     await employeePage.goto('/tickets');
+    await expectNothingLoading(employeePage);
     await employeePage
       .getByRole('button', { name: /Filter/i })
       .first()
       .click();
+    // The sheet's own button, so this is an open drawer rather than one still
+    // sliding up. Nothing else waited for the drawer at all.
+    await expect(employeePage.getByRole('button', { name: 'Show results' })).toBeVisible();
 
     await expectNoViolations(employeePage);
   });
@@ -264,13 +286,21 @@ test.describe('what a screen reader is given instead of a picture', () => {
 
   test('every chart has a text alternative, and one of them is a table', async ({ adminPage }) => {
     await adminPage.goto('/');
+    // This heading is not evidence that the charts exist. `/Reported/` matches
+    // "Reported in this period" — `PeriodScopeHeading`, mounted outside every
+    // `QueryState` and earlier in the DOM than the flow chart's own heading —
+    // so it is on screen before any of the dashboard's report requests has
+    // returned.
+    // Every `role="img"` in the application is inside a chart, and every chart
+    // is behind a `QueryState`. See D24.
     await expect(adminPage.getByRole('heading', { name: /Reported/ }).first()).toBeVisible();
+    await expectNothingLoading(adminPage);
 
     // Each chart is one labelled image rather than a few hundred unlabelled
     // SVG nodes. `role="img"` also makes the subtree presentational, so the
     // axis ticks are not read out in emission order.
     const charts = adminPage.getByRole('img');
-    expect(await charts.count()).toBeGreaterThan(0);
+    await expect(charts, 'the dashboard should have drawn its charts').not.toHaveCount(0);
     for (const chart of await charts.all()) {
       const label = await chart.getAttribute('aria-label');
       expect(label, 'a chart must describe itself').toBeTruthy();
