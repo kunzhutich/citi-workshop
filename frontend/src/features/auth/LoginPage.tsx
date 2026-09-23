@@ -28,6 +28,28 @@ export interface LoginLocationState {
 }
 
 /** Sign-in screen. */
+/**
+ * Where to go once signed in, ignoring a `from` that points at the
+ * change-password screen.
+ *
+ * `RequireAuth` records the page you were on so a deep link survives signing
+ * in. That is right for every page but one. Changing a password revokes every
+ * session, so the app goes anonymous *while still on* `/change-password`, and
+ * the guard dutifully records it as the page to return to. Signing in then
+ * sent the user straight back — and because that route sets `skipPasswordGate`
+ * it rendered happily even though the flag had just been cleared. Correct
+ * password, correct API response, and an endless loop between two screens.
+ *
+ * The gate still sends a genuinely-flagged account to the same screen on the
+ * next render, so nothing is lost by refusing it as a destination here.
+ */
+function destinationAfterSignIn(from: string | undefined): string {
+  if (!from || from === paths.changePassword) {
+    return paths.home;
+  }
+  return from;
+}
+
 export function LoginPage() {
   const { signIn, status } = useAuth();
   const navigate = useNavigate();
@@ -48,7 +70,7 @@ export function LoginPage() {
   // Someone who is already signed in has no business on the login screen —
   // for instance after pressing Back following a successful sign-in.
   if (status === 'authenticated') {
-    return <Navigate to={state?.from?.pathname ?? paths.home} replace />;
+    return <Navigate to={destinationAfterSignIn(state?.from?.pathname)} replace />;
   }
 
   async function onSubmit(values: LoginValues): Promise<void> {
@@ -57,7 +79,7 @@ export function LoginPage() {
       await signIn(values.email, values.password);
       // The guard sends a gated account on to the password screen; going to
       // the requested page here keeps the deep link working for everyone else.
-      void navigate(state?.from?.pathname ?? paths.home, { replace: true });
+      void navigate(destinationAfterSignIn(state?.from?.pathname), { replace: true });
     } catch (error) {
       setFormError(
         applyApiErrors<LoginValues>(

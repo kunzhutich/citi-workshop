@@ -2054,3 +2054,41 @@ visit; JSON API responses gzip well too.
 
 This was recorded in `docs/INFRA-CHANGES.md` as proposed-not-applied pending that
 approval. It is now the fourth change to the provided Terraform.
+
+## D38 — Correcting D36: the login loop was a redirect, not a cache
+
+**D36 was wrong about the cause.** It recorded a missing `Cache-Control` header
+as the reason a user could not get past the change-password screen. The header
+was genuinely missing and is genuinely worth setting — but adding it did not fix
+the symptom, which is the test D36 should have run and did not.
+
+**The actual cause.** `LoginPage` honoured `state.from` unconditionally:
+
+```ts
+void navigate(state?.from?.pathname ?? paths.home, { replace: true });
+```
+
+Changing a password revokes every session. The app therefore goes anonymous
+*while still rendering* `/change-password`; `RequireAuth` records that location
+as the page to return to and redirects to the login screen. Signing in then sends
+the user back to `/change-password`, and because that route is mounted with
+`skipPasswordGate` it renders without complaint even though the flag has just
+been cleared. Correct password, correct API response, endless loop between two
+screens.
+
+**The fix.** `destinationAfterSignIn` refuses `paths.changePassword` as a
+post-login destination and falls back to home. Nothing is lost: an account that
+genuinely needs the gate is sent there by the next render anyway.
+
+**Proven, this time.** The same headless reproduction that produced
+`after 2nd login → /change-password` now produces `after 2nd login → /`.
+
+**What D36 keeps.** `NoStoreMiddleware` stays. API responses should not be
+browser-cacheable, and a heuristically-cached `/auth/me` would have caused
+trouble eventually. It was a real gap found while chasing the wrong thing.
+
+**The lesson, which this project had already written down twice.** D24 and D25
+both established the rule: prove the fix removes the symptom, not merely that the
+mechanism you suspected is now different. D36 asserted a fix without re-running
+the reproduction that was already sitting on disk. A diagnosis that explains the
+symptom is not the same as the cause of it.
