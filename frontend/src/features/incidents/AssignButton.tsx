@@ -1,51 +1,69 @@
 import Button from '@mui/material/Button';
 import { useState } from 'react';
 
-import type { IncidentListItem } from '../../api/types';
 import { useSnackbar } from '../../components/SnackbarContext';
 import { AssignDialog } from './AssignDialog';
 import { useAssignIncident } from './hooks';
 
 export interface AssignButtonProps {
-  incident: IncidentListItem;
+  incidentId: string;
+  /** `INC-000123`, for the confirmation message. */
+  reference: string;
+  /** The ticket's category group, which decides who is a specialty match. */
+  groupId: string | null;
+  /** Who holds it now, so the dialog can mark them — null when nobody does. */
+  currentAssigneeId?: string | null;
   size?: 'small' | 'medium';
 }
 
 /**
  * Assign one ticket without leaving the list you found it in.
  *
- * The dialog, the mutation and the confirmation for a single row, so a screen
- * that shows tickets can offer assignment by dropping this in. The Team page
- * uses it on the unassigned queue; M7's admin dashboard will use it on the
- * "needs attention" panel.
+ * The dialog, the mutation and the confirmation for a single row, so any
+ * screen that shows tickets can offer assignment by dropping this in. A LEAD's
+ * Team screen uses it on the unassigned queue and the admin dashboard uses it
+ * on both halves of the Needs attention panel.
+ *
+ * **It takes four fields rather than a whole ticket.** The escalated half of
+ * `/reports/blocked-escalated` returns `EscalatedTicket` — a reference, a
+ * title, a status and an escalation reason — and not an `IncidentListItem`,
+ * because a report row is not a ticket row. Taking the ids it needs lets one
+ * button serve both shapes; taking an `IncidentListItem` would have meant
+ * either a second button or a fake ticket assembled to satisfy a type.
  *
  * It is the same `AssignDialog` the detail page opens — the ordering, the
  * capacity bars and the warning handling are not reimplemented for a list.
  */
-export function AssignButton({ incident, size = 'small' }: AssignButtonProps) {
+export function AssignButton({
+  incidentId,
+  reference,
+  groupId,
+  currentAssigneeId = null,
+  size = 'small',
+}: AssignButtonProps) {
   const { notify } = useSnackbar();
   const [open, setOpen] = useState(false);
-  const assign = useAssignIncident(incident.id);
+  const assign = useAssignIncident(incidentId);
 
   return (
     <>
       <Button size={size} variant="outlined" onClick={() => setOpen(true)}>
-        {incident.assignee ? 'Reassign' : 'Assign'}
+        {currentAssigneeId ? 'Reassign' : 'Assign'}
       </Button>
       {open ? (
         <AssignDialog
           open
           onClose={() => setOpen(false)}
-          groupId={incident.category.group_id}
-          currentAssigneeId={incident.assignee?.id ?? null}
+          groupId={groupId}
+          currentAssigneeId={currentAssigneeId}
           isSubmitting={assign.isPending}
           onAssign={async (assigneeId) => {
             const result = await assign.mutateAsync(assigneeId);
             if (result.warnings.length === 0) {
               notify(
                 assigneeId
-                  ? `${incident.reference} assigned to ${result.incident.assignee?.full_name ?? 'them'}.`
-                  : `${incident.reference} is unassigned.`,
+                  ? `${reference} assigned to ${result.incident.assignee?.full_name ?? 'them'}.`
+                  : `${reference} is unassigned.`,
               );
             }
             return result;

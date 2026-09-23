@@ -89,9 +89,20 @@ export function useActivity(id: string) {
   });
 }
 
-/** Re-read everything about incidents after a change to one of them. */
+/**
+ * Re-read everything about incidents after a change to one of them.
+ *
+ * Also the reports, from M7 on. Every persona home screen and the whole admin
+ * dashboard are built from `/reports/*`, so confirming a ticket fixed changes
+ * "Awaiting your confirmation" as surely as it changes the ticket — and a tile
+ * that still says 1 after the list beneath it emptied is the kind of stale
+ * number that makes a reader stop trusting the rest.
+ */
 function invalidateIncidents(queryClient: QueryClient): Promise<void> {
-  return queryClient.invalidateQueries({ queryKey: queryKeys.incidents.all });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.incidents.all }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.reports.all }),
+  ]).then(() => undefined);
 }
 
 /** Report a new incident. */

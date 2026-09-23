@@ -107,7 +107,12 @@ export function TeamPage() {
                   </Box>
                   <StatusChip status={incident.status} />
                   <PriorityChip priority={incident.priority} />
-                  <AssignButton incident={incident} />
+                  <AssignButton
+                    incidentId={incident.id}
+                    reference={incident.reference}
+                    groupId={incident.category.group_id}
+                    currentAssigneeId={incident.assignee?.id ?? null}
+                  />
                 </CardContent>
               </Card>
             ))}

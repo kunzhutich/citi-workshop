@@ -80,6 +80,10 @@ export interface IncidentQuery {
   assignee_id?: string;
   reporter_id?: string;
   is_escalated?: boolean;
+  /** Reported on or after this instant. Both ends inclusive, like the reports' window. */
+  created_from?: string;
+  /** Reported on or before this instant. */
+  created_to?: string;
   mine?: 'reported' | 'assigned';
   specialty?: boolean;
   sort?: string;

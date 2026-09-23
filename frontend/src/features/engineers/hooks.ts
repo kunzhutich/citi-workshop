@@ -12,11 +12,19 @@ import type { Engineer } from '../../api/types';
  * database produced rather than one the client counted.
  */
 
-/** One page of engineers with their workload. Staff only. */
-export function useEngineers(query: engineersApi.EngineerQuery = {}) {
+/**
+ * One page of engineers with their workload. Staff only.
+ *
+ * `enabled` exists for the one caller that cannot know in advance whether it
+ * is allowed to ask: the applied-filter chips resolve an assignee's id to a
+ * name, and an employee following a link with `?assignee_id=` in it would
+ * otherwise send a request the API answers with 403.
+ */
+export function useEngineers(query: engineersApi.EngineerQuery = {}, enabled = true) {
   return useQuery({
     queryKey: queryKeys.engineers.list(query),
     queryFn: () => engineersApi.listEngineers(query),
+    enabled,
   });
 }
 

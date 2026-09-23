@@ -1,5 +1,8 @@
 import { useAuth } from '../../auth/AuthContext';
-import { ComingSoonPage } from '../placeholder/ComingSoonPage';
+import { FullPageProgress } from '../../components/FullPageProgress';
+import { AdminDashboardPage } from '../dashboard/AdminDashboardPage';
+import { EmployeeHomePage } from './EmployeeHomePage';
+import { EngineerHomePage } from './EngineerHomePage';
 
 /**
  * The `/` route, which is a different screen for each persona.
@@ -8,36 +11,27 @@ import { ComingSoonPage } from '../placeholder/ComingSoonPage';
  * user — the page they land on — and a URL that changes with the role would
  * break a bookmark the day someone is promoted.
  *
- * M5 ships the shell; M6 and M7 replace each branch with the real page.
+ * M5 wired this to three placeholders so the shell was demoable; M7 replaces
+ * each branch with the real screen. The branch is the only role check here:
+ * each page is handed a `CurrentUser` that is definitely present, so none of
+ * them has to render an optional user.
  */
 export function HomePage() {
   const { user } = useAuth();
 
-  if (user?.role === 'FACILITY_ADMIN') {
-    return (
-      <ComingSoonPage
-        title="Dashboard"
-        description="Open, unassigned, blocked and escalated counts, the tickets needing attention, and charts by status, priority, category and building."
-        phase="M7"
-      />
-    );
+  // `RequireAuth` guarantees a session before this route renders, so this is
+  // the narrowing TypeScript needs rather than a state a user can reach.
+  if (!user) {
+    return <FullPageProgress />;
   }
 
-  if (user?.role === 'ENGINEER') {
-    return (
-      <ComingSoonPage
-        title="Your work"
-        description="Your assigned, in-progress and blocked tickets, and — for senior and lead engineers — unassigned tickets in your specialties, ready to pick up."
-        phase="M7"
-      />
-    );
+  if (user.role === 'FACILITY_ADMIN') {
+    return <AdminDashboardPage />;
   }
 
-  return (
-    <ComingSoonPage
-      title="Home"
-      description="Your ticket counts, anything waiting for you to confirm as fixed, and your recent reports."
-      phase="M7"
-    />
-  );
+  if (user.role === 'ENGINEER') {
+    return <EngineerHomePage user={user} />;
+  }
+
+  return <EmployeeHomePage user={user} />;
 }

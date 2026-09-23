@@ -30,6 +30,31 @@ export interface IncidentFilters {
   escalatedOnly: boolean;
   sort: string;
   page: number;
+
+  /**
+   * The four filters below have no control on the filter bar.
+   *
+   * They exist because M7's dashboard links into this list, and a link is only
+   * honest if the list it opens really is the set of tickets the tile counted.
+   * A KPI tile reading "Unassigned · 13" over a thirty-day period has to land
+   * on thirteen tickets, which needs an assignee filter and a date range that
+   * the bar never offered.
+   *
+   * They are not hidden. `AppliedFilterChips` renders one removable chip for
+   * each of them above the list, so a reader who arrived from a chart can see
+   * exactly what was applied on their behalf and take it off. Giving them full
+   * controls in the bar was the alternative: rejected because a subcategory
+   * select and two date pickers are four more controls for everyone, to serve
+   * a case that only ever arrives by link.
+   */
+
+  /** A subcategory, from drilling into a category group's chart. */
+  categoryId: string;
+  /** A user id, or the literal `unassigned`. */
+  assigneeId: string;
+  /** Both ends inclusive, ISO-8601, matching the reports' window exactly. */
+  createdFrom: string;
+  createdTo: string;
 }
 
 export interface IncidentFilterControls {
@@ -56,6 +81,10 @@ export function useIncidentFilters(): IncidentFilterControls {
       escalatedOnly: searchParams.get('is_escalated') === 'true',
       sort: searchParams.get('sort') ?? '-created_at',
       page: Math.max(1, Number(searchParams.get('page') ?? '1') || 1),
+      categoryId: searchParams.get('category_id') ?? '',
+      assigneeId: searchParams.get('assignee_id') ?? '',
+      createdFrom: searchParams.get('created_from') ?? '',
+      createdTo: searchParams.get('created_to') ?? '',
     }),
     [searchParams],
   );
@@ -94,6 +123,18 @@ export function useIncidentFilters(): IncidentFilterControls {
       if (next.page > 1) {
         params.set('page', String(next.page));
       }
+      if (next.categoryId) {
+        params.set('category_id', next.categoryId);
+      }
+      if (next.assigneeId) {
+        params.set('assignee_id', next.assigneeId);
+      }
+      if (next.createdFrom) {
+        params.set('created_from', next.createdFrom);
+      }
+      if (next.createdTo) {
+        params.set('created_to', next.createdTo);
+      }
 
       // `replace`, so filtering six times does not put six entries between the
       // user and the page they arrived from.
@@ -112,7 +153,12 @@ export function useIncidentFilters(): IncidentFilterControls {
     filters.priorities.length +
     (filters.groupId ? 1 : 0) +
     (filters.buildingId ? 1 : 0) +
-    (filters.escalatedOnly ? 1 : 0);
+    (filters.escalatedOnly ? 1 : 0) +
+    (filters.categoryId ? 1 : 0) +
+    (filters.assigneeId ? 1 : 0) +
+    // The two ends of one date range count as one filter, because that is how
+    // a reader thinks of them and the badge is for a reader.
+    (filters.createdFrom || filters.createdTo ? 1 : 0);
 
   return { filters, setFilters, reset, activeCount };
 }
@@ -132,6 +178,10 @@ export function toQuery(filters: IncidentFilters, preset: IncidentQuery): Incide
     group_id: filters.groupId || undefined,
     building_id: filters.buildingId || undefined,
     is_escalated: filters.escalatedOnly ? true : undefined,
+    category_id: filters.categoryId || undefined,
+    assignee_id: filters.assigneeId || undefined,
+    created_from: filters.createdFrom || undefined,
+    created_to: filters.createdTo || undefined,
     sort: filters.sort,
     page: filters.page,
     page_size: PAGE_SIZE,

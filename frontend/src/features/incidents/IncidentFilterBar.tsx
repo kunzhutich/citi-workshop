@@ -24,6 +24,7 @@ import {
 } from '../../display/labels';
 import { useCategoryTree } from '../categories/hooks';
 import { useFacilityTree } from '../facilities/hooks';
+import { AppliedFilterChips } from './AppliedFilterChips';
 import type { IncidentFilterControls } from './useIncidentFilters';
 
 /** How long to wait after the last keystroke before searching, in milliseconds. */
@@ -52,11 +53,21 @@ export function IncidentFilterBar({ controls }: IncidentFilterBarProps) {
   const controlsMarkup = <FilterControls controls={controls} />;
 
   if (!isMobile) {
-    return <Box sx={{ mb: 3 }}>{controlsMarkup}</Box>;
+    return (
+      <Box sx={{ mb: 3 }}>
+        {controlsMarkup}
+        {/* Outside the controls grid and outside the phone's drawer: a filter
+            that arrived by link has to be visible without opening anything. */}
+        <Box sx={{ mt: 2 }}>
+          <AppliedFilterChips controls={controls} />
+        </Box>
+      </Box>
+    );
   }
 
   return (
     <Box sx={{ mb: 2 }}>
+      <AppliedFilterChips controls={controls} />
       <Badge badgeContent={controls.activeCount} color="primary">
         <Button variant="outlined" startIcon={<FilterListIcon />} onClick={() => setDrawerOpen(true)}>
           Search and filter

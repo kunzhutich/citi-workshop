@@ -1,5 +1,6 @@
 import type { EngineerQuery } from './engineers';
 import type { IncidentQuery } from './incidents';
+import type { ReportPeriodParams, ReportScopeParams } from './reports';
 import type { UserQuery } from './users';
 
 /**
@@ -45,5 +46,27 @@ export const queryKeys = {
   users: {
     all: ['users'] as const,
     list: (query: UserQuery) => ['users', 'list', query] as const,
+  },
+
+  /**
+   * The dashboards.
+   *
+   * The period reports and the current-state reports are keyed by different
+   * parameter types, which is what keeps them from sharing a cache entry: two
+   * requests that differ only in whether a date range applied must never
+   * answer each other. See decision D9.
+   */
+  reports: {
+    all: ['reports'] as const,
+    summary: (params: ReportPeriodParams) => ['reports', 'summary', params] as const,
+    categories: (params: ReportPeriodParams) => ['reports', 'categories', params] as const,
+    locations: (params: ReportPeriodParams) => ['reports', 'locations', params] as const,
+    responseTimes: (params: ReportPeriodParams) => ['reports', 'response-times', params] as const,
+    engineerWorkload: (params: ReportPeriodParams) =>
+      ['reports', 'engineer-workload', params] as const,
+    communication: (params: ReportPeriodParams) => ['reports', 'communication', params] as const,
+    blockedEscalated: (params: ReportScopeParams) =>
+      ['reports', 'blocked-escalated', params] as const,
+    me: (params: ReportScopeParams) => ['reports', 'me', params] as const,
   },
 } as const;

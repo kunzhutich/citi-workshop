@@ -74,3 +74,27 @@ export function formatDate(iso: string | null | undefined): string {
     year: 'numeric',
   });
 }
+
+/**
+ * A duration in hours as something a person reads.
+ *
+ * The reports return every duration in hours — a median time to resolve, how
+ * long a ticket has been blocked — and past a day that unit stops being
+ * readable: "777.4h" is a number nobody converts in their head, while "32d" is
+ * the fact being reported. Under a day it stays in hours, where the precision
+ * is the point.
+ *
+ * `null` is not zero and must not render as one. The API returns `null` when
+ * nothing in the population reached the milestone being measured — no ticket
+ * was resolved, nothing is blocked — and "0h" would claim it happened
+ * instantly.
+ */
+export function formatHours(hours: number | null | undefined): string {
+  if (hours === null || hours === undefined) {
+    return '—';
+  }
+  if (hours < 24) {
+    return `${Math.round(hours)}h`;
+  }
+  return `${Math.round(hours / 24)}d`;
+}
