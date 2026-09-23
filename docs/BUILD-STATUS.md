@@ -24,12 +24,12 @@ reviews.
 
 | Branch | Phase | State |
 | --- | --- | --- |
-| `main` | — | at M5 merge? **no** — at M4 merge; M5 not yet merged |
+| `main` | — | at the M5 merge (PR #5) |
 | `m1-walking-skeleton` | M1 | merged to main (PR #1) |
 | `m2-data-model-auth` | M2 | merged to main (PR #2) |
 | `m3-facilities-categories-engineers` | M3 | merged to main (PR #3) |
 | `m4-incidents-workflow` | M4 | merged to main (PR #4) |
-| `m5-frontend-shell-auth` | M5 | pushed; UI fixes + PR pending owner |
+| `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
 | `m6-persona-screens` | M6 | in progress, not pushed |
 | `m7-dashboards-demo-data` | M7 | not started |
 | `m8-docs-and-demo` | M8 minus deploy | not started |
