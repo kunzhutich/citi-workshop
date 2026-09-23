@@ -1,5 +1,6 @@
 """Ops dispatch: the direct-invoke path that keeps migrations off the public API."""
 
+from dataclasses import fields
 from typing import Any
 
 import pytest
@@ -59,3 +60,54 @@ def test_handler_tolerates_an_empty_event(monkeypatch: pytest.MonkeyPatch) -> No
 
 def _fail_if_called(*args: object, **kwargs: object) -> None:
     raise AssertionError(f"unexpected call with {args} {kwargs}")
+
+
+# --- seed_demo ---------------------------------------------------------------
+#
+# The generator itself is tested in `tests/integration/test_seed_demo.py`
+# against a real database. What is left here is the action wrapper, none of
+# which needs one: its place in the registry, its refusal to run anywhere but
+# local development, and its payload validation. All three return before any
+# session is opened.
+
+
+def test_seed_demo_is_a_registered_action() -> None:
+    assert "seed_demo" in ops.ACTIONS
+    assert sorted(ops.ACTIONS) == ["health", "migrate", "seed_admin", "seed_demo"]
+
+
+def test_seed_demo_refuses_to_run_outside_local_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLAUDE.md: refuse `seed_demo` when the environment is production.
+
+    The check is on `IS_LOCAL` — the same flag that drives `sslmode`, the
+    `Secure` cookie flag and the weak-JWT-secret refusal — so there is one
+    answer in this codebase to "is this production".
+    """
+    monkeypatch.setenv("IS_LOCAL", "false")
+    monkeypatch.setenv("JWT_SECRET", "a-long-enough-deployed-signing-key-for-hs256")
+
+    result = ops.run_ops("seed_demo", {"action": "seed_demo"})["result"]
+
+    assert result["created"] is False
+    assert "refused outside local development" in result["error"]
+    assert "'aws'" in result["error"]
+
+
+def test_seed_demo_rejects_an_override_that_is_not_a_positive_integer() -> None:
+    """A bad payload must produce a message, not a TypeError mid-generation."""
+    result = ops.run_ops("seed_demo", {"action": "seed_demo", "incidents": "lots"})["result"]
+
+    assert result["created"] is False
+    assert "'incidents' must be a positive integer" in result["error"]
+
+
+def test_seed_demo_rejects_an_unknown_override() -> None:
+    """Only the four documented fields may be overridden from a payload."""
+    from app.seed.demo import DEFAULT_SPEC
+
+    assert set(ops.SEED_DEMO_OVERRIDES) <= {field.name for field in fields(DEFAULT_SPEC)}
+    # Anything else in the payload is ignored rather than passed through, so an
+    # invoke cannot reach into the shape of the demo world.
+    assert ops._seed_demo_overrides({"action": "seed_demo", "buildings": 99}) == {}

@@ -1137,16 +1137,110 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 ✅ **Correct result:** `403` then `200`, and the 403 body is
 `{"detail": ..., "code": "ROLE_NOT_PERMITTED"}` rather than HTML.
 
+## M7 — Dashboards and demo data (pass 2: `seed_demo`)
+
+### 7.5 `seed_demo` refuses to run on the deployed Lambda
+
+**Why it needs the cloud.** The guard reads `settings.is_local`, which is False only
+because `infra/locals.tf` injects `IS_LOCAL = "false"`. Locally the refusal is tested by
+setting the variable by hand (`tests/unit/test_ops.py`), which proves the branch, not the
+wiring. If `IS_LOCAL` failed to apply, the flag would fall back to its development default
+of True and the guard would silently open.
+
+**Risk if wrong.** A direct invoke would insert thirty-seven accounts — all sharing one
+password published in this repository — and three months of fictional tickets into the
+deployed database, and there is no `unseed_demo`.
+
+```sh
+aws lambda invoke --function-name "coding-workshop-v1-${PARTICIPANT_ID}" \
+  --payload '{"action":"seed_demo"}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+✅ **Correct result:** `{"ok": true, "action": "seed_demo", "result": {"created": false,
+"error": "seed_demo is refused outside local development ... environment is 'aws'."}}` and
+**no rows written**. Confirm the second half rather than trusting the first:
+
+```sh
+aws lambda invoke --function-name "coding-workshop-v1-${PARTICIPANT_ID}" \
+  --payload '{"action":"health"}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+❌ If it reports `"created": true`, `IS_LOCAL` did not reach the Lambda — check
+`local.env_vars` and re-apply. Then the database needs recreating, because the demo
+accounts cannot be told apart from real ones by anything except their names.
+
+### 7.6 Seeding the review database, if you decide you want demo data there
+
+**Why it needs the cloud.** Decision D4 resets `acme_incidents_dev` before seeding, and
+7.3's report timings need a realistic row count to be worth measuring. The deployed
+database has neither.
+
+This is **deliberately not runnable against Aurora** — see 7.5. If the deployed dashboards
+need data, the options are, in order of preference: demo against a local database; or
+relax the guard for one invoke, run it, and reset the database afterwards, accepting that
+every account shares a published password. Prefer the first.
+
+Locally, and only locally:
+
+```sh
+POSTGRES_NAME=acme_incidents_dev python -c "import function, json; \
+  print(json.dumps(function.handler({'action':'migrate'}, None)))"
+POSTGRES_NAME=acme_incidents_dev python -c "import function, json; \
+  print(json.dumps(function.handler({'action':'seed_demo'}, None), default=str))"
+```
+
+✅ **Correct result:** roughly one second, `"created": true`, and a payload reporting
+3 buildings, ~14 floors, ~420 desks, ~34 meeting rooms, 37 users and 300 incidents with a
+`by_status` spread of roughly 60% CLOSED and 40% live.
+
+⚠️ Not idempotent in the topping-up sense: a second run finds the demo buildings and
+returns `"created": false` without writing. To regenerate, drop and recreate the database
+first.
+
+### 7.7 The generated timestamps survive the round trip through Aurora
+
+**Why it needs the cloud.** Every backdated timestamp is written as an aware UTC
+`datetime` through psycopg into `timestamptz`. `app/db.py` pins the session time zone to
+UTC via `build_connect_args`, and M4's 4.2 established that timestamps serialise as UTC
+from the Lambda — but that was for rows the API wrote one at a time, not for a bulk insert
+of ~2,000 event rows in one transaction. A session time zone that failed to apply would
+shift the daily series and every age by the offset, quietly.
+
+Only checkable if 7.6's data ever reaches a deployed database. If it does:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/reports/blocked-escalated" | jq '.blocked'
+```
+
+✅ **Correct result:** `max_age_hours` in the hundreds or low thousands, matching what the
+same query returns locally to within the hours between the two runs. ❌ An age that is out
+by exactly a whole number of hours is a time-zone problem, not a data problem.
+
+### 7.8 A 300-incident seed inside the Lambda's limits
+
+**Why it needs the cloud.** Locally the whole generation takes under a second against
+PostgreSQL on the same host. In the Lambda it would be one round trip per flush across a
+VPC to an Aurora instance waking from `min_capacity = 0.0`. `infra/lambda.tf` sets
+`timeout = 300` and `memory_size = 512`; the generator holds every incident, event and
+note in memory before flushing, which is roughly 2,300 ORM objects.
+
+Unverifiable while 7.5 stands, and recorded so that nobody discovers it by trying. If the
+guard is ever deliberately relaxed for one invoke, watch the reported `Duration` and
+`Max Memory Used` in the invoke's log tail before assuming it will repeat.
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
 
-- `seed_demo` and its production guard — M7 pass 2.
-- Report endpoint performance against a realistic row count — M7 pass 3's prerequisite;
-  the checks are written up as 7.3 above and need `seed_demo` to have run first.
+- Report endpoint performance against a realistic row count. The checks are written up as
+  7.3 above and need `seed_demo` to have run first — which, per 7.5, it cannot do against
+  the deployed database. Measure them locally against a seeded database instead, and treat
+  the result as a lower bound: it has no VPC hop in it.
 - The three persona home pages and the admin dashboard — M7 pass 3. M6 ships every other
   screen; `/` is still a placeholder naming the phase. The report endpoints those pages
   read now exist (M7 pass 1); the pages themselves do not.
-- Anything depending on a realistic row count — M7's `seed_demo`. The deployed database
-  currently holds whatever has been reported by hand, so 6.7's timings and 4.7's query
-  plan are measured against tens of rows rather than hundreds.
+- Anything depending on a realistic row count in the *deployed* database. `seed_demo`
+  now exists but refuses to run there (7.5), so 6.7's timings and 4.7's query plan are
+  still measured against whatever has been reported by hand — tens of rows rather than
+  hundreds. Both are worth re-running locally against a seeded database, where the row
+  count is right even though the network is not.

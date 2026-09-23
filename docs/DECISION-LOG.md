@@ -460,3 +460,78 @@ one count and from no other. Against the unfixed code it fails with
 `{'escalated': 2} != {'escalated': 1}`.
 
 **Reversible.** Yes: the same one function as D10, `_live_escalation_clauses()`.
+
+## D12 — `seed_demo`: three choices that are easy to get quietly wrong
+
+**Question.** BUILD-PLAN section 15 specifies what the demo data must contain.
+It does not say how a generator should behave when it is run twice, what it
+should do about passwords, or how a ticket's status should be decided. Those
+three were decided here.
+
+### 1. The status is an outcome of the timeline, not an input to it
+
+**Rejected: pick a status from a distribution, then back-fill the timestamps it
+implies.** It is the obvious approach and it is subtly wrong in a way that only
+shows up on a dashboard. Back-filling means inventing an `assigned_at` for a
+ticket whose status you already chose, and nothing then ties the age of a
+ticket to how far through its life it is: you get tickets reported eighty days
+ago that are still OPEN with no explanation, and tickets reported an hour ago
+that are CLOSED. The reports do not catch it — every count is fine — but a
+human reading the ticket list sees a world that could not exist.
+
+**Chosen.** Each incident is generated as a full intended path with a drawn
+duration for every hop, and `_walk` applies the steps in time order, stopping
+at the first one later than `now`. Status falls out of age and duration. A
+ticket is OPEN because its assignment has not happened yet.
+
+The cost is that the status mix cannot be dialled directly — it is a
+consequence of `RESPONSE_MEDIANS` and `PATH_WEIGHTS`, and changing either
+moves it. That was worth paying, and it surfaced a real fact: with every ticket
+given a path to CLOSED, ninety days of history comes out **85% closed**, with
+two blocked tickets in three hundred. The five stopping paths in `PATH_WEIGHTS`
+exist because of that measurement, and each one was added for a specific empty
+tile.
+
+### 2. Not idempotent, and saying so rather than pretending
+
+**Rejected: make it idempotent by matching on natural keys**, the way
+`seed_categories` matches on `(parent_id, name)`. Categories have a natural
+key. Three hundred generated incidents do not — there is nothing to match a
+regenerated ticket against — so "idempotent" could only mean "delete everything
+and regenerate", which is a destructive operation wearing a safe word.
+
+**Rejected: top up to the requested count.** Then two runs produce a world
+whose ninety-day history has a seam in it, and the second run's tickets are
+drawn against a different `now`.
+
+**Chosen.** It looks for its own buildings first and returns without writing,
+reporting `created: false` and saying in the payload that it does not top up or
+refresh and that the way to regenerate is to drop the database. Safe to run
+twice; not useful to. The requirement was "idempotent or clearly documented as
+not", and this is the second — documented in the return payload, the module
+docstring, the action docstring, the guide and here, because a caller who
+learns this from a constraint violation learns it too late.
+
+### 3. One bcrypt hash for thirty-seven demo accounts
+
+**The shortcut.** `hash_password` at twelve rounds costs about 250 ms by
+design. Hashing thirty-seven identical demo passwords separately would add
+roughly nine seconds to a seed that otherwise takes under one.
+
+**Why it is safe here and nowhere else.** Reusing one hash means reusing one
+salt, so identical hashes reveal that the passwords are identical. That is not
+a disclosure: the password is printed in the return payload and is the same for
+every demo account by design, because a reviewer who has to reset thirty
+passwords to look around will not look around. The accounts are also
+deliberately not flagged `must_change_password`, for the same reason.
+
+**What keeps it contained.** The shortcut lives in `_seed_people` and nowhere
+else — every real account still goes through `hash_password` per user — and
+`_op_seed_demo` refuses to run unless `settings.is_local`, so these accounts
+cannot exist in a deployed database. That guard is the thing protecting this
+decision, which is why it is checked on `IS_LOCAL`, the same flag that drives
+`sslmode`, the `Secure` cookie flag and the weak-JWT-secret startup refusal,
+rather than on a second environment test invented here.
+
+**Reversible.** Yes, and cheaply: one line in `_seed_people`, at the price of
+nine seconds per seed.

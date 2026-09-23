@@ -4498,3 +4498,399 @@ function in the `FROM` clause with a column alias: `generate_series(...) AS cale
 has rows*. A row of `FILTER` columns produces one row with a column per priority, present
 whether or not it has rows. The reports use both, deliberately, and the choice is always
 about whether zeroes must appear.
+
+## Phase M7 — Dashboards and demo data (pass 2: `seed_demo`)
+
+Pass 1 built the eight report endpoints. This pass builds the thing that makes them worth
+looking at: an ops action that fills a **local** database with a plausible ninety days of
+ACME. Pass 3 is the three dashboard screens, and appends its own section below.
+
+**Verified against local PostgreSQL only.** 683 backend tests (up from 666), ruff check
+and ruff format clean. A full default seed takes **0.9 seconds** and writes 300 incidents,
+~1,800 events and ~500 notes. What that leaves unproven in the cloud is items 7.5 to 7.8
+in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
+guard's `IS_LOCAL` really arrives on the deployed Lambda.
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/seed/demo.py` | The whole generator: the static world (buildings, engineers, names, weights), the lifecycle planner, the timeline walk, and the row writers. |
+| `app/services/ops.py` | `_op_seed_demo` — the environment guard, the payload overrides, and the registry entry beside `migrate` and `seed_admin`. |
+| `tests/integration/test_seed_demo.py` | 13 tests against a 60-incident spec. Shape, not values. |
+| `tests/unit/test_ops.py` | 4 more: the registry, the production refusal, and payload validation. No database needed for any of them. |
+| `docs/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
+
+It is invoked exactly as the other two ops actions are — a direct Lambda invoke, or the
+same handler called locally:
+
+```sh
+python -c "import function, json; print(json.dumps(
+    function.handler({'action': 'seed_demo'}, None), default=str))"
+```
+
+What a default run produces, and what each number is for:
+
+| | Count | Why |
+| --- | --- | --- |
+| Buildings | 3 | Weighted 50 / 32 / 18, so `/reports/locations` ranks rather than ties. |
+| Floors | 4–6 each (~14) | |
+| Desks | 20–40 per floor (~420) | |
+| Meeting rooms | 2–3 per floor (~34) | `seat_type = MEETING_ROOM`; the Meeting Rooms category group reports against these and nothing else. |
+| Admin | 1 | `demo.admin@acme.inc`. |
+| Engineers | 6 | Two per level, specialties covering all five category groups, uneven load weights. |
+| Employees | 30 | Two deactivated, so the users screen has both states. |
+| Incidents | 300 over 90 days | ~60% CLOSED, the rest live. |
+| Events | ~1,800 | Backdated. This is the point. |
+| Notes | ~500 | PUBLIC and INTERNAL, backdated. |
+
+Every account shares the password `AcmeDemo2026!`, reported in the invoke payload, and
+none is flagged `must_change_password`.
+
+### 2. Why it is shaped this way
+
+#### The status is an outcome, not an input
+
+The obvious generator picks a status from a distribution and back-fills whatever
+timestamps that status implies. This one does the opposite. Each incident gets a full
+intended **path** — assigned after *n* hours, acknowledged after *m*, perhaps blocked,
+resolved, closed, perhaps reopened — with a duration drawn for every hop, and then `_walk`
+applies the steps in time order and **stops at the first one later than `now`**:
+
+```python
+for step in plan.steps:
+    if step.when > now:
+        break
+    outcome.last_activity = step.when
+    _apply_step(step, plan, outcome, events, notes, worker_id=worker_id, admin=admin)
+```
+
+A ticket reported eighty days ago with a thirty-hour path is therefore closed; one
+reported this morning is still open; one whose block outlasts the run is still blocked,
+with a real age. The alternative — pick a status, then back-fill the timestamps it
+implies — is [decision D12](DECISION-LOG.md), part 1. The age distribution and the status distribution come out consistent with
+each other because they are the same fact looked at twice, and nothing has to be
+reconciled afterwards.
+
+The effects in `_apply_step`/`_enter` mirror `_apply_transition_effects` in
+`services/incident_service.py` one for one — entering IN_PROGRESS clears the resolution
+and closure fields, anything other than BLOCKED clears the blocked reason, a reopen
+increments `reopen_count`. So the generator cannot produce a row the state machine could
+not have produced, and it does not need to import the service layer to manage it.
+
+#### Backdating the event log is the phase, not a detail of it
+
+`incident_events.created_at` defaults to `clock_timestamp()` and `incidents.created_at` to
+`now()`. Leave either alone and the whole dataset is stamped with the moment of seeding.
+Every count in the application still works. Every number the phase exists for does not:
+
+| Report | What it reads | What "created now" gives you |
+| --- | --- | --- |
+| `/reports/response-times` | `assigned_at - created_at` and friends | zeroes |
+| `/reports/blocked-escalated` | `MAX(incident_events.created_at)` for the STATUS_CHANGED → BLOCKED row | every block zero hours old |
+| `/reports/communication` | first PUBLIC staff note vs `resolved_at` | a median of zero |
+| `/reports/summary` | `per_day` over `created_at` / `closed_at` | one spike on today, 30 empty days |
+
+So every row is written with an explicit timestamp taken from the plan, including the
+notes. There is no `blocked_at` column by design (decision D6) — the blocked age is read
+back out of the event log — which means a generator that wrote correct incident columns
+and a lazy event log would still produce a blocked report full of zeroes. Both halves have
+to be right.
+
+`test_every_event_is_backdated_and_in_order` is the test that would fail: it asserts that
+each ticket opens with a CREATED event at exactly `incident.created_at`, that no event
+precedes its own ticket or postdates `now`, that each log is in time order, and that the
+events as a whole span more than ten distinct days.
+
+#### Why there are seven paths, not one
+
+The first working version gave every ticket a path to CLOSED. Measured, that produced a
+database **85% closed** after ninety days — 254 of 300, with two blocked tickets, one
+resolved and ten in progress. Every live-work dashboard was empty. Real queues carry work
+that stalled, so the stalling is modelled rather than left to the tail of a distribution:
+
+```python
+PATH_WEIGHTS = {
+    "normal": 0.58,               # runs all the way to CLOSED
+    "never_assigned": 0.09,       # nobody picked it up — stays OPEN
+    "assigned_not_started": 0.04, # in an engineer's list, not started — stays OPEN
+    "stalled": 0.07,              # started, engineer pulled away — stays IN_PROGRESS
+    "stuck_blocked": 0.07,        # blocked on a vendor since July — stays BLOCKED
+    "awaiting_confirmation": 0.05,# fixed, reporter never confirmed — stays RESOLVED
+    "duplicate": 0.05,
+    "invalid": 0.05,
+}
+```
+
+That gives roughly 60–65% CLOSED and the rest live, spread across all four other
+statuses in double figures. Each of the five stopping paths exists because a specific
+tile or column was empty without it —
+`assigned_not_started` was added after `/reports/engineer-workload` returned `open_count:
+0` for all six engineers, which is not a thing that happens in a real facilities team.
+
+#### Nothing is uniform, because a uniform world answers no questions
+
+BUILD-PLAN section 11 lists eight business questions. Several of them — which building has
+the most problems, who is overloaded, are there recurring problems at the same location —
+have no answer at all if everything is drawn uniformly. So the weights are in the file,
+named and commented: `BUILDING_WEIGHTS`, `CATEGORY_GROUP_WEIGHTS`, `PRIORITY_WEIGHTS`,
+`ENGINEER_LOAD_WEIGHTS`, `BLOCKED_REASON_WEIGHTS`, and a decaying weight per subcategory
+so each group's "Other" stays rare.
+
+Two of them do more than tilt a bar chart:
+
+* **`_draw_assignee` multiplies the load weight by 4 when the ticket's group is one of the
+  engineer's specialties.** The workload report and the engineers screen then agree with
+  each other, which they would not if assignment were random.
+* **`_choose_hotspots` picks a few (seat, subcategory) pairs and repeats them** across the
+  ninety days. In a default run those three seats top the list at 9, 6 and 5 tickets
+  against a background of 2, which is a visible answer to "are there recurring problems at
+  the same location?" rather than a noise floor.
+
+Durations are lognormal about a published median (`RESPONSE_MEDIANS`), not uniform,
+because that is the shape response times actually have — a cluster near the median and a
+thin tail. It also means the medians `/reports/response-times` computes come back
+recognisably as the numbers in that table, so the dashboard can be checked against this
+file by eye. A default run gives 0.4 h to assign for CRITICAL against 16.6 h for LOW, and
+6.6 h to resolve against 141 h.
+
+#### The resolution note lands *after* the resolution
+
+A subtle one, and it was wrong at first. `/reports/communication` counts a reporter as
+"kept informed" when the first PUBLIC staff note is at or before `resolved_at` — it is
+asking whether they heard anything *while the ticket was open*. The first version wrote
+the resolution note at exactly `resolved_at`, which satisfied that test on every resolved
+ticket and pinned the report at **100.0%**.
+
+`_resolution_steps` now schedules the note a few minutes after the resolve step, which is
+also the order the two really happen in: marking a ticket resolved is one request and
+writing a note is another, and nobody types the summary before pressing the button. The
+note the metric is actually about is the early "I've picked this up" update, written
+`PUBLIC_UPDATE_PROBABILITY` (72%) of the time. The report now reads around 70–80%, and
+`test_the_communication_report_is_neither_zero_nor_a_perfect_score` asserts strictly
+between 0 and 100 so it cannot silently go back to being perfect.
+
+#### The demo data deliberately contains the bug D10 and D11 fixed
+
+A default run produces both live escalations and closed-but-still-flagged ones, a dozen
+or more of each. That is not an oversight: `is_escalated` is lowered only by `clear_escalation`, so
+the ordinary ending — an engineer fixes the thing and the ticket closes — leaves the flag
+standing, and a demo world without that case would let a regression in
+`_live_escalation_clauses()` go unnoticed on every screen.
+`test_the_blocked_report_reads_a_real_age_out_of_the_event_log` asserts that every row in
+the escalated list is in `ACTIVE_INCIDENT_STATUSES`, over data that contains counterexamples.
+
+#### One bcrypt hash, reused across every demo account
+
+`hash_password` at twelve rounds costs about a quarter of a second by design. Hashing
+thirty-seven identical demo passwords separately would add roughly nine seconds to a seed
+that otherwise takes under one, and would protect nothing: the password is printed in the
+return payload. So it is hashed once in `_seed_people` and the string is reused. This is
+confined to demo data — every real account still goes through `hash_password` per user —
+and it is the single reason the whole seed fits in under a second. What keeps it safe is
+the guard below, which is why that guard reads the same `IS_LOCAL` everything else does.
+[Decision D12](DECISION-LOG.md), part 3.
+
+#### Refusing to run, and where the refusal lives
+
+CLAUDE.md requires `seed_demo` to refuse in production. The check is `settings.is_local`,
+which is the same flag that drives `sslmode=require`, the `Secure` cookie flag and the
+weak-JWT-secret startup refusal in `app/config.py`. Using it rather than inventing a
+second environment test means there is one answer in this codebase to "is this
+production", and one place to be wrong. It returns a payload rather than raising, matching
+`seed_admin`'s treatment of a missing email: an ops action that is refused should say why
+in the invoke response, not produce a stack trace in CloudWatch.
+
+The payload may override four fields — `incidents`, `employees`, `days`, `random_seed` —
+and nothing else. The shape of the world stays in the file where it can be read and
+reviewed, rather than being assembled out of an invoke payload.
+
+#### Not idempotent, and saying so out loud
+
+Running it twice does not top up or refresh. Half of what it writes is unique-constrained
+(building names and codes, user emails) and half is not, so a blind second run would
+either fail an insert or silently double the incident count. Instead it looks for its own
+buildings first and returns without writing:
+
+```json
+{"created": false,
+ "detail": "Demo data is already present ('Austin Campus' exists). Nothing was changed:
+            seed_demo does not top up or refresh. Drop and recreate the database, run
+            migrate, then run seed_demo again."}
+```
+
+That is the honest version of idempotence for a generator: **safe** to run twice, not
+*useful* to. Matching on natural keys the way `seed_categories` does was considered and
+does not apply — three hundred generated incidents have no natural key
+([decision D12](DECISION-LOG.md), part 2). The requirement said "idempotent or clearly documented as not", and this is
+the second, documented in the return payload, the module docstring, the action docstring
+and here. Decision D4 already prescribes dropping and recreating the review database
+before seeding, so the recovery path is one somebody is following anyway.
+
+### 3. How the pieces connect
+
+```
+aws lambda invoke --payload '{"action":"seed_demo"}'     (or function.handler locally)
+  → function.py handler                    sees `action`, never touches Mangum
+  → app/services/ops.run_ops               registry lookup
+  → app/services/ops._op_seed_demo
+      ├─ get_settings().is_local           False → refuse here, nothing is written
+      ├─ _seed_demo_overrides(event)       four optional positive integers
+      ├─ replace(DEFAULT_SPEC, ...)        the DemoSpec for this run
+      └─ _with_session(seed)               one session, committed by the wrapper
+  → app/seed/demo.seed_demo
+      ├─ _existing_demo_building           already seeded? return, write nothing
+      ├─ _category_groups                  the five groups `migrate` seeded
+      ├─ _seed_facilities                  buildings → floors → seats  (flush between:
+      │                                    each level needs the level above's id)
+      ├─ _seed_people                      one bcrypt hash → admin, 6 engineers
+      │                                    (+ profiles, pointed at their specialty
+      │                                    groups), 30 employees
+      └─ _seed_incidents               (given a `_World`: the buildings, the floor and
+           │                               seat lookups, the category tree and the people,
+           │                               bundled so five functions do not take nine
+           │                               parameters each)
+           ├─ _plan_all                    hotspots first, then the rest, sorted by
+           │     └─ _plan_incident         created_at so ticket numbers follow time
+           │           └─ _plan_steps      the whole intended life, as timestamps
+           ├─ _walk (per incident)         apply steps up to `now`; stop
+           │     └─ _apply_step / _enter   mirrors _apply_transition_effects
+           ├─ session.add_all(incidents); flush     → ids and ticket_numbers exist
+           ├─ _link_duplicates             point each duplicate at an earlier ticket
+           ├─ _write_events_and_notes      explicit created_at on every row
+           └─ _summarise                   the counts in the invoke response
+  → DemoSeedResult → asdict → invoke response
+```
+
+The three-pass order at the bottom is forced: events, notes and duplicate links all need
+`incident.id`, which does not exist until the incidents are flushed.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Refuse to seed outside local development | `app/services/ops.py` → `_op_seed_demo` |
+| Which spec fields a payload may override | `app/services/ops.py` → `SEED_DEMO_OVERRIDES` |
+| How much of everything to generate | `app/seed/demo.py` → `DemoSpec` / `DEFAULT_SPEC` |
+| Whether a second run does anything | `app/seed/demo.py` → `_existing_demo_building` |
+| What a ticket's life can look like | `app/seed/demo.py` → `PATH_WEIGHTS`, `_plan_steps` |
+| How much of that life has happened yet | `app/seed/demo.py` → `_walk` |
+| What entering a status means | `app/seed/demo.py` → `_enter` (mirrors `services/incident_service._apply_transition_effects`) |
+| How long each hop takes | `app/seed/demo.py` → `RESPONSE_MEDIANS`, `_draw_hours` |
+| When a ticket is reported | `app/seed/demo.py` → `_draw_created_at`, `WORKING_HOURS` |
+| Who gets assigned what | `app/seed/demo.py` → `_draw_assignee`, `ENGINEER_LOAD_WEIGHTS` |
+| Which engineer covers which group | `app/seed/demo.py` → `ENGINEER_SEEDS` |
+| Recurring problems at one seat | `app/seed/demo.py` → `_choose_hotspots` |
+| Where a ticket is allowed to happen | `app/seed/demo.py` → `_random_placement` (honours `location_detail`) |
+| The demo password | `app/seed/demo.py` → `DEMO_PASSWORD` |
+
+### 5. How to change it
+
+**To make the demo bigger or smaller** — pass `incidents` in the payload, or edit
+`DEFAULT_SPEC`. Nothing else scales off a hard-coded number.
+
+**To add a kind of ticket** — add a weight to `PATH_WEIGHTS`, a branch to `_plan_steps`
+that stops (or does not) where you want it to, and, if it introduces a new moment, a
+branch to `_apply_step`. Then add an assertion to
+`test_the_dataset_contains_the_awkward_cases_the_dashboards_are_for`. Three places, and
+the walk needs no changes at all.
+
+**To add a field to incidents** — set it in `_build_incident`. If it has to change over
+the ticket's life, put it on `_Outcome` and set it from `_apply_step`, not from
+`_build_incident`.
+
+**To change the mix** — every weight is a module-level dict with a comment saying what the
+dashboard looks like without it. Change the numbers, re-run against a throwaway database,
+and read the `by_status` / `by_priority` / `by_engineer` block in the return payload; it is
+there so you do not have to write a query to find out what you just made.
+
+**To verify a change by hand** — never against `acme_incidents_dev` (decision D4: the
+owner resets it themselves). Use a throwaway:
+
+```sh
+createdb acme_scratch
+POSTGRES_NAME=acme_scratch python -c "import function, json; print(json.dumps(
+    function.handler({'action':'migrate'}, None)))"
+POSTGRES_NAME=acme_scratch python -c "import function, json; print(json.dumps(
+    function.handler({'action':'seed_demo'}, None), default=str))"
+dropdb acme_scratch
+```
+
+### 6. Gotchas
+
+**`seed_demo` needs `migrate` to have run first**, and not only for the schema. It reads
+the five category groups and their subcategories, which `seed_categories` writes as part
+of the `migrate` action rather than in the Alembic migration. Against a migrated-but-not
+-seeded database it raises a `KeyError` on the group name. The integration tests call
+`seed_categories` in their fixture for this reason.
+
+**The tests never run the ops action against the database.** They call
+`seed_demo(db_session, ...)` directly, inside the transaction the fixture rolls back.
+`_with_session` opens its own session and commits, and the suite recreates the test
+database only once per session — so a committed demo world would be visible to every test
+that ran afterwards, including `test_reports.py`, which asserts exact counts over its own
+ten-incident fixture. The action wrapper is tested in `tests/unit/test_ops.py`, where the
+three things worth testing all return before a session is opened.
+
+**The leak runs the other way too, and that one did bite.** `test_ops_actions.py`
+commits four `seed_admin` accounts, and integration files run in alphabetical order, so
+by the time `test_seed_demo.py` runs those rows are in `users`. A test asserting
+"`seed_demo` created exactly one admin" by counting every row in the table therefore
+passed on its own and failed in the full suite — `1 failed, 682 passed`. The `users_before`
+fixture takes a snapshot of the ids that already exist and the assertions run over the
+difference. **Anything in this file that counts a table has to ask whether an ops-action
+test writes to it**: `users` and `categories` are the two that survive, and `categories`
+is safe only because `seed_categories` is idempotent and seeds the same five groups.
+
+**Determinism is per-spec, not per-run.** `DemoSpec.random_seed` seeds one
+`random.Random`, and every draw comes from it in order — so adding a draw anywhere
+reshuffles everything after it. That is fine (nothing asserts a specific value) but it
+means "the same seed gives the same world" only holds for the same version of this file.
+Note bodies are the exception: `_pick_note` keys off the step's own timestamp rather than
+the shared generator, so changing how many notes an earlier ticket gets does not rewrite
+the text on every ticket after it.
+
+**`_random_placement` honours `location_detail`, and more precision is allowed.** A
+Meeting Rooms ticket (SEAT) always names a meeting room; a Building & Facilities ticket
+(FLOOR) names a floor and, 65% of the time, a desk as well. That is legal —
+`_require_location_precision` in `services/incident_service.py` checks a *minimum* — and
+it is necessary, because a location report over tickets that only name a building has
+nothing to rank.
+
+**Two engineers can exceed 100% capacity** in a default run, and one of them is
+`ON_LEAVE` holding seven active tickets. Both are deliberate: `capacity_used_pct` above
+100 is exactly the condition `/reports/engineer-workload` exists to surface, and somebody
+going on leave without handing their queue over is the reason an admin looks at it.
+
+**`escalated_on_closed` in the payload is not a defect count.** It is how many closed
+tickets still carry `is_escalated`, which is correct behaviour (decisions D10 and D11) and
+is generated on purpose so the live-escalation filter has something to filter.
+
+### 7. Glossary
+
+**Lognormal distribution** — what you get when the *logarithm* of a value is normally
+distributed. Multiplicative rather than additive, so it cannot go negative and has a long
+right tail: most repairs take about the median, a few take twenty times it. `_draw_hours`
+uses `random.lognormvariate(0, 0.62)` as a multiplier on a published median.
+
+**Weighted choice** — picking from a list where each item has its own probability.
+`random.choices(population, weights=...)`. Every "not uniform random" decision in this
+file is one of these.
+
+**Deterministic generator** — a random generator seeded from a fixed number, so the same
+seed produces the same sequence. `random.Random(spec.random_seed)`, never the module-level
+`random` functions, which share global state with anything else that touches them.
+
+**Scale factor** — running a generator at a fraction of its real size to test its shape
+cheaply. Here it is a whole `DemoSpec` rather than a multiplier, so the tests state the
+sixty they expect instead of computing it.
+
+**Idempotent** — an operation that can be applied repeatedly without changing the result
+beyond the first application. `migrate` and `seed_admin` are idempotent in the strong
+sense (they converge on a state). `seed_demo` is idempotent only in the weak sense: the
+second run is a no-op, but it will not repair or refresh a partial world.
+
+**Ops action** — a task run by invoking the Lambda directly with a payload carrying an
+`action` key, rather than over HTTP. IAM-protected and not routed by CloudFront, which is
+what lets migrations and seeding exist without a public maintenance endpoint. See
+`function.py` and `app/services/ops.py`.

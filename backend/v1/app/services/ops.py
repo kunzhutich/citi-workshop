@@ -20,16 +20,20 @@ Actions available now:
     Bring the schema to head, then seed the category reference data.
 ``seed_admin``
     Create the first FACILITY_ADMIN account.
-
-``seed_demo`` arrives in M7 and must refuse to run against production.
+``seed_demo``
+    Fill a **local** database with a plausible ninety days of ACME, so the
+    dashboards have something with shape to draw. Refuses to run anywhere
+    else: see `_op_seed_demo`.
 """
 
 import logging
 from collections.abc import Callable
+from dataclasses import asdict, replace
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_session_factory
 from app.migrations import upgrade_to_head
 from app.seed.categories import seed_categories
@@ -127,11 +131,94 @@ def _op_seed_admin(event: dict[str, Any]) -> dict[str, Any]:
     return _with_session(seed)
 
 
+#: Spec fields a `seed_demo` payload may override. Everything else about the
+#: shape of the demo world is fixed in `app/seed/demo.py`, where it can be read
+#: and reviewed, rather than being assembled from an invoke payload.
+SEED_DEMO_OVERRIDES: tuple[str, ...] = ("incidents", "employees", "days", "random_seed")
+
+
+def _op_seed_demo(event: dict[str, Any]) -> dict[str, Any]:
+    """Fill a local database with the demo world. Refuses to run deployed.
+
+    Payload: ``{"action": "seed_demo"}``, optionally with ``incidents``,
+    ``employees``, ``days`` or ``random_seed`` to generate something smaller
+    or different. The defaults are the numbers BUILD-PLAN section 15 asks for:
+    3 buildings, 4-6 floors each, 20-40 desks and 2-3 meeting rooms per floor,
+    1 admin, 6 engineers, 30 employees and ~300 incidents over 90 days, with
+    the event log backdated so the timing reports mean something.
+
+    **Refused unless `settings.is_local`.** This action invents users, signs
+    them all in with one published password and writes three months of
+    fictional history; none of that belongs in a database anybody is deciding
+    anything from. The check is on `IS_LOCAL`, the same flag that drives
+    `sslmode`, the `Secure` cookie flag and the weak-JWT-secret refusal in
+    `app/config.py`, so there is one answer in this codebase to "is this
+    production" rather than a second, subtly different one here. CLAUDE.md
+    records the requirement; this is where it is enforced.
+
+    **Not idempotent in the sense of topping up.** It is safe to run twice —
+    the second run finds the demo buildings already present, writes nothing
+    and says so — but it will not add to or refresh what is there. To
+    regenerate, drop and recreate the database, then run ``migrate`` and this
+    again.
+    """
+    # Imported here rather than at module import time, like the auth service
+    # above: the demo generator pulls in bcrypt and every model, and a health
+    # probe should not pay for that.
+    from app.seed.demo import DEFAULT_SPEC, seed_demo
+
+    settings = get_settings()
+    if not settings.is_local:
+        return {
+            "created": False,
+            "error": (
+                "seed_demo is refused outside local development. It invents accounts "
+                "with a shared, published password and three months of fictional "
+                f"history; environment is '{settings.environment_name}'."
+            ),
+        }
+
+    try:
+        spec = replace(DEFAULT_SPEC, **_seed_demo_overrides(event))
+    except (TypeError, ValueError) as exc:
+        return {"created": False, "error": str(exc)}
+
+    def seed(session: Session) -> dict[str, Any]:
+        outcome = seed_demo(session, spec)
+        payload = asdict(outcome)
+        # A derived property, so `asdict` does not see it, but the first thing
+        # anybody reading the response wants to know.
+        payload["users"] = outcome.users
+        return payload
+
+    logger.info("Seeding the demo world with %d incidents", spec.incidents)
+    return _with_session(seed)
+
+
+def _seed_demo_overrides(event: dict[str, Any]) -> dict[str, int]:
+    """Return the spec fields the payload asks to change, validated.
+
+    Every override is a positive integer. A payload saying ``"incidents":
+    "lots"`` should produce a readable message, not a TypeError halfway through
+    generating a world.
+    """
+    overrides: dict[str, int] = {}
+    for name in SEED_DEMO_OVERRIDES:
+        if event.get(name) is None:
+            continue
+        value = event[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"'{name}' must be a positive integer, not {value!r}.")
+        overrides[name] = value
+    return overrides
+
+
 #: Action name -> implementation. The single registry of ops actions.
 ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "health": _op_health,
     "migrate": _op_migrate,
     "seed_admin": _op_seed_admin,
+    "seed_demo": _op_seed_demo,
 }
 
 
