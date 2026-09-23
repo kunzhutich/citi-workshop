@@ -360,3 +360,23 @@ them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
 - `is_escalated` is cleared only by `clear_escalation`, never by closing a
   ticket, so any present-tense query over that flag needs a status filter too.
   See D10 and `_live_escalation_clauses()` in `app/repositories/reports.py`.
+
+## S6 verified independently (2026-09-23)
+
+Backend **738** pytest · frontend **290** vitest · e2e **72 passed, 10 deliberate
+viewport skips** · ruff check + format, eslint, tsc -b and vite build all clean.
+
+The e2e figure took three corrections to reach. S6 first reported 72; the suite
+gave 71 passed / 1 failed, reproducibly. Fixing it (D24) found that a heading is
+not a signal that data has arrived, that **seven axe scans had been passing while
+scanning spinners**, and that twelve tests shared the shape. Fixing those (D25)
+found a permission test that reported a privilege boundary was enforced without
+ever checking it — it passed just as happily with the rule deleted.
+
+Nothing in `src/` or `backend/` changed in either correction. The application was
+right; the tests were silent about it.
+
+**Known detritus:** the D25 proof harness left 11 tickets titled "Proof harness…"
+in `acme_incidents_dev`. Harmless, and consistent with the e2e suite, which
+leaves its tickets behind by design. `acme_demo` — the database the demo script
+uses — is unaffected.
