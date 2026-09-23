@@ -7,6 +7,7 @@ import { vi } from 'vitest';
 
 import type { CurrentUser } from '../api/types';
 import { AuthContext, type AuthContextValue, type AuthStatus } from '../auth/AuthContext';
+import { SnackbarProvider } from '../components/SnackbarProvider';
 import { theme } from '../theme';
 
 /**
@@ -81,7 +82,11 @@ function Providers({ children, route }: { children: ReactNode; route: TestRoute 
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
-        <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[route]}>
+          {/* Real, not stubbed: a screen that confirms something through the
+              snackbar should have that assertion available to its test. */}
+          <SnackbarProvider>{children}</SnackbarProvider>
+        </MemoryRouter>
       </ThemeProvider>
     </QueryClientProvider>
   );

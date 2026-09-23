@@ -188,6 +188,36 @@ def test_reporting_remembers_the_location_for_next_time(
     assert employee.last_seat_id == seat.id
 
 
+def test_the_remembered_location_is_returned_by_auth_me(
+    client: TestClient,
+    employee_headers: dict[str, str],
+    subcategory: Category,
+    building: Building,
+    floor: Floor,
+    seat: Seat,
+) -> None:
+    """The questionnaire pre-fills from `/auth/me`, so it has to carry them.
+
+    `users.last_*_id` were kept current from M4 but never left the database.
+    They are on `CurrentUserRead` and not `UserRead` on purpose: where someone
+    last sat is a question about yourself, not something an admin listing
+    accounts should be told.
+    """
+    before = client.get("/api/v1/auth/me", headers=employee_headers).json()["user"]
+    assert before["last_building_id"] is None
+
+    client.post(
+        "/api/v1/incidents",
+        json=report_body(subcategory, building, floor_id=str(floor.id), seat_id=str(seat.id)),
+        headers=employee_headers,
+    )
+
+    after = client.get("/api/v1/auth/me", headers=employee_headers).json()["user"]
+    assert after["last_building_id"] == str(building.id)
+    assert after["last_floor_id"] == str(floor.id)
+    assert after["last_seat_id"] == str(seat.id)
+
+
 def test_a_category_group_cannot_be_reported_against(
     client: TestClient,
     db_session: Session,

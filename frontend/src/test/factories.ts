@@ -33,6 +33,9 @@ export function makeUser({
     must_change_password,
     last_login_at: null,
     created_at: '2026-01-01T09:00:00Z',
+    last_building_id: null,
+    last_floor_id: null,
+    last_seat_id: null,
     engineer_profile:
       level === undefined
         ? null
