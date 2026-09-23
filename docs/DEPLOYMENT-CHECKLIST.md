@@ -645,6 +645,179 @@ numbers to mean much.
 
 ---
 
+## M5 — Frontend shell and auth
+
+Everything below assumes `CF` is the distribution domain and that the frontend has been
+deployed:
+
+```sh
+./bin/deploy-frontend.sh
+CF=$(cd infra && terraform output -raw cloudfront_distribution_url)
+```
+
+### 5.1 A deep link into a guarded route restores the session
+
+**Why it needs the cloud.** 1.4 proves an extension-less path returns `index.html`. What
+it cannot prove is the round trip that follows: the SPA boots at that URL, `AuthProvider`
+spends the refresh cookie, `RequireAuth` releases the route, and the user lands on the
+page they asked for rather than on the home page. Locally that path is served by the Vite
+dev server, not by the CloudFront Function.
+
+Sign in through the deployed UI, then paste a guarded URL into the address bar:
+
+```
+https://$CF/tickets/mine
+```
+
+✅ **Correct result:** a brief "Restoring your session…" and then the page, with "My
+tickets" selected in the navigation. The address bar still reads `/tickets/mine`.
+
+Now the signed-out case. Open a private window and paste the same URL.
+
+✅ **Correct result:** the login screen. After signing in you arrive at `/tickets/mine`,
+not at `/` — that is `RequireAuth` stashing `state.from` and `LoginPage` reading it.
+❌ Landing on `/` means the navigation state was lost; ❌ a CloudFront 404 page means the
+SPA function is not matching the two-segment path.
+
+### 5.2 The first page load survives a cold Aurora and a cold Lambda
+
+**Why it needs the cloud.** `POST /auth/refresh` is the very first request the app makes,
+before anything is rendered. In the cloud it can hit a sleeping Aurora (~15 s to wake,
+per 1.6) *and* a cold Lambda at the same time, behind CloudFront's own origin read
+timeout. None of those exist locally, where the call answers in milliseconds.
+
+There is no timeout on the axios client, deliberately — a slow answer is better than a
+false one — so the failure mode to look for is CloudFront giving up first.
+
+Leave the deployed app idle for ~15 minutes, then reload it with devtools open.
+
+✅ **Correct result:** the "Restoring your session…" state holds for up to ~25 s, then the
+app renders signed in. `POST /api/v1/auth/refresh` shows 200.
+❌ A **504** from CloudFront means the origin read timeout is below Aurora's wake time.
+❌ Being dumped at the login screen means the refresh returned 401 rather than timing out
+— check 2.6 rather than this item.
+
+### 5.3 Refresh-and-retry works through the distribution
+
+**Why it needs the cloud.** 2.6 proves one refresh works via `curl`. This proves the
+*interceptor* works: an expired access token, a transparent refresh, and a replay of the
+original request — through CloudFront, whose API cache behaviour must not be caching the
+401 that starts it.
+
+Sign in, then leave the tab open and idle for **more than 15 minutes** (the access token
+TTL). Come back and click a navigation item, with the Network tab recording.
+
+✅ **Correct result:** three entries in order — the original request `401`, `POST
+/api/v1/auth/refresh` `200` with a fresh `Set-Cookie`, then the original request again
+`200`. The user sees no error and is not signed out.
+❌ A 401 that is **not** followed by a refresh means CloudFront served a cached 401; check
+that the `/api/v1*` behaviour uses the CachingDisabled policy.
+❌ Two refresh calls means the single-flight promise in `api/client.ts` is not doing its
+job — and the second one will revoke every session (see 5.4).
+
+### 5.4 Reuse detection really ends every session on Aurora
+
+**Why it needs the cloud.** The M5 carry-over fix makes `rotate_session` commit
+mid-request, on a path that then raises. That commit's interaction with the connection
+pool and with Aurora's transaction handling is not something the local suite can prove —
+its fixture rolls everything back, which is exactly how the bug hid for three phases.
+
+```sh
+# A: log in and keep the cookie.
+curl -s -c A.txt -X POST "https://$CF/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@acme.inc","password":"<password>"}' > /dev/null
+
+# B: rotate it once, legitimately.
+curl -s -b A.txt -c B.txt -X POST "https://$CF/api/v1/auth/refresh" > /dev/null
+
+# Replay the spent cookie A — the theft signal.
+curl -s -o /dev/null -w '%{http_code}\n' -b A.txt -X POST "https://$CF/api/v1/auth/refresh"
+
+# Now the *legitimate* cookie B must also be dead.
+curl -s -o /dev/null -w '%{http_code}\n' -b B.txt -X POST "https://$CF/api/v1/auth/refresh"
+```
+
+✅ **Correct result:** `401` and `401`. The third call detects the replay, the fourth
+proves the mass revocation was committed.
+❌ `401` then `200` is the original bug: the revocation was rolled back when the failing
+request closed its session. Check that `session.commit()` is still in the
+`stored.revoked_at is not None` branch of `auth_service.rotate_session`.
+
+Also check the Lambda log group for the warning the path emits:
+
+```sh
+aws logs filter-log-pattern --log-group-name "/aws/lambda/coding-workshop-v1-${PARTICIPANT_ID}" \
+  --filter-pattern "Refresh token reuse detected"
+```
+
+### 5.5 The seeded admin's forced password change works end to end
+
+**Why it needs the cloud.** `seed_admin` runs as a direct Lambda invoke against Aurora
+(2.4), so the account with `must_change_password` only exists there. This is the first
+time a human uses the deployed application, and the one flow that has to work before any
+other screen can be reached.
+
+In a browser, sign in at `https://$CF/login` with the temporary password from 2.4.
+
+✅ **Correct result:** you land on the change-password screen, not on the dashboard. It
+says "Choose your own password to continue", labels the first field "Temporary password",
+and offers **no** Cancel button and no navigation. Changing the password returns you to
+the login screen with "Password changed. Please sign in again." Signing in with the new
+password lands on the admin dashboard.
+❌ Landing on the dashboard with a wall of 403s means `RequireAuth` is not reading
+`must_change_password` — but check `/api/v1/auth/me` first, since the flag comes from
+there.
+❌ Being able to navigate away from the change-password screen means the guard's
+`skipPasswordGate` route is catching more than the one path.
+
+### 5.6 Measure whether the bundle is served compressed
+
+**Why it needs the cloud.** Compression is a CloudFront behaviour setting applied at the
+edge. The dev server does its own thing and proves nothing.
+
+**This one expects to fail.** `infra/cloudfront.tf` does not set `compress` on either
+behaviour, and the CloudFront default is **off**. The production bundle is ~788 kB raw
+against ~251 kB gzipped — a 3× difference on the first load of every session, and it grows
+in M6 (`@mui/x-data-grid`) and M7 (`@mui/x-charts`). Measure it before deciding.
+
+```sh
+BUNDLE=$(curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.js')
+curl -s -I -H 'Accept-Encoding: gzip, br' "https://$CF$BUNDLE" \
+  | grep -iE 'content-encoding|content-length|x-cache'
+```
+
+✅ **Expected today:** no `content-encoding` header and a `content-length` near 788 kB.
+
+The fix is one line — `compress = true` on the `default_cache_behavior` in
+`infra/cloudfront.tf` — but CLAUDE.md scopes `infra/` edits to three specific changes, and
+this is not one of them. **It is the repo owner's call**, not something M5 took on its
+own: the file is already on the permitted-edit list, the change is additive and reversible,
+and the cost of not doing it is a 537 kB penalty on every cold visit.
+
+### 5.7 A redeployed frontend is actually served
+
+**Why it needs the cloud.** `deploy-frontend.sh` syncs to S3 and issues a CloudFront
+invalidation. Whether the invalidation completes before the next request, and whether
+`index.html` was cached with a long TTL, is edge behaviour with no local equivalent.
+
+The bundle filename is content-hashed, so the risk is not a stale bundle — it is a stale
+`index.html` still pointing at the **previous** hash, which S3 may no longer have.
+
+```sh
+# Note the current bundle name, redeploy, then compare.
+curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.js'
+./bin/deploy-frontend.sh
+curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.js'
+```
+
+✅ **Correct result:** the second name differs whenever `src/` changed, and requesting it
+returns 200. ❌ The old name persisting means the invalidation had not finished — wait and
+repeat before changing anything. ❌ The new `index.html` referencing a bundle that 404s
+means the S3 sync deleted the old asset before the invalidation landed; re-run the deploy.
+
+---
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
@@ -652,6 +825,11 @@ These are out of scope until the phase that introduces them:
 - `seed_demo` and its production guard — M7.
 - Report endpoint performance against a realistic row count — M7.
 - End-to-end lifecycle through the deployed UI with three accounts — M6.
+- A real-browser end-to-end test of any kind. The M5 frontend suite runs in jsdom, which
+  has no layout engine, so the 375 / 768 / 1440 px assertions prove the *decision* the
+  shell makes and not that the result looks right at those widths. Every item in this
+  section that says "in a browser" is currently a manual check. Playwright is the fix and
+  M6 is the natural time, when there is a full lifecycle worth walking.
 - The admin screens for facilities, categories, engineers and users — M6. M3 ships the
   endpoints they call; until then the checks above are the only way to exercise them
   against the deployed stack.

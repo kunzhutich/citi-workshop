@@ -2243,3 +2243,683 @@ operation succeeds and returns `warnings`. Contrast the questionnaire rules, whi
 
 **Correlated subquery** — see M3's glossary; `active_ticket_count` is still the example,
 and `assignment.py` reads it through `engineer_repository.count_active_tickets`.
+
+---
+
+## Phase M5 — Frontend shell and auth
+
+M1 through M4 built an API with no client. The only page in the browser was the
+walking-skeleton status card. M5 gives the application its frame: a session that
+survives a reload, a shell that switches between a desktop sidebar and a mobile
+bottom bar, guards that decide which routes a role may open, and the three screens
+that have to work before any of the rest can — sign in, register, change password.
+
+No feature screens yet. Every navigation item leads to a placeholder that names the
+phase delivering it, which is deliberate: it means the navigation, the guards and the
+layout switch are all exercisable now, at every width and in every role, rather than
+waiting on M6.
+
+**Verified against local PostgreSQL only.** 101 frontend tests, 606 backend tests, and
+one end-to-end pass over HTTP through the Vite dev proxy against a scratch database —
+register, login, the forced password change, and logout. What still needs the cloud is
+in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+This section starts, as M3 and M4 did, with a defect in an earlier phase that this
+phase's verification uncovered.
+
+### 0. The carry-over: a security response that rolled itself back
+
+[auth_service.rotate_session](../backend/v1/app/services/auth_service.py) implements
+**reuse detection**. Refresh tokens rotate: spending one revokes it and issues a
+replacement. So presenting a token that is *already revoked* means either the cookie was
+stolen and replayed, or the legitimate client raced itself. Either way the safe response
+is to end every session that user has, which turns silent theft into a visible logout.
+
+The code did that:
+
+```python
+if stored.revoked_at is not None:
+    revoked = user_repository.revoke_all_refresh_tokens(session, stored.user_id, now=now)
+    session.flush()          # <- the bug
+    logger.warning(...)
+    raise failure
+```
+
+`flush()` writes the rows inside the transaction and leaves the `commit()` to the caller,
+which is the house convention: services flush, routers commit. But this caller never
+commits. It **raises**, the request fails with a 401, and
+[`get_db`](../backend/v1/app/db.py) closes the session in its `finally` without
+committing — so the revocation is rolled back along with everything else.
+
+The documented response to a stolen cookie therefore did not happen. Worse than a no-op:
+the attacker's replay was refused, while the session it was supposed to protect carried
+on unharmed.
+
+It is invisible from the test suite. `test_reusing_a_revoked_token_kills_every_session`
+passes both before and after the fix, because every request in it shares the test's
+session through the `get_db` dependency override — a write that is merely *flushed* is
+still visible to its assertions. In production each request gets its own session. This is
+the same class of harness blind spot as M4's stale relationship, and the reason
+`tests/conftest.py` sets `expire_on_commit=False`: the test client resembles production
+closely, and the places it does not are exactly where bugs hide.
+
+It showed up the first time the real server was driven over HTTP, while checking that
+`AuthProvider`'s bootstrap refresh behaved:
+
+```sh
+curl -c A -X POST localhost:3000/api/v1/auth/login -d '{...}'   # 200, cookie A
+curl -b A -c B -X POST localhost:3000/api/v1/auth/refresh       # 200, cookie B, A revoked
+curl -b A -X POST localhost:3000/api/v1/auth/refresh            # 401  — reuse detected
+curl -b B -X POST localhost:3000/api/v1/auth/refresh            # 200  — should be 401
+```
+
+The fix is one line and one comment: commit in that branch, since its caller cannot.
+
+```python
+if stored.revoked_at is not None:
+    revoked = user_repository.revoke_all_refresh_tokens(session, stored.user_id, now=now)
+    # Committed here, not flushed. This request is about to fail, so the
+    # router never reaches its own `session.commit()` ... This is the one
+    # place a service commits on its own.
+    session.commit()
+```
+
+The accompanying test asserts the **mechanism** rather than the outcome — that this path
+commits on its own — because the rollback fixture cannot observe a real commit. Asserting
+the outcome is what let the bug through in the first place.
+
+Both cookies now answer 401.
+
+### 1. What was built
+
+#### The session — `src/api/`
+
+| File | Responsibility |
+| --- | --- |
+| [api/client.ts](../frontend/src/api/client.ts) | The axios instance, the in-memory access token, the `Authorization` header, the 401 refresh-and-retry, and the single-flight `refreshSession`. |
+| [api/auth.ts](../frontend/src/api/auth.ts) | One typed function per auth endpoint: `register`, `login`, `logout`, `changePassword`, `fetchMe`. |
+| [api/types.ts](../frontend/src/api/types.ts) | TypeScript twins of the Pydantic schemas: `User`, `CurrentUser`, `EngineerProfile`, `TokenResponse`, and the three enums. |
+| [api/errors.ts](../frontend/src/api/errors.ts) | `describeError` — flattens the API's two error shapes into `{message, status, code, fieldErrors}`. |
+
+#### The session in React — `src/auth/`
+
+| File | Responsibility |
+| --- | --- |
+| [auth/AuthContext.ts](../frontend/src/auth/AuthContext.ts) | The context, the `AuthStatus` type, and the `useAuth` hook. No components, so Fast Refresh keeps working. |
+| [auth/AuthProvider.tsx](../frontend/src/auth/AuthProvider.tsx) | Restores the session on mount, exposes `signIn` / `signOut` / `changeOwnPassword`, and reacts when the client reports the session gone. |
+| [auth/RequireAuth.tsx](../frontend/src/auth/RequireAuth.tsx) | Route gate: no session → login; `must_change_password` → the change-password screen. |
+| [auth/RequireRole.tsx](../frontend/src/auth/RequireRole.tsx) | Route gate by role, and optionally by engineer level. |
+
+#### The frame — `src/layout/`
+
+| File | Responsibility |
+| --- | --- |
+| [layout/AppShell.tsx](../frontend/src/layout/AppShell.tsx) | App bar, drawer or bottom bar, the content slot, and the mobile report FAB. |
+| [layout/navigation.ts](../frontend/src/layout/navigation.ts) | `navItemsFor(user)` — who sees which item — and `activeNavPath`, which decides what is highlighted. |
+| [layout/UserMenu.tsx](../frontend/src/layout/UserMenu.tsx) | The avatar menu: who you are, change password, log out. |
+| [layout/roleLabels.ts](../frontend/src/layout/roleLabels.ts) | Plain-language names for the role and level enums. Users never see `FACILITY_ADMIN`. |
+
+#### The screens — `src/features/`
+
+| File | Responsibility |
+| --- | --- |
+| [features/auth/LoginPage.tsx](../frontend/src/features/auth/LoginPage.tsx) | Sign in, and land on wherever the user was originally headed. |
+| [features/auth/RegisterPage.tsx](../frontend/src/features/auth/RegisterPage.tsx) | Self-registration, followed by an automatic sign-in. |
+| [features/auth/ChangePasswordPage.tsx](../frontend/src/features/auth/ChangePasswordPage.tsx) | Voluntary and forced password changes — one screen, two moods. |
+| [features/auth/schemas.ts](../frontend/src/features/auth/schemas.ts) | The zod schemas mirroring the API's bounds and the `@acme.inc` rule. |
+| [features/auth/formErrors.ts](../frontend/src/features/auth/formErrors.ts) | `applyApiErrors` — routes an API failure to the inputs that caused it. |
+| [features/auth/AuthCard.tsx](../frontend/src/features/auth/AuthCard.tsx) | The frame the three signed-out screens share. |
+| [features/home/HomePage.tsx](../frontend/src/features/home/HomePage.tsx) | The `/` route, which is a different screen per persona. |
+| [features/placeholder/](../frontend/src/features/placeholder/) | `ComingSoonPage` and `NotPermittedPage`. |
+
+#### Shared
+
+| File | Responsibility |
+| --- | --- |
+| [src/routes.ts](../frontend/src/routes.ts) | Every path in the application, named once. |
+| [src/App.tsx](../frontend/src/App.tsx) | The route table: open routes, the gate-exempt route, and the guarded routes inside the shell. |
+| [src/theme.ts](../frontend/src/theme.ts) | Grown from M1's palette into the component defaults the whole app inherits. |
+| [src/components/FullPageProgress.tsx](../frontend/src/components/FullPageProgress.tsx) | The whole-page waiting state, used while the session is restored. |
+| `src/test/` | `factories.ts` (build a `CurrentUser`), `renderWithProviders.tsx` (render with a stubbed session), `apiError.ts` (build the rejection axios would raise). |
+
+#### Tests — 101 frontend, up from 6
+
+| File | Count | What it pins down |
+| --- | --- | --- |
+| `api/client.test.ts` | 10 | Header attachment, refresh-once-and-replay, no retry on login, 403 left alone, and one shared refresh between concurrent callers. |
+| `api/errors.test.ts` | 9 | Both API error shapes, including FastAPI's `loc` paths and the network case. |
+| `auth/AuthProvider.test.tsx` | 9 | Restore on load, the three statuses, sign in, sign out (including a failing one), password change, background session loss. |
+| `auth/RequireAuth.test.tsx` | 6 | Loading, redirect to login, the password gate, and the exemption. |
+| `auth/RequireRole.test.tsx` | 12 | The role and level matrix, including admins passing every level check. |
+| `layout/navigation.test.ts` | 11 | Each role's items, the bottom-bar bound, and longest-prefix highlighting. |
+| `layout/AppShell.test.tsx` | 13 | The 900 px switch from both sides, 375 / 768 / 1440, drawer overflow, the account menu. |
+| `features/auth/*.test.tsx` | 24 | Validation, the domain rule, field-error mapping, and where each screen lands. |
+| `features/status`, `hooks` | 6 | Unchanged from M1. |
+
+Added to `package.json`: `react-hook-form`, `zod`, `@hookform/resolvers` — the form stack
+BUILD-PLAN section 10 specifies.
+
+M1's `StatusPage` moved from `/` to `/status` and stayed **open**, because
+[deployment checklist item 1.5](DEPLOYMENT-CHECKLIST.md) uses it to prove a fresh
+environment before any account exists. It discloses nothing new: `GET /api/v1/health` has
+no auth dependency either, by design.
+
+### 2. Why it is shaped this way
+
+#### The access token never touches storage
+
+It lives in a module-level variable in [api/client.ts](../frontend/src/api/client.ts).
+Not `localStorage`, not `sessionStorage`, not a readable cookie.
+
+Anything persisted is readable by **any** script that reaches the page — an ambitious
+dependency, a compromised CDN, a cross-site scripting hole — and it survives the tab, so
+a token stolen on Monday still works on Tuesday. A variable dies with the page.
+
+The cost is that a reload loses the token, which is precisely what the refresh cookie is
+for. The cookie is `HttpOnly`, so JavaScript cannot read it at all, and its `Path` is
+`/api/v1/auth`, so the browser attaches it to the handful of endpoints that need it and
+to nothing else. The two halves are complementary: the readable half is short-lived (15
+minutes) and the long-lived half is unreadable.
+
+**Rejected:** `localStorage` with a short expiry. The expiry does not help — the window
+between theft and use is seconds, not minutes.
+
+#### One module owns the token, the header and the retry
+
+`client.ts` is the largest file in `api/`, and the temptation was to split it into
+`session.ts` (the token), `client.ts` (the instance) and `refresh.ts` (the rotation). Each
+split produces an import cycle: the interceptor needs the refresh, the refresh needs the
+token, the token is attached by the interceptor.
+
+The three genuinely are one concern — "the HTTP client and the session it carries" — so
+they are one module, and the cycle never exists. `auth.ts` beside it holds only endpoint
+functions, which import the client and are imported by nobody below them.
+
+#### Refreshes are single-flight, and that is correctness, not performance
+
+```ts
+export function refreshSession(): Promise<TokenResponse | null> {
+  refreshInFlight ??= requestRefresh().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+```
+
+Follow the consequence of *not* doing this. Two requests 401 at the same moment — which
+is ordinary, since a dashboard fires several queries at once and they expire together.
+Both call refresh. The first rotates the cookie and revokes the token it presented. The
+second presents that same, now-revoked token, and the API's reuse detection reads it as a
+stolen cookie and **revokes every session the user has**. The user is signed out by their
+own browser.
+
+The bootstrap has the same shape for a different reason: React `StrictMode` deliberately
+invokes effects twice in development, so `AuthProvider`'s restore effect calls refresh
+twice on every page load. With single-flight the second call joins the first and there is
+one request. That is also why the fix is emphatically *not* to remove `StrictMode` — the
+double invocation is a smoke detector, and it found a real fire.
+
+#### `loading` is a status, not the absence of a user
+
+```ts
+export type AuthStatus = 'loading' | 'authenticated' | 'anonymous';
+```
+
+On every page load the app has to ask the API whether the refresh cookie is still good,
+and until that answers, "we have no user" and "there is no user" are different facts. A
+guard that collapsed them would bounce a signed-in user to the login screen every time
+they pressed reload, and then bounce them back a moment later — a flicker that looks
+exactly like a broken session.
+
+**Rejected:** rendering children optimistically and correcting afterwards. It shows the
+user a page they may not be allowed to see.
+
+#### Every route into a session ends at `/auth/me`
+
+`POST /auth/login` and `POST /auth/refresh` both return a `TokenResponse`, whose `user` is
+a `UserRead` — and `UserRead` has no engineer profile. The navigation needs the engineer's
+**level**: only LEADs see Team, only SENIOR and LEAD see Unassigned. So `signIn` and the
+bootstrap both follow their first call with `fetchMe()`, which returns `CurrentUserRead`
+with the profile attached.
+
+Two requests where one might do, but the alternative is worse: widening `TokenResponse` to
+carry the profile would put engineer data in the login response for the 95% of accounts
+that have none, and would make the login endpoint's shape depend on the navigation's
+needs.
+
+#### The password gate is read, not caught
+
+The API answers 403 `PASSWORD_CHANGE_REQUIRED` on every endpoint outside `/auth` while an
+account still owes a password change. The obvious frontend implementation is to catch that
+code in the axios interceptor and redirect.
+
+[RequireAuth](../frontend/src/auth/RequireAuth.tsx) reads `must_change_password` from
+`/auth/me` instead, and redirects before a single feature request is made. The difference
+shows up in what the user sees: the catching version fires several requests, fails all of
+them, shows whatever error state the screen has for a 403, and only then redirects. The
+reading version goes straight to a form.
+
+The two are not mutually exclusive — the API's 403 is still the enforcement, and still
+correct if the flag changes mid-session — but the redirect should not be the only thing
+standing between a user and a wall of errors.
+
+#### `skipPasswordGate`, rather than a second guard component
+
+The change-password screen needs a signed-in user but must be exempt from the gate;
+otherwise its guard redirects it to itself. That is one boolean of difference, so it is a
+prop:
+
+```tsx
+<Route element={<RequireAuth skipPasswordGate />}>
+  <Route path={paths.changePassword} element={<ChangePasswordPage />} />
+</Route>
+```
+
+**Rejected:** a separate `RequireSession` component. Two components that share every rule
+but one drift apart, and the reader has to diff them to find out which.
+
+#### A refusal explains itself instead of redirecting
+
+`RequireRole` renders [NotPermittedPage](../frontend/src/features/placeholder/NotPermittedPage.tsx)
+rather than navigating home. A URL someone pasted into a chat should tell you why it will
+not open; silently landing somewhere else reads as a bug, and the user tries again.
+
+It also mirrors the API deliberately, including the rule from
+`require_engineer_levels` that a facility admin passes **every** engineer-level check.
+An admin opening the Team page and being told they lack permission would be wrong twice
+over: wrong about the API, which would have served the request, and wrong about the
+organisation, in which an admin outranks a lead.
+
+#### Navigation is data
+
+[navigation.ts](../frontend/src/layout/navigation.ts) returns a list; `AppShell` renders
+it. The same reasoning as `workflow.py` on the backend: when the question is "why can this
+user see that item?", one table answers it, and no amount of reading the layout component
+will contradict the answer.
+
+This is presentation, never permission. Hiding a link is a courtesy; `RequireRole` guards
+the route and the API refuses the request.
+
+#### One shell, two navigation surfaces
+
+`AppShell` is a single component that branches on `isMobile` for the navigation surface
+only. The app bar, the account menu and the content slot are written once.
+
+**Rejected:** `DesktopShell` and `MobileShell`. They start as near-duplicates and end as
+two different applications — a fix applied to one, a prop added to the other.
+
+The bottom bar holds the three or four items `navigation.ts` marks for it, per BUILD-PLAN
+section 10. An admin has six. Rather than hide two screens from anyone on a phone, the app
+bar carries a menu button that opens the full list in a temporary drawer, so the bar is a
+shortcut rather than a ceiling.
+
+#### zod mirrors the API's rules, and says so
+
+```ts
+/** From `MIN_PASSWORD_LENGTH` in `app/security/passwords.py`. */
+export const MIN_PASSWORD_LENGTH = 12;
+```
+
+CLAUDE.md says each business rule lives in exactly one place, and this looks like a
+violation. The distinction that makes it not one: the schemas in
+[features/auth/schemas.ts](../frontend/src/features/auth/schemas.ts) are a **cache for
+fast feedback**, and the API re-checks every one of them. When the two disagree, the API
+wins and the user sees it — `applyApiErrors` attaches the server's message to the field
+the server named, so drift surfaces as a server error on an input the form thought was
+fine, rather than as a hole.
+
+The email rule is mirrored the same way and for the same reason, splitting on the **last**
+`@` and comparing the domain for equality exactly as `normalise_email` does. Telling
+someone their `@gmail.com` address is not eligible after a network round trip, when the
+rule is a string comparison, is a worse trade than the duplication.
+
+The one rule this project will never duplicate is a different kind: `allowed-transitions`
+is the single source of truth for what a user may do to a ticket, and M6's buttons are
+rendered from its response. A length bound is a constant; a workflow is a decision.
+
+#### Registration signs you in
+
+`POST /auth/register` issues no tokens, so the client has to log in afterwards regardless.
+Doing it automatically makes two requests into one step.
+
+The interesting case is the second request failing. The account **exists** at that point,
+so an error implying nothing happened would send the user round the loop to meet
+`EMAIL_TAKEN`. The fallback is the login screen with "Your account was created. Please
+sign in."
+
+#### The route paths are named once
+
+[routes.ts](../frontend/src/routes.ts) is a map of constants. Guards, navigation,
+redirects and tests all reference the same entry, so a path can be renamed without
+something quietly continuing to point at the old one — which, in a router, fails silently
+by rendering the catch-all rather than loudly by crashing.
+
+#### No `.css` files
+
+Per CLAUDE.md: `sx` for one-off layout, `theme.ts` for anything global. M5 grew the theme
+from M1's palette into component defaults — `textTransform: 'none'` on buttons,
+`fullWidth` on text fields, `variant="outlined"` on cards. Each of those is a line that
+forty components no longer carry.
+
+No exceptions were needed this phase. No `@keyframes`, no third-party stylesheet.
+
+### 3. How the pieces connect
+
+**Opening the app with a session from yesterday.** This is the trace worth knowing,
+because it is the one that runs on every page load and the one that involves every file.
+
+```
+Browser opens https://.../tickets/mine
+  │
+  ├─ CloudFront: no file extension → CloudFront Function rewrites to /index.html
+  │              (locally: the Vite dev server does the same for an unknown path)
+  ├─ main.tsx                      QueryClientProvider → ThemeProvider → CssBaseline
+  │                                → BrowserRouter → AuthProvider → App
+  │
+  ├─ AuthProvider mounts           status = 'loading', user = null
+  │    effect 1: setSessionEndedHandler(endSession)     ── tells client.ts where to report
+  │    effect 2: restore()
+  │       └─ client.refreshSession()
+  │            refreshInFlight is null → requestRefresh()
+  │              POST /api/v1/auth/refresh        (bare axios: no interceptors, no loop)
+  │              cookie rides along — its Path is /api/v1/auth, and this is that path
+  │                 │
+  │                 ├─ routers/auth.py refresh
+  │                 ├─ auth_service.rotate_session
+  │                 │     token hash found, not revoked, not expired
+  │                 │     revoke the presented token, issue a new pair
+  │                 └─ _set_refresh_cookie(...)   HttpOnly, SameSite=strict,
+  │                                               Secure from settings.cookie_secure
+  │              ← 200 {access_token, user}
+  │              accessToken = 'eyJ...'                  (module variable, never stored)
+  │            (StrictMode's second invocation awaited this same promise)
+  │
+  ├─ App.tsx route table           /tickets/mine matches inside <RequireAuth>
+  ├─ RequireAuth                   status is still 'loading' → <FullPageProgress />
+  │
+  ├─ restore() continues           authApi.fetchMe()
+  │       GET /api/v1/auth/me
+  │         apiClient request interceptor → Authorization: Bearer eyJ...
+  │         routers/auth.py read_me → get_authenticated_user (no password gate here)
+  │       ← 200 {user: {..., engineer_profile: {level: 'LEAD', ...}}}
+  │    setUser(me); setStatus('authenticated')
+  │
+  ├─ RequireAuth re-renders        session present, must_change_password false → <Outlet />
+  ├─ AppShell
+  │    navItemsFor(user)           role ENGINEER, level LEAD → Home, My queue,
+  │                                Unassigned, All tickets, Team
+  │    useBreakpoint()             react-responsive matchMedia(max-width: 899px)
+  │                                → 1440px desktop → permanent Drawer
+  │    activeNavPath('/tickets/mine', items)
+  │                                '/tickets/mine' and '/tickets' both match;
+  │                                longest wins → My tickets is selected
+  └─ <Outlet />                    the routed page renders inside the frame
+```
+
+**Signing in**, shorter, and the only path that writes the token twice:
+
+```
+LoginPage form submit
+  ├─ zodResolver(loginSchema)      both fields non-empty, else nothing is sent
+  ├─ useAuth().signIn(email, password)
+  │    ├─ authApi.login()                POST /auth/login
+  │    │     auth_service.authenticate — one error for wrong email or wrong password
+  │    │     ← 200 {access_token, user}  + Set-Cookie: acme_refresh_token
+  │    ├─ setAccessToken(access_token)   so the next request is authenticated
+  │    └─ authApi.fetchMe()              GET /auth/me → the profile the nav needs
+  │         setUser(me); setStatus('authenticated')
+  └─ navigate(state?.from?.pathname ?? '/', {replace: true})
+        replace, so Back does not return to the login form
+```
+
+and when it fails:
+
+```
+  └─ catch → applyApiErrors(error, fallback, ['email', 'password'], setError)
+       describeError reads {detail, code, field}
+         401 INVALID_CREDENTIALS has no `field`, by design — naming one would
+         tell an attacker which half was right
+       → nothing attaches → returned as the form-level message
+       → <Alert severity="error">Incorrect email or password.</Alert>
+```
+
+**An access token expiring while the tab is open.** Fifteen minutes in, a query fires:
+
+```
+apiClient.get('/incidents')      Authorization: Bearer <15 minutes old>
+  ← 401 {detail, code: 'INVALID_TOKEN'}
+  │
+  └─ response interceptor
+       status is 401 ✓   url is not in NO_RETRY_PATHS ✓   not already retried ✓
+       └─ refreshSession()                     (shared, if three queries 401 together)
+            ├─ 200 → accessToken = new
+            │        config.retriedAfterRefresh = true
+            │        apiClient.request(config)  → request interceptor attaches the new
+            │                                     token → 200, and the caller never knew
+            └─ null → sessionEndedHandler()    → AuthProvider.endSession()
+                       status = 'anonymous' → RequireAuth redirects to /login
+```
+
+The `NO_RETRY_PATHS` check is why a wrong password does not trigger a refresh: a 401 from
+`/auth/login` is the answer, not a stale token.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Where the access token is kept, and for how long | [api/client.ts](../frontend/src/api/client.ts) — module variable, no persistence |
+| Which requests carry the bearer token | `api/client.ts` request interceptor |
+| When a 401 is retried, and how often | `api/client.ts` — `shouldRetry`, `NO_RETRY_PATHS`, `retriedAfterRefresh` |
+| That only one refresh runs at a time | `api/client.ts` — `refreshInFlight` |
+| What the API's error bodies mean | [api/errors.ts](../frontend/src/api/errors.ts) — `describeError` |
+| Which API failure lands on which input | [features/auth/formErrors.ts](../frontend/src/features/auth/formErrors.ts) |
+| How a session is restored, started and ended | [auth/AuthProvider.tsx](../frontend/src/auth/AuthProvider.tsx) |
+| Who may open a route at all | [auth/RequireAuth.tsx](../frontend/src/auth/RequireAuth.tsx) |
+| Who may open a route given their role or level | [auth/RequireRole.tsx](../frontend/src/auth/RequireRole.tsx) |
+| That a password change blocks everything else | `auth/RequireAuth.tsx` (frontend) + `security/dependencies.py` (enforcement) |
+| Who sees which navigation item | [layout/navigation.ts](../frontend/src/layout/navigation.ts) — `navItemsFor` |
+| Which item is highlighted | `layout/navigation.ts` — `activeNavPath` |
+| Which items reach the mobile bottom bar | `layout/navigation.ts` — the `inBottomNav` flag |
+| Where the desktop/mobile switch happens | [hooks/useBreakpoint.ts](../frontend/src/hooks/useBreakpoint.ts) — 899 px, MUI's `md` |
+| Password length and the `@acme.inc` rule, client side | [features/auth/schemas.ts](../frontend/src/features/auth/schemas.ts) |
+| Password length and the `@acme.inc` rule, **authoritatively** | `app/security/passwords.py`, `auth_service.normalise_email` |
+| Every URL in the app | [src/routes.ts](../frontend/src/routes.ts) |
+| Which route is guarded by what | [src/App.tsx](../frontend/src/App.tsx) |
+| Global styling, colours, component defaults | [src/theme.ts](../frontend/src/theme.ts) |
+| How a role or level is worded for humans | [layout/roleLabels.ts](../frontend/src/layout/roleLabels.ts) |
+
+### 5. How to change it
+
+**To add a navigation item** — two files, in this order:
+
+1. [src/routes.ts](../frontend/src/routes.ts): add the path.
+2. [layout/navigation.ts](../frontend/src/layout/navigation.ts): add a `NavItem` to the
+   role's list, with an icon and an `inBottomNav` flag. Keep each role's bottom-bar count
+   at three or four — `navigation.test.ts` asserts it.
+3. [src/App.tsx](../frontend/src/App.tsx): add the `<Route>`, inside the right
+   `RequireRole` if it is not for everyone.
+
+**To add a guarded route** for a role that does not have one yet:
+
+```tsx
+<Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['LEAD']} />}>
+  <Route path={paths.team} element={<TeamPage />} />
+</Route>
+```
+
+`levels` is only consulted for `ENGINEER`; admins pass regardless, matching
+`require_engineer_levels`.
+
+**To call a new API endpoint** — three files:
+
+1. [api/types.ts](../frontend/src/api/types.ts): add the TypeScript twin of the Pydantic
+   schema.
+2. `api/<domain>.ts`: a function per endpoint, using `apiClient`. The bearer token, the
+   refresh and the retry come for free.
+3. The feature's TanStack Query hook, with its key registered in
+   [api/queryKeys.ts](../frontend/src/api/queryKeys.ts).
+
+**To add a field to a form**:
+
+1. The zod schema in [features/auth/schemas.ts](../frontend/src/features/auth/schemas.ts)
+   (or the feature's own), with a bound that matches the API's.
+2. The `defaultValues` on `useForm` — react-hook-form needs the key to exist.
+3. The `<TextField {...field('name')} />`, with `error` and `helperText` wired to
+   `errors.name`.
+4. The field name in the `applyApiErrors` list, or the server's message for it will
+   surface as a banner instead of under the input.
+
+**To change a password or email rule**: change it in
+`backend/v1/app/security/passwords.py` or `auth_service.normalise_email` **first** — that
+is the authority — then mirror it in `features/auth/schemas.ts`, which names the constant
+it mirrors in a comment.
+
+**To add a role**: `api/types.ts` (`UserRole`), `layout/roleLabels.ts` (the wording),
+`layout/navigation.ts` (its items), and `App.tsx` (its routes). The backend's
+`app/models/enums.py` and a migration come first.
+
+### 6. Gotchas
+
+**`StrictMode` double-invokes the bootstrap, and that is the point.** In development React
+runs effects twice to surface exactly the bug this app would otherwise have shipped: two
+refreshes with one cookie, the second read as theft, every session revoked. The single-
+flight promise absorbs it. If a future effect misbehaves under `StrictMode`, the effect is
+wrong — removing `StrictMode` hides the evidence, it does not fix anything.
+
+**Never route the refresh call through `apiClient`.** `requestRefresh` uses a bare
+`axios.post`. A 401 from the refresh endpoint is the end of the session; sending it
+through the interceptor that calls `requestRefresh` would be a loop. This is also why
+`/auth/refresh` is in `NO_RETRY_PATHS` — belt and braces for a caller that uses
+`apiClient` directly.
+
+**The refresh cookie is not sent to most of the API, on purpose.** Its `Path` is
+`/api/v1/auth`. A request to `/api/v1/incidents` does not carry it, so an XSS-adjacent
+request cannot smuggle it out. The consequence to remember: anything needing the cookie
+must be a call to a path under `/api/v1/auth`.
+
+**`Secure` comes from configuration, not from a literal.** `settings.cookie_secure` is
+false locally so plain-HTTP development works, and true behind CloudFront. Hard-coding
+`Secure` would make local login silently fail — the browser would accept the response and
+drop the cookie, and the symptom would be "refresh always 401s" with nothing in any log.
+
+**`react-responsive` captures `window.matchMedia` when it is first imported.** That is why
+`installMatchMedia()` runs from `src/test/setup.ts` and not from individual tests, and why
+`setViewportWidth()` must be called **before** `render`, not after. A test that sets the
+width afterwards silently tests 1440 px.
+
+**MUI's temporary Drawer is not in the DOM while closed.** A mobile test looking for a nav
+link has to click the menu button first. This is a feature — it is what
+`AppShell.test.tsx` uses to prove the bottom bar really does omit the overflow items — but
+it makes `getByRole('link', ...)` fail in a way that reads like a missing item.
+
+**MUI v9 renamed some icons.** `AddCircleOutline` is now `AddCircleOutlined`; the old name
+is a module that does not exist, and the error is a TypeScript "cannot find module" rather
+than anything about icons. Relatedly, `@mui/icons-material` declares `SvgIconComponent`
+but does not export it, so `navigation.ts` names the shape itself as
+`ComponentType<SvgIconProps>`.
+
+**`package-lock.json` is gitignored by the scaffold** (`.gitignore` line 204). M5 added
+three dependencies, and a fresh `npm install` will resolve them within their caret ranges
+rather than to the versions tested here. Not ours to change mid-build, but worth knowing
+if CI ever disagrees with a laptop.
+
+**The bundle is 788 kB, 251 kB gzipped**, almost all of it Material UI. It is served
+compressed by CloudFront and is not a problem yet, but M6 adds `@mui/x-data-grid` and M7
+adds `@mui/x-charts`. If it needs attention, route-level `React.lazy` splitting is the
+lever, and the admin screens are the natural split point.
+
+**Navigation state is a contract between two screens.** `LoginLocationState` carries
+`from` (set by `RequireAuth`) and `notice` (set by the register and change-password
+screens). It is typed and exported from `LoginPage.tsx` so both writers and the reader
+agree; a bare object literal would drift the day someone renames a key.
+
+**There is still no real-browser end-to-end test.** The 101 frontend tests run in jsdom,
+which has no layout engine — `useBreakpoint` is exercised against a stubbed `matchMedia`,
+so the tests prove the *decision* at 375/768/1440 px, not that the result looks right. The
+HTTP path was verified with curl through the Vite proxy rather than with a browser.
+BUILD-PLAN section 14 allows this gap to be documented rather than closed; closing it
+means Playwright, and the natural time is M6 when there is a full lifecycle to walk.
+
+### 7. Glossary
+
+**SPA (single-page application)** — the server sends one HTML file and the JavaScript
+swaps the content as the user navigates; the URL changes without a page load.
+
+**React context** — a value one component makes available to everything rendered inside
+it, without passing it down through every layer in between. `AuthContext` carries the
+session.
+
+**Provider** — the component that supplies a context value. `<AuthContext value={...}>`
+wraps the app, and anything inside can read it.
+
+**Hook** — a function starting with `use` that lets a component tap into React features.
+`useAuth()` reads the session; `useState` holds a value across renders; `useEffect` runs
+code after rendering.
+
+**Route guard** — a component wrapped around routes that decides whether to render them,
+redirect, or wait. `RequireAuth` and `RequireRole` are guards.
+
+**`<Outlet />`** — React Router's placeholder for "whichever child route matched". A
+guard renders `<Outlet />` when it approves, and a `<Navigate>` when it does not.
+
+**`<Navigate replace>`** — redirect without leaving a history entry, so pressing Back does
+not return to the page that redirected.
+
+**`MemoryRouter`** — a router that keeps its history in memory instead of the address bar.
+Tests use it to start at any URL, and to carry navigation state.
+
+**Bearer token** — a credential sent as `Authorization: Bearer <token>`, meaning "whoever
+bears this is authorised". It is why an access token must never be persisted where a
+script can read it.
+
+**Access token vs refresh token** — the access token is short-lived (15 minutes), sent on
+every request, and readable by the page's JavaScript. The refresh token is long-lived
+(7 days), sent only to `/api/v1/auth`, and unreadable by JavaScript. One is for using, the
+other for renewing.
+
+**Axios interceptor** — a function axios runs on every request before it is sent, or on
+every response before it reaches the caller. The request interceptor attaches the token;
+the response interceptor handles the 401.
+
+**Single-flight** — the pattern of collapsing concurrent calls into one shared in-progress
+promise, so ten callers produce one request and all receive its result.
+
+**XSS (cross-site scripting)** — an attacker getting their JavaScript to run on your page.
+It is the threat that makes `HttpOnly` cookies and in-memory tokens worth the trouble:
+injected script can read `localStorage`, but not an `HttpOnly` cookie.
+
+**React `StrictMode`** — a development-only wrapper that deliberately double-invokes
+effects and renders, to surface code that assumes it runs exactly once. It changes nothing
+in a production build.
+
+**Fast Refresh** — Vite's development feature that swaps an edited component without
+reloading the page or losing state. It only works for modules that export components and
+nothing else, which is why `useAuth` lives in `AuthContext.ts` rather than in
+`AuthProvider.tsx`.
+
+**Testing Library** — a testing approach that queries the rendered DOM the way a user
+would — by role, by label, by visible text — rather than by class name or component
+internals. `getByRole('button', {name: 'Sign in'})` is the style.
+
+**`getBy` / `queryBy` / `findBy`** — Testing Library's three query families: `getBy`
+throws when there is no match, `queryBy` returns null (for asserting absence), and
+`findBy` waits for a match to appear (for anything asynchronous).
+
+**react-hook-form** — a form library that keeps values in uncontrolled inputs and
+re-renders as little as possible. `register('email')` wires an input to it.
+
+**zod** — a schema library that validates a value and gives TypeScript its type. A
+**resolver** is the adapter that lets react-hook-form validate with it.
+
+**Media query / breakpoint** — a CSS condition on the viewport (`max-width: 899px`) and
+the width at which a layout changes. MUI calls 900 px `md`; `useBreakpoint` is pinned to
+899 so `react-responsive` and MUI's own responsive props always agree.
+
+**`sx` prop** — MUI's inline styling prop, with access to theme values: `sx={{ p: 2 }}` is
+two theme spacing units of padding, not two pixels.
+
+**`CssBaseline`** — MUI's CSS reset, applied once at the root. The only reset this project
+has, since it has no stylesheets.
+
+**FAB (floating action button)** — the round button pinned above the mobile bottom bar.
+Here it opens "Report an issue" for employees.
