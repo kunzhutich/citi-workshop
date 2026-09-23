@@ -233,8 +233,7 @@ test.describe('the admin dashboard', () => {
     await expect(adminPage.getByText(/^Reported between /)).toBeVisible();
 
     await expect(adminPage.getByRole('heading', { name: 'All tickets' })).toBeVisible();
-    const shown = await listTotal(adminPage);
-    expect(shown).toBe(expected);
+    expect(await listTotal(adminPage)).toBe(expected);
   });
 
   test('a current-state tile opens an unwindowed list, and the totals agree', async ({
@@ -316,11 +315,23 @@ test.describe('the admin dashboard', () => {
  * How many tickets the list says it holds.
  *
  * The pagination footer rather than a row count, because it reports the whole
- * result set and the table only shows one page of it.
+ * result set while the table shows one page of it.
+ *
+ * An empty result has no footer — `IncidentsPage` renders an empty state
+ * instead of a table — so that case is read from the empty state and returned
+ * as zero. Without this the helper would hang for fifteen seconds and then
+ * fail on a quiet database, which is a property of the data rather than of the
+ * code under test.
  */
 async function listTotal(page: Page): Promise<number> {
   const footer = page.locator('.MuiTablePagination-displayedRows');
-  await expect(footer).toBeVisible();
+  const empty = page.getByText('No tickets match those filters');
+
+  await expect(footer.or(empty).first()).toBeVisible();
+  if (await empty.isVisible()) {
+    return 0;
+  }
+
   const text = await footer.innerText();
   const match = /of\s+([\d,]+)/.exec(text);
   expect(match, `could not read a total from "${text}"`).not.toBeNull();
