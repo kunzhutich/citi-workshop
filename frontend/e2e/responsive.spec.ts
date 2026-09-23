@@ -34,19 +34,24 @@ test.describe('layout', () => {
     await employeePage.goto('/tickets');
 
     if (isMobile(employeePage)) {
-      // The bottom bar is the surface, and the permanent drawer is not
-      // rendered at all — MUI keeps a temporary Drawer out of the DOM while
-      // it is closed, which is what makes this assertion meaningful rather
-      // than a check on visibility.
+      // Asserted on the landmarks rather than on individual links, because
+      // both surfaces hold some of the same labels: "Quick links" is the
+      // four-item bottom bar, "Main" is the full list in the drawer. The
+      // drawer's absence is meaningful rather than a visibility check — MUI
+      // keeps a temporary Drawer out of the DOM entirely while it is closed.
+      await expect(employeePage.getByRole('navigation', { name: 'Quick links' })).toBeVisible();
+      await expect(employeePage.getByRole('navigation', { name: 'Main' })).toHaveCount(0);
       await expect(employeePage.getByRole('button', { name: 'Open navigation' })).toBeVisible();
-      await expect(employeePage.getByRole('link', { name: 'All tickets' })).toHaveCount(0);
       await expect(employeePage.getByRole('search')).toHaveCount(0);
 
       // Everything the drawer holds is one tap away, not hidden.
       await employeePage.getByRole('button', { name: 'Open navigation' }).click();
-      await expect(employeePage.getByRole('link', { name: 'My tickets' })).toBeVisible();
+      const drawer = employeePage.getByRole('navigation', { name: 'Main' });
+      await expect(drawer.getByRole('link', { name: 'My tickets' })).toBeVisible();
     } else {
+      await expect(employeePage.getByRole('navigation', { name: 'Main' })).toBeVisible();
       await expect(employeePage.getByRole('link', { name: 'All tickets' })).toBeVisible();
+      await expect(employeePage.getByRole('navigation', { name: 'Quick links' })).toHaveCount(0);
       await expect(employeePage.getByRole('button', { name: 'Open navigation' })).toHaveCount(0);
       await expect(employeePage.getByRole('search')).toBeVisible();
     }
@@ -151,8 +156,8 @@ test.describe('layout', () => {
       subcategory: 'Temperature/HVAC',
       title: 'The east side of the floor is freezing all morning',
       description:
-        'It is noticeably colder than the rest of the floor until about eleven, every day '
-        + 'this week. People are working in coats.',
+        'It is noticeably colder than the rest of the floor until about eleven, every day ' +
+        'this week. People are working in coats.',
       priority: 'Medium',
     });
 
@@ -165,10 +170,14 @@ test.describe('layout', () => {
     await expect(action).toBeInViewport();
 
     // And it sits above the bottom navigation rather than over it. The bar's
-    // items are buttons, not links: `AppShell` drives them through
-    // `BottomNavigation`'s `onChange` and `navigate`, so there is no anchor.
+    // items are anchors as of S6 — they go somewhere, so they are links, and
+    // a screen reader now says so.
     const actionBox = await action.boundingBox();
-    const navBox = await employeePage.getByRole('button', { name: 'Home' }).first().boundingBox();
+    const navBox = await employeePage
+      .getByRole('navigation', { name: 'Quick links' })
+      .getByRole('link', { name: 'Home' })
+      .first()
+      .boundingBox();
     expect(actionBox).not.toBeNull();
     expect(navBox).not.toBeNull();
     expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(navBox!.y + 1);

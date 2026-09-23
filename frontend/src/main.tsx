@@ -7,6 +7,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
 import { AuthProvider } from './auth/AuthProvider';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { SnackbarProvider } from './components/SnackbarProvider';
 // Side-effect import: registers the @font-face rules theme.ts relies on.
 import './fonts';
@@ -33,18 +34,25 @@ if (!container) {
 // routes, and outside App because every route depends on the session.
 // SnackbarProvider wraps App rather than sitting inside the shell, so a screen
 // outside the shell can confirm something too.
+// The outer ErrorBoundary is inside ThemeProvider so its fallback is styled,
+// and outside BrowserRouter because it has to survive the router failing.
+// There is nothing to navigate with at that point, so it offers a reload.
+// The per-route boundary in `AppShell` handles the ordinary case, where the
+// navigation is still standing and "try again" is a real option.
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <BrowserRouter>
-          <AuthProvider>
-            <SnackbarProvider>
-              <App />
-            </SnackbarProvider>
-          </AuthProvider>
-        </BrowserRouter>
+        <ErrorBoundary label="application" recovery="reload">
+          <BrowserRouter>
+            <AuthProvider>
+              <SnackbarProvider>
+                <App />
+              </SnackbarProvider>
+            </AuthProvider>
+          </BrowserRouter>
+        </ErrorBoundary>
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,

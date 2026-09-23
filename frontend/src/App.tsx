@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 
 import { RequireAuth } from './auth/RequireAuth';
 import { RequireRole } from './auth/RequireRole';
@@ -13,6 +13,7 @@ import { HomePage } from './features/home/HomePage';
 import { IncidentDetailPage } from './features/incidents/IncidentDetailPage';
 import { IncidentsPage } from './features/incidents/IncidentsPage';
 import { ReportPage } from './features/incidents/ReportPage';
+import { NotFoundPage } from './features/placeholder/NotFoundPage';
 import { StatusPage } from './features/status/StatusPage';
 import { UsersPage } from './features/users/UsersPage';
 import { AppShell } from './layout/AppShell';
@@ -35,6 +36,10 @@ import { paths } from './routes';
  *
  * The four ticket lists are one component with a different preset each. What
  * separates My Queue from Unassigned is an API filter, not a screen.
+ *
+ * The catch-all sits in tier 3 rather than at the top level, so an unknown URL
+ * is explained by `NotFoundPage` inside the shell rather than silently
+ * redirected.
  */
 export default function App() {
   return (
@@ -99,7 +104,11 @@ export default function App() {
             />
           </Route>
 
-          <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['SENIOR', 'LEAD']} />}>
+          <Route
+            element={
+              <RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['SENIOR', 'LEAD']} />
+            }
+          >
             <Route
               path={paths.unassigned}
               element={
@@ -124,10 +133,17 @@ export default function App() {
             <Route path={paths.categories} element={<CategoriesPage />} />
             <Route path={paths.users} element={<UsersPage />} />
           </Route>
+
+          {/* Anything else, inside the shell so the navigation is still there
+              to leave by. Signed out this is unreachable — `RequireAuth`
+              redirects to the login screen first, which is the right answer:
+              the application is not browsable without a session, and after
+              signing in the bad URL resolves here where it can be explained.
+              Replaces a `<Navigate to="/">` that rewrote the address bar and
+              told the user nothing. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Route>
-
-      <Route path="*" element={<Navigate to={paths.home} replace />} />
     </Routes>
   );
 }
