@@ -949,9 +949,11 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | "Priority then age" ordering on the engineer's home list | `features/home/sortTickets.ts` | `sortByPriorityThenAge` — client-side, over a fixed top-N |
 | How engineers are ordered in the assign dialog | `features/engineers/hooks.ts` | `sortForAssignment`; the API decides who may actually be assigned |
 | Who sees which navigation item | `layout/navigation.ts` | `navItemsFor`, `reportNavItem` |
-| Which navigation item is highlighted | `layout/navigation.ts` | `activeNavPath` — longest matching prefix |
+| Which screen a URL belongs to | `layout/navigation.ts` | `activeNavItem` — longest matching prefix; `activeNavPath` is it, for the shell's highlight |
+| **What the ticket page's back link says, and where it goes** | `features/incidents/backTarget.ts` | `backTargetFor`, `DEFAULT_BACK_TARGET`; `useTicketLinkState` is what every link to a ticket carries |
 | Which items reach the mobile bottom bar | `layout/navigation.ts` | the `inBottomNav` flag |
 | Where the desktop/mobile switch happens | `hooks/useBreakpoint.ts` | `MOBILE_MAX_WIDTH` = 899, aligned with MUI's `md` |
+| How many columns the ticket filter bar has | `features/incidents/IncidentFilterBar.tsx` | `FilterControls`' `gridTemplateColumns` — `auto-fit`, driven by the bar's own width rather than the window's (D44) |
 | Where a dialog is full screen | `components/ResponsiveDialog.tsx` | one place, so no screen forgets |
 | Where confirmations appear | `components/SnackbarProvider.tsx` | top on a phone, bottom on desktop |
 | What a status is called, and what colour it is | `display/labels.ts`, `display/statusColor.ts` | `statusLabel`, `statusChipColor` |
@@ -968,7 +970,7 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | What a stepper step says about its own state | `features/incidents/WorkflowStepper.tsx` | `describeStepState`, `aria-current="step"` |
 | What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each; `role="img"` |
 | How an async state change is announced | `components/QueryState.tsx`, `components/FullPageProgress.tsx` | `role="status"` + `aria-live="polite"` |
-| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible`, plus the two `.MuiAppBar-root` rules that move it off a bare `<input>` and onto the field (D46) |
 | Which status colours were contrast-checked, and against which surfaces | `theme.ts` | `palette.info` / `warning` / `success` / `error` — both ratios are in the comment |
 | Which accessibility rules the build enforces | `e2e/accessibility.spec.ts` | `WCAG_AA` |
 | Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
@@ -7971,3 +7973,203 @@ one looks fine in a screenshot.
 | **`useInfiniteQuery`** | TanStack Query's accumulating fetch: pages are appended rather than replacing each other, which is what "Load more" needs. The same hook the ticket lists use on a phone. |
 | **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders the control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor. |
 | **Read rate** | Of the notifications sent to reporters inside the reporting period, the share that have been read at any time since. Depressed by recent activity, inherently — a notification sent an hour ago has had an hour. |
+
+---
+
+## Phase R1 — The redesign brief, section 1: the four bugs
+
+*[`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
+after using the built application, grouped by the order they want them done. Section 1
+is "things that are wrong now", and this is that section and nothing else — no theme,
+no shared components, no new features. Four reported bugs, which turned out to be
+three causes, plus a fifth found while proving the fixes.*
+
+### 1. What was built
+
+| File | What changed |
+| --- | --- |
+| `features/incidents/IncidentFilterBar.tsx` | The controls grid stops switching layout on a *viewport* breakpoint and switches on its own width instead. This is §1.1. |
+| `features/incidents/backTarget.ts` | **New.** Where the ticket page's back link goes and what it is called. §1.2 and §1.4 are one thing. |
+| `features/incidents/backTarget.test.ts` | **New.** Fifteen assertions over the label rule and the validation. |
+| `features/incidents/IncidentDetailPage.tsx` | The back link is drawn from `useBackTarget()` rather than being a literal. |
+| `layout/navigation.ts` | `activeNavItem` extracted from `activeNavPath`, so two callers share one longest-prefix rule. |
+| `features/incidents/IncidentTable.tsx`, `IncidentCardList.tsx`, `features/home/HomeTicketRow.tsx`, `features/dashboard/NeedsAttentionPanel.tsx`, `features/engineers/TeamPage.tsx`, `features/notifications/NotificationsPage.tsx` | Every link that leads to a ticket now carries `state={ticketLinkState}`. One line each. |
+| `theme.ts` | The app bar's focus ring moves off the bare `<input>` and onto the field around it. This is §1.3. |
+| `layout/TicketSearchField.tsx` | Drops its own white-border-on-focus rule, so there is one focus indicator rather than two. |
+| `e2e/responsive.spec.ts` | **New test** — *"the ticket list does not scroll sideways at any width"*, fifteen widths instead of two. |
+| `e2e/navigation.spec.ts` | **New file.** The round trip: filter a list, open a ticket, come back. |
+| `e2e/fixtures/test.ts`, `e2e/accessibility.spec.ts` | `exact: true` on three "Sign in" locators. Without it the whole suite fails in its own fixture — see §6. |
+
+Decisions: [D44](DECISION-LOG.md#d44--the-sideways-scroll-a-viewport-breakpoint-deciding-a-layout-inside-a-narrower-box),
+[D45](DECISION-LOG.md#d45--correcting-the-brief-the-filters-were-never-lost-on-the-browsers-back-button),
+[D46](DECISION-LOG.md#d46--one-focus-ring-on-the-app-bars-search-box-drawn-around-the-box),
+[D47](DECISION-LOG.md#d47--the-end-to-end-suite-could-not-run-at-all-and-had-not-been-able-to-for-some-time).
+
+### 2. Why it is shaped this way
+
+**§1.1 — the grid asks about its own width, not the window's.**
+
+The old template was `{ xs: '1fr', md: 'minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto' }`.
+Material UI's breakpoint keys compile to media queries, and a media query knows one
+thing: how wide the *window* is. The filter bar is not the window wide. It is inside
+`<main>`, beside a 248px permanent drawer, inside 48px of padding:
+
+```
+window 1200px  →  <main> content box ≈ 900px  →  grid minimums ≈ 950px  →  50px of overflow
+window  900px  →  <main> content box ≈ 620px  →  grid minimums ≈ 950px  → 330px of overflow
+```
+
+A grid track cannot shrink below its `minmax()` minimum, so the bar pushed out of
+`<main>` and the document scrolled sideways. The replacement —
+`repeat(auto-fit, minmax(min(100%, 160px), 1fr))` — has no threshold in it at all:
+it fits as many 160px columns as the box holds and shares the remainder between them.
+`min(100%, 160px)` is the phone half of that; without it a container narrower than one
+column is still overflowed by one column.
+
+The rejected alternatives are in D44. The short version: `overflow-x: hidden` hides the
+controls rather than reaching them, and a container query would still need a threshold,
+one that at a safe value (1040px) is most of a 1400px window.
+
+**§1.2 and §1.4 — one link, two symptoms.**
+
+The brief lists these separately and they are the same eight lines. The back link was
+`<Button to={paths.allTickets}>All tickets</Button>` — a fixed destination and a fixed
+label. It therefore always said "All tickets", and it always went to a bare `/tickets`,
+discarding the query string that *is* a filtered list's state.
+
+The browser's own back button was never affected. `useIncidentFilters` writes filters
+with `replace`, so the entry the list sits on already carries them. That was measured
+before anything was changed — four list screens, two widths, `page.goBack()` — and it
+came back intact every time. D45 records it, because the brief's diagnosis pointed at
+the filters and the fault was in the link.
+
+The origin travels in **React Router navigation state**, which is stored in the history
+entry: it survives a reload, comes back correctly on forward and back, and is absent
+exactly when it should be — a pasted URL — which is what the fallback is for.
+
+The **label is not a table of its own.** `backTargetFor` asks `navigation.ts`, so the
+link names each screen the way that user's own sidebar names it. An admin's sidebar says
+"Tickets" where an employee's says "All tickets", and the back link agrees with whichever
+one the reader has been looking at.
+
+**§1.3 — the ring was on the wrong element.**
+
+S6 added `body .MuiAppBar-root :focus-visible` so that focus is visible on a
+primary-coloured bar, where a primary-coloured ring is not. The selector lands on the
+focusable element, and inside a Material UI text field that is the bare `<input>` — so
+the ring was a hard white rectangle that stopped short of the search icon and knew
+nothing about the field's rounded border. Text inputs match `:focus-visible` on a mouse
+click too, so this was every use of the control, not a keyboard edge case.
+
+The ring moves to `.MuiInputBase-root:has(:focus-visible)` — the whole field. The point
+of the fix is that the indicator still exists: deleting a focus style is the thing S6 was
+written to stop, and tabbing from the search box to the bell was checked, and
+screenshotted, to prove the buttons kept theirs.
+
+### 3. How the pieces connect
+
+One journey, which is all of §1.2 and §1.4:
+
+```
+/tickets?status=BLOCKED&page=2         the list, filters in the URL
+  └─ IncidentTable row
+     └─ useTicketLinkState()           features/incidents/backTarget.ts
+        ├─ useLocation()               → pathname + search, exactly as it stands
+        └─ backTargetFor(location, user)
+           └─ activeNavItem(pathname, [...navItemsFor(user), Notifications])
+                                       layout/navigation.ts — longest prefix wins
+        = { from: { label: 'Tickets', to: '/tickets?status=BLOCKED&page=2' } }
+     └─ <Link to={incidentPath(id)} state={…}>     react-router stores it in history.state
+        │
+        ▼
+/tickets/6f3a…                         the ticket
+  └─ IncidentDetailPage
+     └─ useBackTarget()
+        └─ useLocation().state → readBackTarget()  shape- and prefix-checked
+     └─ <Button to={backTarget.to}>{backTarget.label}</Button>
+        │  "← Tickets"
+        ▼
+/tickets?status=BLOCKED&page=2         the same list, filters and page intact
+```
+
+The two halves never meet except through the history entry, which is what makes a
+reload in the middle work: the state is in the entry, not in a React ref.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How many columns the ticket filter bar has | `features/incidents/IncidentFilterBar.tsx` | the `gridTemplateColumns` on `FilterControls` — container-driven, no breakpoint |
+| **What the ticket page's back link says, and where it goes** | `features/incidents/backTarget.ts` | `backTargetFor`, `DEFAULT_BACK_TARGET` |
+| What a link to a ticket has to carry for that to work | `features/incidents/backTarget.ts` | `useTicketLinkState` |
+| Which navigation state is trustworthy | `features/incidents/backTarget.ts` | `readBackTarget` |
+| Which screen a URL belongs to | `layout/navigation.ts` | `activeNavItem` — and `activeNavPath` on top of it |
+| Where focus is drawn on the app bar | `theme.ts` | `MuiCssBaseline` → the three `.MuiAppBar-root` rules |
+
+### 5. How to change it
+
+**To make a new screen a possible back destination:** if it is in `navItemsFor`, nothing
+— it already is. If it is not (the inbox is the only one today), add it to
+`EXTRA_ORIGINS` in `backTarget.ts`.
+
+**To add a new link to a ticket:** call `useTicketLinkState()` in the component and pass
+`state={ticketLinkState}` beside `to={incidentPath(id)}`. Forgetting it is not a crash —
+the ticket page falls back to "All tickets" — which is the failure mode worth knowing
+about, because it is quiet.
+
+**To add a control to the ticket filter bar:** add it inside the grid. Nothing else. The
+column count is worked out from the available width, so there is no template to widen and
+no breakpoint to revisit.
+
+**To change the focus ring:** `theme.ts`, the `MuiCssBaseline` block. There are three
+rules and they are ordered: the page's primary ring, the app bar's white one, and the
+pair that moves the app bar's ring from an input to the field around it.
+
+### 6. Gotchas
+
+**A test measures the width it was given.** `playwright.config.ts` runs two projects,
+375px and 1440px. The overflow lived between 900 and 1290, so *"no screen scrolls
+sideways"* passed for months over four broken screens. Any assertion about a layout with
+a threshold in it has to sweep, not sample — which is why the new test lists fifteen
+widths and says so in a comment.
+
+**Chrome shows this class of fault before Firefox does.** Chrome on Linux draws a classic
+15px scrollbar, which comes off the layout width; Firefox's overlay scrollbars do not.
+Every window width therefore lands 15px further into an overflow band in Chrome. It
+shifts the band; it does not create it. "It looks fine in Firefox" is not evidence.
+
+**Playwright's headless Chromium has no scrollbar at all.** `window.innerWidth -
+documentElement.clientWidth` is 0 there and 15 in a headed browser, which is another
+15px of difference between what CI measures and what the owner sees. The diagnosis for
+D44 was done headed for that reason.
+
+**The end-to-end suite could not start.** 95 of 96 tests failed in the shared sign-in
+fixture, because `DemoAccountPicker` added a button called "Sign in as someone" and
+`getByRole('button', { name: 'Sign in' })` then matched two controls. It is fixed here
+with `exact: true`, and the number "82 e2e pass" in this guide, `BUILD-STATUS.md` and the
+README was stale from the moment the picker landed. See D47.
+
+**The suite also needs the right admin password.** `E2E_ADMIN_PASSWORD='AcmeLocalDev2026!!'`
+against the `acme_demo` database — the fixture's default has one `!`, the database has
+two. Running without it does not merely fail: each run spends failed sign-ins against the
+admin's `login_attempts` row, and ten inside fifteen minutes locks the account with a 429
+until the window expires. This is recorded in `BUILD-STATUS.md` and is easy to rediscover
+the slow way.
+
+**`state` is not a prop.** Navigation state survives a reload because it is serialised
+into `history.state`, which means it can be stale (written by an older bundle) or edited
+by hand. `readBackTarget` validates rather than trusts, and refuses a destination that is
+not an in-app absolute path.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **`auto-fit` / `auto-fill`** | CSS Grid's "as many tracks as fit" keywords for `repeat()`. `auto-fill` keeps the empty tracks it created; `auto-fit` collapses them to zero, so the remaining columns stretch to fill the row. The bar uses `auto-fit`, which is why six controls sit on one row at 1400px and three at 900px. |
+| **The RAM pattern** | `repeat(auto-fit, minmax(min(100%, X), 1fr))` — "repeat, auto, minmax". The `min(100%, X)` is the load-bearing part: a bare `minmax(X, 1fr)` still overflows a container narrower than `X`. |
+| **Media query vs. container query** | A media query (`@media`, and every Material UI breakpoint key) asks about the viewport. A container query (`@container`) asks about a named ancestor. Most layout questions inside an application shell are really the second kind, which is what D44 is about. |
+| **`min-content` width** | The narrowest a box can be without its contents overflowing. A grid track's `minmax()` minimum is a floor the browser will not go below, so a template whose minimums exceed the container overflows rather than compressing. |
+| **Navigation state** | React Router's `state` option on a link or `navigate()`. Stored in the browser's `history.state` for that entry, so it survives a reload and is restored on back/forward — unlike a React ref or a module variable, and unlike the query string, it is not visible in the address bar and is not part of what a user can copy. |
+| **`:has()`** | The CSS relational pseudo-class: `.field:has(:focus-visible)` matches the field *containing* a focus-visible element. It is what lets a ring be drawn around a composed control when the focusable part of it is buried inside. |
+| **`:focus-visible` on a text input** | Browsers always treat a focused text input as focus-visible, including after a mouse click, because a caret that is not obviously placed is a usability problem. That is why §1.3's white box appeared on click and not only on Tab. |
+| **Strict mode (Playwright)** | Playwright refuses a locator that matches more than one element, rather than silently taking the first. It is the behaviour that turned one new button into 95 failing tests — and the reason those tests failed loudly rather than quietly testing the wrong control. |

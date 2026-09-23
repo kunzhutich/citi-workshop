@@ -2250,3 +2250,203 @@ why each broke something else.
 
 **Worth saying plainly:** CI caught what six days of local runs did not, because
 CI ran at an hour nobody had.
+
+## D44 — The sideways scroll: a viewport breakpoint deciding a layout inside a narrower box
+
+**The report.** The owner: every page needs scrolling right to reach the drawer
+button or the avatar, in Chrome but not Firefox, at any width from 400px to
+1400px. The brief points out that `e2e/responsive.spec.ts` has a test called
+*"no screen scrolls sideways"* which passes, and asks why.
+
+**What was measured.** A real Chrome, signed in as three personas, every screen,
+at eleven widths from 400 to 1400, reporting
+`documentElement.scrollWidth - clientWidth` and every element whose right edge
+passed the viewport. The result is narrower and sharper than the report:
+
+| Screen | Viewport widths that overflow | By |
+| --- | --- | --- |
+| `/tickets`, `/tickets/mine`, `/queue`, `/unassigned` | 900–1290 | up to 333px |
+| everything else | none | — |
+
+So: four screens, not every screen; a band in the middle, not any width. The
+four are one component — `IncidentsPage` — and the overflowing element is the
+same in every case, the filter bar.
+
+**The cause.** `IncidentFilterBar`'s controls were a CSS grid whose template
+changed at Material UI's `md` breakpoint:
+
+```ts
+gridTemplateColumns: { xs: '1fr', md: 'minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto' }
+```
+
+`md` is a **media query**: it asks how wide the *window* is. The bar does not
+live in the window. It lives inside `<main>`, which sits beside a 248px
+permanent drawer and carries 48px of its own padding — so at a 900px window the
+bar has about 620px, and at 1200px about 900px. Its own minimums come to roughly
+950px (200 + 4×140 + the escalated switch + five 16px gaps). A grid track cannot
+shrink below a `minmax()` minimum, so between the width at which the six columns
+switched on and the width at which they finally fitted, the bar pushed out of
+`<main>` and the document gained a horizontal scrollbar.
+
+**Why Chrome and not Firefox.** Chrome on Linux draws a classic 15px scrollbar,
+which comes off the layout width; Firefox's overlay scrollbars do not. Every
+window width therefore lands 15px further into the band in Chrome than in
+Firefox. That shifts the band; it does not create it, and Firefox at 1000px
+would overflow too. The browser difference is real but it is not the fault.
+
+**Why the test passed.** `playwright.config.ts` has two projects, 375px and
+1440px. Neither is in the band. The test was not measuring the wrong element or
+the wrong browser — it was measuring the right thing at two widths, and the
+fault lives between them. A layout rule with a threshold in it has to be
+measured on both sides of the threshold *and in between*.
+
+**Chosen.** `gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))'`.
+
+The column count now follows the width of the box the bar is actually in. There
+is no breakpoint to get wrong, and `min(100%, 160px)` is what keeps a container
+narrower than one column from being overflowed by it — the phone case.
+
+**Rejected: `overflow-x: hidden`.** The brief rules it out and is right to:
+hiding the overflow makes the controls unreachable rather than reachable.
+
+**Rejected: a container query.** `@container (min-width: …)` would have kept the
+explicit six-column template and asked the right question about width. It needs
+a `containerType` wrapper, and it still needs a threshold — one that would have
+to be at least 1040px to be safe, which on a 1400px window is most of the
+available space. `auto-fit` needs no threshold at all.
+
+**What it costs.** The search box loses its `2fr` emphasis; all six controls are
+now equal width. At 1400px the bar is still a single row of six, as before. Below
+about 1290px it wraps to two rows instead of overflowing, which is the honest
+answer — six controls at a usable width do not fit in 900px, and something had
+to give.
+
+**Proven.** The same sweep, after the change: 360 to 1600px, every screen, every
+persona, including the phone's filter drawer opened — no horizontal overflow
+anywhere. `e2e/responsive.spec.ts` gained *"the ticket list does not scroll
+sideways at any width"*, which sweeps fifteen widths rather than sampling two.
+
+## D45 — Correcting the brief: the filters were never lost on the browser's back button
+
+**The report.** Brief §1.2: "Apply filters on All Tickets → open a ticket →
+press back → the filters are gone… Something is dropping them on the return
+journey."
+
+**What was measured, before changing anything.** Four list screens, two widths,
+filters applied through the real controls, a ticket opened, `page.goBack()`. The
+URL came back with its query string intact every time, and the filter controls
+came back showing it. `useIncidentFilters.setFilters` writes with `replace`, so
+the history entry the list was on already carries the filters; the browser's
+back button restores them and always did.
+
+**The actual cause.** The ticket page's own back link:
+
+```tsx
+<Button component={RouterLink} to={paths.allTickets} startIcon={<ArrowBackIcon />}>
+  All tickets
+</Button>
+```
+
+A literal destination and a literal label. Pressing it goes to a bare
+`/tickets` — dropping the query string, which *is* the list's state — and it
+says "All tickets" from wherever you came. In an application, that arrow **is**
+the back button; §1.2 and §1.4 are one line of code, and the symptom the owner
+described is exactly what it produces.
+
+**Chosen.** `features/incidents/backTarget.ts`. Every link that leads to a
+ticket carries the location it was clicked from in React Router's navigation
+state (`useTicketLinkState`); the ticket page reads it back
+(`useBackTarget`) and renders the link from it. Navigation state lives in the
+history entry, so it survives a reload and comes back correctly on
+forward/back, and is simply absent for a pasted URL — which is what
+`DEFAULT_BACK_TARGET` ("All tickets") is for.
+
+The label is not a table of its own. `backTargetFor` asks
+`navigation.ts::activeNavItem` — the same longest-prefix rule that highlights
+the sidebar — so the link names the screen exactly as that user's own
+navigation names it: "Tickets" for an admin, "All tickets" for an employee,
+"My tickets" at `/tickets/mine`, "Notifications" from the inbox.
+
+**Rejected: remembering the last list screen in a module variable.** A second
+copy of the URL, wrong the moment two tabs are open, and gone after a reload.
+
+**Rejected: reading the browser's history.** React Router does not expose the
+previous entry, and the DOM History API deliberately does not either.
+
+**Validated, not trusted.** History state survives a reload and can be edited
+from the console, so `readBackTarget` checks the shape and refuses anything
+whose destination is not an in-app absolute path — a protocol-relative
+`//elsewhere.example` is a link off the site, and this link is not allowed to
+be one.
+
+**The lesson, again.** [D24](#d24--a-test-that-waited-for-a-heading-and-read-a-number-that-was-not-there-yet),
+[D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it)
+and [D38](#d38--correcting-d36-the-login-loop-was-a-redirect-not-a-cache) all say
+prove the fix removes the symptom. This is the other half of the same rule:
+reproduce the symptom before believing the diagnosis that came with it. Had the
+`replace` in `useIncidentFilters` been "fixed" on the strength of §1.2's wording,
+the filters would still have vanished and the history stack would have been
+worse.
+
+## D46 — One focus ring on the app bar's search box, drawn around the box
+
+**The report.** Brief §1.3: the global search field renders a white bordered box
+when clicked.
+
+**The cause.** S6's global focus rule, `body .MuiAppBar-root :focus-visible`,
+which exists because a primary-coloured ring is invisible on a primary-coloured
+bar. Its selector reaches the focusable element, and inside a Material UI text
+field that is the bare `<input>` — not the rounded, bordered thing a reader
+would call "the search box". So the ring was a hard white rectangle that stopped
+short of the search icon and ignored the field's border radius. A text input
+matches `:focus-visible` on a mouse click as well as on Tab, so this was every
+use of the control.
+
+**Chosen.** Two rules: suppress the ring on `.MuiInputBase-input` inside the app
+bar, and draw it on `.MuiInputBase-root:has(:focus-visible)` instead. The ring
+then takes the field's radius, encloses the icon, and looks deliberate.
+`TicketSearchField`'s own `&.Mui-focused fieldset` override — solid white, a
+second white line 2px inside the ring — drops back to the hover colour, so there
+is exactly one focus indicator.
+
+**What was checked, not assumed.** That the buttons on the bar still get the
+white ring: tabbing from the search box to the bell gives
+`rgb(255, 255, 255) solid 3px`, screenshotted. Deleting a focus indicator is the
+thing S6 was written to stop, so a fix that quietly did it to the bell would be
+worse than the box it removed.
+
+**`:has()`** is used deliberately. Matching `.Mui-focused` would have worked
+identically here, because a text input is always focus-visible — but it would
+also fire for focus this rule is not about, and the intent is "the field
+containing the focused thing", which is what `:has()` says.
+
+## D47 — The end-to-end suite could not run at all, and had not been able to for some time
+
+**Found while verifying D40–D42.** `npx playwright test` fails 95 of 96 tests.
+Not on an assertion — in the shared sign-in fixture, before any test reaches its
+first `expect`:
+
+```
+strict mode violation: getByRole('button', { name: 'Sign in' }) resolved to 2 elements
+  1) <button type="submit">Sign in</button>
+  2) <button aria-expanded="false">Sign in as someone</button>
+```
+
+The demo account picker (`features/auth/DemoAccountPicker.tsx`) puts an
+accordion under the sign-in form whose header is a button called "Sign in as
+someone". `e2e/fixtures/test.ts::signIn` and two tests in
+`e2e/accessibility.spec.ts` ask for a control named "Sign in" without `exact`,
+which now matches both.
+
+**Confirmed pre-existing**, by stashing every frontend change and running the two
+failing accessibility tests against the clean tree: they fail identically.
+
+**Chosen.** Add `exact: true` at the three locators, with a comment saying why.
+Three characters of scope creep, and the alternative is a section of work
+verified by a suite that cannot start.
+
+**What it says about the claim "82 e2e pass".** That number is in
+`docs/PROJECT-GUIDE.md`, `docs/BUILD-STATUS.md` and the README. It was true when
+it was written and stopped being true when the picker landed, and nothing
+noticed, because nobody ran the suite again. A test suite reports on the code
+only as often as it is run.
