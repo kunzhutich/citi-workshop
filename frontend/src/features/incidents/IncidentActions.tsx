@@ -7,6 +7,7 @@ import Typography from '@mui/material/Typography';
 
 import type { AllowedTransition, CurrentUser, Incident } from '../../api/types';
 import { transitionButtonColor } from '../../display/statusColor';
+import { hasAnyAction, hasContextualActions } from './actionAvailability';
 
 /**
  * Everything a user may do to a ticket, and nothing else.
@@ -114,17 +115,6 @@ export function ContextualButtons(props: IncidentActionsProps) {
   );
 }
 
-/** Whether there are any contextual actions to draw. */
-function hasContextualActions(incident: Incident): boolean {
-  return (
-    incident.can_assign ||
-    incident.can_escalate ||
-    incident.can_clear_escalation ||
-    incident.can_change_priority ||
-    incident.can_edit
-  );
-}
-
 /** The desktop right column: both groups, stacked, with a rule between them. */
 export function ActionsCard(props: IncidentActionsProps) {
   const { incident, transitions } = props;
@@ -175,7 +165,7 @@ export function ActionsCard(props: IncidentActionsProps) {
 export function ActionsBar(props: IncidentActionsProps) {
   const { incident, transitions } = props;
 
-  if (transitions.length === 0 && !hasContextualActions(incident)) {
+  if (!hasAnyAction(incident, transitions)) {
     return null;
   }
 

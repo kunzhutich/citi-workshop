@@ -18,6 +18,7 @@ import { useSnackbar } from '../../components/SnackbarContext';
 import { StatusChip } from '../../components/StatusChip';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { paths } from '../../routes';
+import { hasAnyAction } from './actionAvailability';
 import { ActionsBar, ActionsCard } from './IncidentActions';
 import { ActivityTimeline } from './ActivityTimeline';
 import { AssignDialog } from './AssignDialog';
@@ -225,10 +226,12 @@ export function IncidentDetailPage() {
               </Box>
             </Box>
 
-            {isMobile ? (
+            {isMobile && hasAnyAction(ticket, transitions.data ?? []) ? (
               <>
                 {/* Reserves the height the fixed bar occupies, so the note
-                    composer's last line is never underneath it. */}
+                    composer's last line is never underneath it — and only
+                    when there is a bar, so a viewer with no actions does not
+                    get a strip of empty space above the navigation. */}
                 <Box sx={{ height: 96 }} />
                 <Paper
                   elevation={8}

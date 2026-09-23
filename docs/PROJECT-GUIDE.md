@@ -3261,6 +3261,7 @@ repository. See the gotchas.
 | [ActivityTimeline.tsx](../frontend/src/features/incidents/ActivityTimeline.tsx) | Events and notes as one stream, internal notes shaded and labelled, ids rendered as names. |
 | [NoteComposer.tsx](../frontend/src/features/incidents/NoteComposer.tsx) | Adding a note, with the staff-only switch when the API allows one. |
 | [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) | `WorkflowButtons`, `ContextualButtons`, and the two shapes they render in. |
+| [actionAvailability.ts](../frontend/src/features/incidents/actionAvailability.ts) | Whether a viewer has anything to do — read by both shapes and by the page reserving room for one. |
 | [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) | Who, where, when, and why it is blocked or closed. |
 | [TransitionDialog.tsx](../frontend/src/features/incidents/TransitionDialog.tsx) | Exactly the fields `required_fields` named. |
 | [AssignDialog.tsx](../frontend/src/features/incidents/AssignDialog.tsx) | Engineers by specialty then load, with the API's warnings. |
