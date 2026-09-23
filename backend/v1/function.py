@@ -13,7 +13,6 @@ One Lambda serves two kinds of event:
   entry point.
 """
 
-import logging
 from typing import Any
 
 from mangum import Mangum
@@ -21,7 +20,10 @@ from mangum import Mangum
 from app.main import app
 from app.services.ops import run_ops
 
-logging.getLogger().setLevel(logging.INFO)
+# Logging is configured by `create_app()`, which `from app.main import app` has
+# already run by this point: one JSON handler on stdout, at the level
+# `LOG_LEVEL` asks for. It replaces the handler the Lambda runtime installs, so
+# nothing is printed twice. See `app/observability.py`.
 
 # lifespan="off": there are no startup or shutdown hooks to run, and Mangum's
 # lifespan support would add a per-invocation cost for nothing.

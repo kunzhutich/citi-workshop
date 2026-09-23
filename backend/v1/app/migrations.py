@@ -12,6 +12,9 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
+from app.config import get_settings
+from app.observability import configure_logging
+
 #: Root of the service directory: backend/v1. Resolved from this file rather
 #: than from the working directory, which we do not control.
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -25,5 +28,15 @@ def build_alembic_config() -> Config:
 
 
 def upgrade_to_head() -> None:
-    """Apply every migration that has not run yet."""
+    """Apply every migration that has not run yet, then restore our logging.
+
+    Alembic's ``env.py`` calls ``logging.config.fileConfig`` on ``alembic.ini``,
+    which replaces the **root** handler with alembic's own plain-text one. In a
+    warm Lambda that outlives the invocation: every line after a ``migrate``
+    would stop being JSON and CloudWatch would stop being able to query it. So
+    the logging configuration is reapplied here rather than left as alembic
+    found it. (``env.py`` separately passes ``disable_existing_loggers=False``,
+    which is what stops the same call silencing every ``app.*`` logger.)
+    """
     command.upgrade(build_alembic_config(), "head")
+    configure_logging(get_settings().log_level)

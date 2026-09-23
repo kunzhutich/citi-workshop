@@ -20,7 +20,14 @@ from app.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` is not cosmetic. `fileConfig` defaults to
+    # True, which sets `disabled = True` on every logger that already exists —
+    # and in the Lambda this file is imported by the in-process `migrate` ops
+    # action, long after `app.*` loggers have been created. With the default, a
+    # warm container goes silent after one migration: not quieter, *silent*,
+    # for the rest of its life. Keeping alembic's own handlers while leaving
+    # everyone else's alive is the whole intent here.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -7,8 +7,9 @@ that prefix would be unreachable in the deployed environment.
 
 from fastapi import FastAPI
 
-from app.config import API_PREFIX
+from app.config import API_PREFIX, get_settings
 from app.errors import ApiError, api_error_handler
+from app.observability import RequestLogMiddleware, configure_logging
 from app.routers import (
     auth,
     categories,
@@ -30,6 +31,11 @@ DESCRIPTION = (
 
 def create_app() -> FastAPI:
     """Build the FastAPI application and mount every router under `/api/v1`."""
+    # Before anything else, so that a failure while building the app is itself
+    # logged as JSON. This is the one entry point uvicorn, `function.handler`
+    # and the test client all share.
+    configure_logging(get_settings().log_level)
+
     application = FastAPI(
         title="ACME Facility Incident Management API",
         description=DESCRIPTION,
@@ -38,6 +44,11 @@ def create_app() -> FastAPI:
         openapi_url=f"{API_PREFIX}/openapi.json",
         redoc_url=None,
     )
+
+    # The outermost layer, so it sees the status Starlette finally sent —
+    # including the 404s and 422s raised before any router is reached. Added
+    # first because `add_middleware` builds the stack inside out.
+    application.add_middleware(RequestLogMiddleware)
 
     # One handler renders every deliberate error as {detail, code?, field?}.
     application.add_exception_handler(ApiError, api_error_handler)

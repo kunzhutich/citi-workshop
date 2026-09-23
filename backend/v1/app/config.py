@@ -65,6 +65,12 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Observability --------------------------------------------------------
+    log_level: str = Field(
+        default="INFO",
+        description=("Root log level. Every line is JSON on stdout; see app/observability.py."),
+    )
+
     # --- Security -------------------------------------------------------------
     jwt_secret: str = Field(
         default=DEVELOPMENT_JWT_SECRET,
