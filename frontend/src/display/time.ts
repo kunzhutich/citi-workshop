@@ -98,3 +98,39 @@ export function formatHours(hours: number | null | undefined): string {
   }
   return `${Math.round(hours / 24)}d`;
 }
+
+/**
+ * A calendar day, as the reports' `per_day` series spells it.
+ *
+ * **Not `new Date(day)`.** ECMAScript parses a bare `YYYY-MM-DD` as UTC
+ * midnight, and `toLocaleDateString` then renders it in the reader's zone — so
+ * in any zone west of Greenwich every label came out a day early. The
+ * daily-flow chart's axis began at "Sep 15" for a window the heading said
+ * started on Sep 16, which looks like an off-by-one in the *data* and is
+ * really one in the parse. Appending a time makes the same string parse as
+ * **local** midnight, which is what a calendar day from a report means: the
+ * server grouped by date, not by instant.
+ *
+ * A full ISO timestamp is left alone — `created_at` and friends carry a zone
+ * and must keep it.
+ */
+export function parseCalendarDay(day: string): Date {
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? new Date(`${day}T00:00:00`) : new Date(day);
+}
+
+/** A calendar day as "23 Sep" — what an axis tick has room for. */
+export function formatDayShort(day: string): string {
+  return parseCalendarDay(day).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/** A calendar day as "23 Sep 2026" — what a tooltip has room to say in full. */
+export function formatDayLong(day: string): string {
+  return parseCalendarDay(day).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}

@@ -6,6 +6,7 @@ import { LineChart } from '@mui/x-charts/LineChart';
 
 import type { DayCount } from '../../api/reports';
 import { EmptyState } from '../../components/QueryState';
+import { formatDayLong, formatDayShort } from '../../display/time';
 
 import { SERIES_PRIMARY, SERIES_SECONDARY } from './chartPalette';
 
@@ -77,7 +78,7 @@ export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
                 // same on every tick, and the extra six characters were enough
                 // to push the last label off the right edge of the card.
                 valueFormatter: (value: string, context) =>
-                  context.location === 'tick' ? shortDay(value) : longDay(value),
+                  context.location === 'tick' ? formatDayShort(value) : formatDayLong(value),
                 // Every day is a point; labelling every one would collide, so
                 // the axis thins them and the tooltip carries the rest.
                 tickLabelStyle: { fontSize: 11 },
@@ -118,16 +119,4 @@ export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
   );
 }
 
-/** "23 Aug" — what an axis tick has room for. */
-function shortDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-}
 
-/** "23 Sep 2026" — what a tooltip has room to say in full. */
-function longDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-}

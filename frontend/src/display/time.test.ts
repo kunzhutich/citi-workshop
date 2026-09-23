@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatDate, formatDateTime, formatHours, relativeTime } from './time';
+import {
+  formatDate,
+  formatDateTime,
+  formatDayLong,
+  formatDayShort,
+  formatHours,
+  parseCalendarDay,
+  relativeTime,
+} from './time';
 
 /**
  * `relativeTime` takes `now` as an argument rather than reading the clock, so
@@ -89,5 +97,36 @@ describe('formatHours', () => {
 
   it('still says 0h for a real zero', () => {
     expect(formatHours(0)).toBe('0h');
+  });
+});
+
+describe('calendar days from the reports', () => {
+  it('reads a bare date as the day it says, not the day before', () => {
+    // `new Date('2026-09-16')` is UTC midnight, which renders as 15 September
+    // anywhere west of Greenwich. The daily-flow axis began a day early
+    // because of it, so the heading and the chart disagreed by one day.
+    expect(formatDayShort('2026-09-16')).toBe('Sep 16');
+    expect(formatDayLong('2026-09-16')).toBe('Sep 16, 2026');
+  });
+
+  it('holds at both ends of a month and of a year', () => {
+    expect(formatDayShort('2026-01-01')).toBe('Jan 1');
+    expect(formatDayShort('2026-12-31')).toBe('Dec 31');
+    expect(formatDayShort('2026-03-01')).toBe('Mar 1');
+  });
+
+  it('parses to local midnight, which is what a grouped-by-date row means', () => {
+    const parsed = parseCalendarDay('2026-09-16');
+    expect(parsed.getFullYear()).toBe(2026);
+    expect(parsed.getMonth()).toBe(8);
+    expect(parsed.getDate()).toBe(16);
+    expect(parsed.getHours()).toBe(0);
+  });
+
+  it('leaves a full timestamp alone, zone and all', () => {
+    // Only a date-only string is ambiguous. An instant already knows its zone
+    // and must not be shifted into the reader's.
+    const iso = '2026-09-16T23:30:00Z';
+    expect(parseCalendarDay(iso).toISOString()).toBe(new Date(iso).toISOString());
   });
 });
