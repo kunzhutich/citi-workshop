@@ -1228,6 +1228,92 @@ Unverifiable while 7.5 stands, and recorded so that nobody discovers it by tryin
 guard is ever deliberately relaxed for one invoke, watch the reported `Duration` and
 `Max Memory Used` in the invoke's log tail before assuming it will repeat.
 
+## M7 — Dashboards and demo data (pass 3: the three persona screens)
+
+### 7.9 The lazy-loaded dashboard chunk is served, and cached, by CloudFront
+
+**Why it needs the cloud.** M7 pass 3 splits the admin dashboard and `@mui/x-charts` into
+a second JavaScript chunk, fetched only when an admin lands on `/`. Locally Vite serves it
+from the dev server, so nothing is exercised about how it is *deployed*: the chunk is a
+hashed asset next to `index.html` in S3, requested at runtime by the already-loaded
+`index-*.js`, and it must come back 200 from the default CloudFront behaviour rather than
+be swallowed by the SPA rewrite.
+
+`infra/cloudfront.tf`'s CloudFront Function rewrites **extension-less** paths to
+`/index.html` (see `docs/INFRA-CHANGES.md`). A `.js` file has an extension, so it should
+pass straight through — but that rule has never been exercised by a request the *browser*
+makes on its own rather than one typed into the address bar.
+
+```sh
+# After ./bin/deploy-frontend.sh, find the chunk's real name:
+ls frontend/dist/assets/AdminDashboardPage-*.js
+
+curl -s -o /dev/null -w '%{http_code} %{content_type} %{size_download}\n' \
+  "$BASE_URL/assets/AdminDashboardPage-<hash>.js"
+```
+
+✅ **Correct result:** `200 text/javascript` and roughly 340 kB. ❌ `200 text/html` with
+about 1 kB means the SPA rewrite caught it, and an admin would see the dashboard's
+Suspense fallback for ever with a MIME-type error in the console. Then sign in as an admin
+in a real browser, open the network panel, and confirm the second chunk is requested on
+arrival at `/` and **not** requested when signing in as an employee.
+
+### 7.10 Eight report requests on one page load against a sleeping Aurora
+
+**Why it needs the cloud.** The dashboard issues six period reports, one current-state
+report and one `GET /incidents` **concurrently** on first paint. Locally that is eight
+queries against PostgreSQL on the same host and the page is complete in well under a
+second. Deployed, the first of them may arrive at an Aurora Serverless v2 instance at
+`min_capacity = 0.0` — a ~15 second wake — and the other seven queue behind it on a Lambda
+whose `timeout` is 300 s but whose Function URL fronting has its own limits.
+
+The risk is not correctness but what an admin sees: eight spinners for fifteen seconds
+with nothing saying why.
+
+```sh
+# Warm, after one request has woken the cluster:
+for r in summary categories locations response-times engineer-workload blocked-escalated; do
+  curl -s -o /dev/null -w "$r %{time_total}\n" \
+    -H "Authorization: Bearer $TOKEN" "$BASE/reports/$r"
+done
+```
+
+✅ **Correct result:** every warm request under a second, and the cold first one completing
+rather than timing out. ❌ If the cold path is bad enough to matter, the fix is a
+`min_capacity` above zero on the review environment, not a change to the screen.
+
+### 7.11 The dashboard's number-to-list agreement, against real data
+
+**Why it needs the cloud.** `e2e/dashboards.spec.ts` asserts that a KPI tile's number
+equals the total of the list it links to. That is the property that proves the period and
+current-state scoping line up end to end, and it is checked locally against a few hundred
+incidents. Against a deployed database with a different row count, different clock skew
+between the Lambda and Aurora, and `created_at` bounds evaluated on the database rather
+than the API host, it is worth confirming once by hand.
+
+Sign in as an admin, note "Still open", click it, and compare with the list's footer.
+Repeat for "Blocked" under **Right now** — that link must carry no `created_from` in the
+address bar at all.
+
+✅ **Correct result:** both totals match their tiles, and the live one's URL is
+`/tickets?status=BLOCKED` with no date parameters. ❌ A live tile whose list is shorter
+than the tile means a date filter has crept onto a current-state link, which is decision
+D9's failure reintroduced at the UI layer.
+
+### 7.12 Charts render in the deployed build, not only in the dev server
+
+**Why it needs the cloud.** `@mui/x-charts` is new in this pass and renders SVG through
+a vendored d3 bundle. Vite's dev server and its production build resolve and tree-shake
+that dependency differently, and `npm run build` succeeding proves only that it compiles.
+
+Sign in as an admin against the deployed URL and confirm the four bar charts and the
+daily-flow line chart draw marks — not empty plot frames — and that each bar carries its
+value label outside the bar.
+
+✅ **Correct result:** bars with numbers beside them, two coloured lines with a legend.
+❌ An empty `<svg>` with axes but no `.MuiBarChart-element` inside it is a bundling
+problem, visible only here.
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
@@ -1236,9 +1322,23 @@ These are out of scope until the phase that introduces them:
   7.3 above and need `seed_demo` to have run first — which, per 7.5, it cannot do against
   the deployed database. Measure them locally against a seeded database instead, and treat
   the result as a lower bound: it has no VPC hop in it.
-- The three persona home pages and the admin dashboard — M7 pass 3. M6 ships every other
-  screen; `/` is still a placeholder naming the phase. The report endpoints those pages
-  read now exist (M7 pass 1); the pages themselves do not.
+- **A `resolved_from` / `resolved_to` filter on `GET /incidents`.** Not a cloud check — work
+  that was not done. The dashboard's "Resolved in the period" tile counts by `resolved_at`
+  (from `/reports/engineer-workload`) while the incident list can only filter on
+  `created_at`, so no list matches that tile exactly. The tile is therefore deliberately
+  unlinked, and the per-engineer resolved count in the workload table links to an
+  approximation with the dates it used shown as a chip. Adding the two filters to
+  `IncidentFilters` would close both gaps. See D14 §3.
+- **"Unassigned for over 24 hours" is computed from one page of fifty.** Also not a cloud
+  check. `GET /incidents` has no "older than" filter, so the dashboard asks for open
+  unowned tickets oldest-first and cuts the page at the age. Exact while fewer than fifty
+  tickets are that stale; past that it under-reports, and on a busy deployed instance it
+  could be. A `created_before` filter, or an `unassigned_over_hours` count on
+  `/reports/blocked-escalated`, would make it exact.
+- **A ticket resolved by an admin on an unassigned ticket is missing from "Resolved in the
+  period".** That figure sums `resolved_in_period` per engineer, so work with no assignee
+  belongs to nobody. Reachable only by unassigning an IN_PROGRESS ticket and then resolving
+  it as an admin. Rare, and recorded rather than handled.
 - Anything depending on a realistic row count in the *deployed* database. `seed_demo`
   now exists but refuses to run there (7.5), so 6.7's timings and 4.7's query plan are
   still measured against whatever has been reported by hand — tens of rows rather than

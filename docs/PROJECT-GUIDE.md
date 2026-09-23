@@ -4894,3 +4894,363 @@ second run is a no-op, but it will not repair or refresh a partial world.
 `action` key, rather than over HTTP. IAM-protected and not routed by CloudFront, which is
 what lets migrations and seeding exist without a public maintenance endpoint. See
 `function.py` and `app/services/ops.py`.
+
+---
+
+## Phase M7 — Dashboards and demo data (pass 3: the three persona screens)
+
+Pass 1 built the eight report endpoints. Pass 2 built `seed_demo`, which fills a local
+database with ninety days of plausible ACME so those endpoints return something worth
+drawing. This pass draws it: the employee home, the engineer home and the admin
+dashboard, replacing the three placeholders M5 wired to `/`.
+
+**Verified.** 267 frontend tests (up from 211), 21 Playwright tests across two viewports
+(up from 12), eslint + `tsc -b` + `vite build` clean. Backend untouched — no server file
+changed in this pass, so the 683-test suite is unaffected and was not re-run for it.
+The screens were developed and screenshotted against `acme_demo`; `backend/v1/.env` is
+restored to `POSTGRES_NAME=acme_incidents_dev`.
+
+**The one thing to understand before changing any of this** is in section 2 below: the
+admin dashboard shows two kinds of number under a single filter bar, the difference is
+real, and every label on the page exists to keep them apart.
+
+### 1. What was built
+
+**The data layer.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/api/reports.ts` | One typed function per report endpoint, and the response types. Carries the period/current-state split **in the parameter types**: `fetchBlockedEscalated` and `fetchMyReport` take `ReportScopeParams`, which has no date field. |
+| `src/api/queryKeys.ts` | `queryKeys.reports.*`. Period and current-state keys take different parameter types, so two requests that differ in whether a window applied can never share a cache entry. |
+| `src/features/dashboard/hooks.ts` | A TanStack Query hook per report. The six period hooks hold the previous answer while a new one is fetched, so moving the date picker does not collapse the page into spinners. |
+
+**Shared dashboard pieces.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/features/dashboard/StatTile.tsx` | One number, its name, and a **required** `caption` saying what it is scoped to. A tile cannot be added without someone deciding that. Plus `StatTileGrid`, an auto-fit grid. |
+| `src/features/dashboard/ScopeHeading.tsx` | `PeriodScopeHeading` and `CurrentScopeHeading` — the two section headers that say which question the widgets below them answer. |
+| `src/features/dashboard/chartPalette.ts` | Every colour a chart uses, with the validator results that justify each one recorded beside it. |
+| `src/features/dashboard/BreakdownChart.tsx` | A horizontal bar chart of one measure across categories, with a table twin behind a toggle. Every bar is a link or a drill-down. |
+| `src/features/dashboard/FlowChart.tsx` | Reported against closed, per day. The only two-series chart. |
+| `src/features/dashboard/listLinks.ts` | `periodListLink` and `currentListLink` — two builders, not one with a flag, so the choice is visible at each call site. |
+| `src/features/dashboard/useDashboardFilters.ts` | The dashboard's filters in the URL, and the resolution of a preset into two instants. |
+| `src/features/dashboard/DashboardFilterBar.tsx` | The one filter row, above everything it scopes. |
+
+**The three screens.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/features/home/HomePage.tsx` | The `/` route's branch on role. Lazy-loads the admin dashboard. |
+| `src/features/home/EmployeeHomePage.tsx` | Greeting, full-width Report an issue, four tiles, "Needs your attention" when non-empty, recent tickets. |
+| `src/features/home/EngineerHomePage.tsx` | Four tiles, active tickets by priority then age, the unassigned queue for SENIOR/LEAD, the sentence for a JUNIOR. |
+| `src/features/home/HomeTicketRow.tsx` | One ticket with room for its own buttons. |
+| `src/features/home/sortTickets.ts` | `sortByPriorityThenAge`. |
+| `src/features/dashboard/AdminDashboardPage.tsx` | The dashboard, and `CategoryBreakdown` with its one level of drill-down. |
+| `src/features/dashboard/NeedsAttentionPanel.tsx` | Escalated tickets and tickets unassigned over 24 h, each row with an inline Assign. |
+| `src/features/dashboard/EngineerWorkloadTable.tsx` | Who holds what, with the period column named in its own header. |
+| `src/features/dashboard/BlockedByReasonPanel.tsx` | Blocked tickets grouped by reason, with ages. |
+
+**Changed, not new.**
+
+| File | Change |
+| --- | --- |
+| `src/features/incidents/useIncidentFilters.ts` | Four more URL filters — `category_id`, `assignee_id`, `created_from`, `created_to` — so a dashboard link lands on exactly the tickets its tile counted. |
+| `src/features/incidents/AppliedFilterChips.tsx` | New. Renders those four as removable chips above the list, because a filter that is applied but invisible is worse than one that is missing. |
+| `src/features/incidents/InlineTransitionButtons.tsx` | New. Workflow buttons for one ticket in a list, still drawn only from `allowed-transitions`. |
+| `src/features/incidents/AssignButton.tsx` | Now takes four ids rather than a whole `IncidentListItem`, so it also serves the report rows in the Needs attention panel. |
+| `src/features/incidents/hooks.ts` | Mutations invalidate `['reports']` as well as `['incidents']`. |
+| `src/display/time.ts` | `formatHours` — hours under a day, days above, and `—` for `null`. |
+| `src/theme.ts` | Unchanged. Every chart colour lives in `chartPalette.ts`, not the theme, for the reason in section 2. |
+
+### 2. Why it is shaped this way
+
+#### The split that everything else follows from
+
+Decision [D9](DECISION-LOG.md) divided the eight reports in two. Six cover a **period**
+and take `from`/`to`; two describe the **present** and refuse those parameters outright,
+because "what is blocked" is a question about now and a thirty-day window would hide the
+ticket that has been blocked since February.
+
+That split was made in the API for the sake of this screen. A dashboard has one filter
+bar, and the temptation is to make it look as though the bar reaches everything. Against
+`acme_demo`, `summary.blocked_total` is **11** and `blocked-escalated.blocked_total` is
+**21** — the first is "tickets reported in the last thirty days that are blocked now",
+the second is "tickets blocked now". Both are correct. A tile labelled "Blocked · 21"
+under a heading that says "last 30 days" is the exact failure D9 exists to prevent.
+
+So the dashboard is two sections with two headings, and the difference is stated three
+times over: once in the filter bar's own caption, once per section heading, and once more
+in an alert under the live tiles for the case where the two figures visibly disagree.
+The period heading reads its dates **off the response's `window`**, never off the picker —
+the server is the only thing that knows what period it actually applied.
+
+The second guard is in the types. `fetchBlockedEscalated` and `fetchMyReport` take
+`ReportScopeParams`:
+
+```ts
+export interface ReportScopeParams {
+  building_id?: string;
+}
+```
+
+Deliberately not `Omit<ReportPeriodParams, 'from' | 'to'>`: an optional property set to
+`undefined` still satisfies an `Omit`, so a caller could write `{ from: undefined }` and
+believe it meant something. A separate interface with one field cannot be handed a date
+at all, and a screen that tried would not compile.
+
+`building_id` survives on both kinds, because it narrows *which* tickets are in view
+rather than *when* they happened. That is a scope filter, not a time filter, and D9 kept
+it for the same reason.
+
+#### Why the chart colours are not the chip colours
+
+The obvious move for a "by status" chart is the palette the status chips already use —
+blue Open, purple In progress, orange Blocked, green Resolved, grey Closed. A reader has
+already learned it everywhere else in the app.
+
+It fails as a chart palette. Run against this application's own chart surface — the white
+of `background.paper`, not a tool's default grey — the five-colour set fails two checks:
+blocked-orange beside resolved-green measures ΔE 3.2 under protanopia against a floor of
+8, and closed-grey falls below the chroma floor entirely. The two failing colours are
+**adjacent in workflow order**, and workflow order is not something a chart may rearrange.
+
+The resolution is that a chip and a chart mark have different jobs. A chip is a small
+token beside its own word, so its colour never has to stand alone; a chart mark is a block
+of colour a reader may have to tell from the one next to it. So:
+
+- **One series, many nominal categories** (status, category group, building) → one colour
+  for every bar, and the axis label carries identity. This is the correct treatment
+  regardless: shading each bar by its own value would encode the bar's length twice and
+  spend the only free channel on information the length already shows.
+- **A genuinely ordered scale** (priority) → a single-hue ramp, light to dark, so
+  more-urgent-is-darker is information. Validated: monotone lightness, every adjacent step
+  gap above 0.06, hue spread 3°, lightest step 2.11:1 against white.
+- **Two series that must be told apart** (reported vs closed) → two categorical hues with
+  a legend. Validated: worst CVD ΔE 24.7, normal-vision ΔE 33.6, both well clear.
+
+All of it is in `chartPalette.ts` with the numbers written down, so the next person to
+touch a hex knows what the old one was holding up. `chartPalette.test.ts` guards the
+structure — the ramp stays monotone and one hue, the two slots stay far apart — without
+re-deriving OKLab, which would only be testing its own arithmetic.
+
+#### Why every bar's value is drawn outside the bar
+
+The library centres bar labels inside the bar by default. On the darkest step of the
+priority ramp the dark label was close to unreadable, and on a short bar it spilled past
+the end. Outside, every label sits on the card in ordinary secondary ink at the same
+contrast whatever colour the bar is.
+
+That change then hid the largest number on each chart: the longest bar ran flush to the
+plot's right edge and had nowhere to put its label, so Material UI dropped it. The value
+axis now carries 15% headroom past the largest value. Both were found by looking at a
+screenshot, not by a test.
+
+#### Why a period link and a current-state link are two functions
+
+`periodListLink` appends `created_from`/`created_to`; `currentListLink` cannot. One
+function with a flag would have been shorter and would have made the decision invisible at
+the call site — and the decision is the whole point. A live number opened through a
+windowed list shows fewer tickets than the tile claimed, which is D9's failure one layer
+up from the API.
+
+The property this buys is checkable end to end, and `dashboards.spec.ts` checks it: read
+the tile's number, click it, read the list's total, assert they are equal. That assertion
+needs to know neither number, which is why it survives a reseed.
+
+#### Why "Needs your attention" is hidden rather than emptied
+
+A heading that demands attention in order to report that none is needed is worse than no
+heading, and an empty one would push the recent tickets below the fold to do it. The
+section renders only when the resolved-tickets query comes back non-empty.
+
+Its buttons come from `allowed-transitions`, not from `status === 'RESOLVED'`. The
+shortcut would have saved one request per row and would have kept drawing "Still broken"
+past the reopen window, where the API refuses it. See D14.
+
+#### Why the admin dashboard is lazy-loaded
+
+It is the only screen importing `@mui/x-charts`, which is about a third of the bundle,
+and `RequireRole` already keeps every other persona off it. One `lazy()` and one
+`Suspense` took the main bundle from 406 kB gzipped to 301 kB, with a 106 kB chunk that
+only an admin ever fetches. The cut follows a line the permission model already draws.
+
+### 3. How the pieces connect
+
+**An admin opens the dashboard and clicks the "Still open" tile.**
+
+1. `App.tsx` matches `/` inside `RequireAuth` → `AppShell` → `features/home/HomePage.tsx`.
+2. `HomePage` reads `useAuth()`, sees `FACILITY_ADMIN`, and renders the lazy
+   `AdminDashboardPage` inside a `Suspense`. The browser fetches
+   `AdminDashboardPage-*.js` — the chart chunk — for the first time.
+3. `AdminDashboardPage` calls `useDashboardFilters()`. It reads `useSearchParams()`,
+   finds no `range`, defaults to `30d`, and resolves that against a `now` **frozen at
+   mount** into `periodParams = { from, to, building_id: undefined }` and
+   `scopeParams = { building_id: undefined }`.
+4. Six period hooks and one scope hook fire, keyed by those objects:
+   `GET /api/v1/reports/summary?from=…&to=…`, and
+   `GET /api/v1/reports/blocked-escalated` with no dates on it at all.
+5. Vite's dev proxy forwards `/api` to uvicorn unchanged → `routers/reports.py`.
+   `get_report_window` collects the three parameters for the six; `get_report_scope`
+   collects one for the other. `ADMIN_ONLY` guards all but `/reports/me`.
+6. → `services/reporting.py` → `repositories/reports.py`. `_window_clauses()` applies
+   `created_at BETWEEN …`; `_scope_clauses()` applies only the building. One SQL statement
+   per report, `COUNT(*) FILTER (…)` throughout.
+7. The responses land in the TanStack cache. `summary.data.window` — the period the server
+   *actually* used — flows into `PeriodScopeHeading`, which renders "Counted over 24 Aug
+   2026 – 23 Sep 2026", and into `scope`, the object `periodListLink` builds hrefs from.
+8. The "Still open" tile renders `by_status.OPEN` with
+   `to={periodListLink(scope, { statuses: ['OPEN'] })}` →
+   `/tickets?status=OPEN&created_from=…&created_to=…`.
+9. The click is a `RouterLink`. `App.tsx` matches `paths.allTickets` → `IncidentsPage`.
+10. `useIncidentFilters()` reads the query string, including the two new date filters, and
+    `toQuery()` turns them into `GET /incidents?status=OPEN&created_from=…&created_to=…`.
+11. `IncidentFilterBar` renders `AppliedFilterChips`, which draws a removable chip reading
+    "Reported between 24 Aug 2026 and 23 Sep 2026" — so the reader can see what arrived
+    with the link.
+12. `routers/incidents.py` applies the same `created_at` bounds the report applied, and the
+    table's footer reads "1–20 of 20" against a tile that said 20.
+
+**An employee confirms a ticket fixed from their home screen.**
+
+`EmployeeHomePage` → `useIncidents({ mine: 'reported', status: ['RESOLVED'] })` gives the
+rows → each row renders `InlineTransitionButtons`, which calls
+`useAllowedTransitions(id)` → `GET /incidents/{id}/allowed-transitions` → the API returns
+`Confirm fixed` and `Still broken` **if this caller may make those moves now** → the
+button is drawn from `action_label` → clicking opens `TransitionDialog`, built from
+`required_fields` → `POST /incidents/{id}/transitions` → `useTransition`'s `onSuccess`
+invalidates both `['incidents']` and `['reports']`, so the tile above the list and the
+list itself both re-fetch and the count drops as the row disappears.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Which reports may be given a date range | `api/reports.ts` — the two parameter types |
+| Which section of the dashboard a widget belongs in | `AdminDashboardPage.tsx` — between the two scope headings |
+| What a period heading says, and where its dates come from | `ScopeHeading.tsx` |
+| Whether a link carries dates | `listLinks.ts` — `periodListLink` vs `currentListLink` |
+| Every chart colour, and the checks behind it | `chartPalette.ts` |
+| Chart form: bars horizontal, one colour, labels outside | `BreakdownChart.tsx` |
+| Which filters survive in a ticket-list URL | `features/incidents/useIncidentFilters.ts` |
+| Which filters are shown as chips | `features/incidents/AppliedFilterChips.tsx` |
+| Whether a JUNIOR sees the unassigned queue | `EngineerHomePage.tsx` — `mayPickUp`; the API enforces it in `services/assignment.py` |
+| Whether "Needs your attention" renders | `EmployeeHomePage.tsx` — `needsAttention.length > 0` |
+| Which workflow buttons a list row shows | `InlineTransitionButtons.tsx` — from `allowed-transitions`, never from status |
+| How long a ticket may go unowned before it needs attention | `NeedsAttentionPanel.tsx` — `UNASSIGNED_HOURS` |
+| How many rows the attention panel shows | `NeedsAttentionPanel.tsx` — `ROW_CAP` |
+| How a duration in hours is worded | `display/time.ts` — `formatHours` |
+
+### 5. How to change it
+
+**To add a KPI tile.** Decide first whether its number is period-scoped or current-state;
+everything else follows. Then: (1) put a `<StatTile>` in the right section of
+`AdminDashboardPage.tsx`; (2) write a `caption` that says what it is scoped to — the prop
+is required for this reason; (3) give it a `to` built with `periodListLink` or
+`currentListLink` to match, or **no `to` at all** if no list matches the number; (4) add
+a case to `AdminDashboardPage.test.tsx` asserting the value and the link's shape.
+
+**To add a chart.** If it is one measure across categories, build a `BreakdownDatum[]` and
+hand it to `BreakdownChart` — you get the bars, the table twin, the links and the palette.
+Only reach for `@mui/x-charts` directly if the form is genuinely different, and load the
+data-visualisation guidance before choosing a colour.
+
+**To add a colour.** Put it in `chartPalette.ts`, never in `theme.ts`, and record the
+validator result beside it. Running the check:
+`node scripts/validate_palette.js "#hex,#hex" --mode light --surface "#ffffff"` — the
+surface argument matters, because a contrast figure against the wrong background means
+nothing.
+
+**To add a filter to the ticket list.** Five places, in order: `IncidentQuery` in
+`api/incidents.ts`; `IncidentFilters` and the three blocks of `useIncidentFilters.ts`
+(read, write, `toQuery`); `activeCount`; then either a control in `IncidentFilterBar` or a
+chip in `AppliedFilterChips` — but not neither, or the filter becomes invisible.
+
+**To change what a persona's home screen counts.** The counts come from `/reports/me`,
+which is current state. If the number you want is about a period, it does not live there
+and widening that endpoint would undo D9 — see D14 §4 for the same problem and how it was
+answered.
+
+### 6. Gotchas
+
+- **`useDashboardFilters` freezes `now` at mount, and must.** A fresh `new Date()` on
+  every render puts a new instant in every query key; TanStack Query sees eight new
+  queries per pass, each answer triggers the next render, and the page refetches itself
+  for ever. The frozen value is never displayed — headings read their dates off the
+  response — so nothing goes stale on screen.
+- **The chart class names are `MuiBarChart-element` and `MuiBarChart-label`**, not
+  `MuiBarElement-root` / `MuiBarLabel-root`. The plausible-looking names match nothing, so
+  an `sx` block written against them fails silently: the bars had no pointer cursor and
+  the labels ignored their ink for an afternoon. A Playwright assertion that a bar exists
+  is what found it. If you style a chart, assert on the element you styled.
+- **The value axis needs headroom or the biggest label vanishes.** A bar that reaches the
+  plot edge has nowhere to draw its outside label and Material UI drops it silently, so
+  the largest number on the chart is the one that disappears.
+- **`AssignButton` takes ids, not a ticket.** The escalated half of
+  `/reports/blocked-escalated` returns `EscalatedTicket`, which is not an
+  `IncidentListItem` — a report row is not a ticket row. It has no category group, so the
+  assign dialog orders by load alone there rather than by specialty match.
+- **A `<button>` inside an `<a>` is invalid HTML and browsers resolve it by making the
+  button part of the link.** That is why home-screen rows are `HomeTicketRow` rather than
+  `IncidentCardList`: the latter wraps the whole card in a link, so "Confirm fixed" would
+  have navigated to the ticket instead of closing it.
+- **The unassigned-over-24h count is computed from one page of 50.** The API has no
+  "older than" filter, so the panel asks for open unowned tickets **oldest first** and cuts
+  at the age. Exact while fewer than fifty tickets are that stale; past that it
+  under-reports. Noted in `DEPLOYMENT-CHECKLIST.md`.
+- **`summary.escalated_total` and `blocked-escalated.escalated_total` will differ.** They
+  are supposed to. See D10 and the alert on the dashboard that says so to the reader.
+- **Playwright against `acme_demo` needs the doubled exclamation mark.**
+  `E2E_ADMIN_PASSWORD='AcmeLocalDev2026!!'` — the fixture's default is the dev database's
+  single-`!` password, and a wrong one fails with a loud message from `apiLogin` rather
+  than a confusing timeout.
+- **e2e assertions must not name a seeded number.** `seed_demo` is not idempotent (D12)
+  and every Playwright run adds tickets, so "Blocked is 21" would pass today and fail
+  after a demo. Assert shapes and agreements instead.
+
+### 7. Glossary
+
+**Period report / current-state report** — the two halves of this project's reporting API.
+A period report counts incidents *created between* two instants; a current-state report
+counts what is in a state *now* and takes no dates. The distinction is D9's, and every
+label on the admin dashboard exists to carry it to the reader.
+
+**Scope vs window** — what a report echoes back about its own filtering. A `window` is
+`{from, to, building_id}`; a `scope` is `{as_of, building_id}`. A response that carried a
+window it had not applied would let a dashboard label a chart with a period that was never
+used.
+
+**KPI tile** — a single headline number with a label and, here, a required caption naming
+its scope. The right form when the data is one value; a one-bar bar chart is the wrong one.
+
+**Drill-down** — clicking a chart segment to see the level beneath it. The category chart
+drills a group into its subcategories; the level lives in the URL (`?group_id=`) so a
+drilled view is a link somebody can send.
+
+**Table twin** — the same numbers a chart shows, as text, behind a toggle in the card's
+header. A chart puts its values behind a hover, and a hover is unavailable to a keyboard,
+a screen reader and a printout.
+
+**Categorical / sequential / ordinal palette** — three jobs colour can do. *Categorical*
+distinguishes entities that have no order (use distinct hues). *Sequential* encodes
+magnitude (one hue, light to dark). *Ordinal* encodes an ordered set of categories, which
+is what priority is — hence the one-hue ramp on the priority chart and one flat colour on
+every other.
+
+**CVD ΔE** — how far apart two colours are for a viewer with a colour-vision deficiency,
+measured in OKLab × 100 after simulating the deficiency. Eight is the floor these charts
+are held to; the status-chip palette scored 3.2 on one adjacent pair, which is why it is
+not the chart palette.
+
+**Lazy route / code splitting** — deferring a module's download until something needs it.
+`React.lazy()` plus a `Suspense` boundary makes the bundler emit a separate chunk; here
+the admin dashboard and its charting library are one such chunk.
+
+**`placeholderData: keepPrevious`** — a TanStack Query option that holds the last
+successful answer on screen while a new one is fetched, instead of returning to a pending
+state. It is what stops the dashboard from collapsing into spinners and jumping several
+hundred pixels every time the date range changes.
+
+**Auto-fit grid** — `repeat(auto-fit, minmax(190px, 1fr))` in CSS Grid: as many equal
+columns as fit above a minimum width, re-flowing on their own. Five tiles become five
+columns on a desktop and one on a phone without a breakpoint per count.

@@ -573,3 +573,170 @@ escalated total reads 16 against 13 further escalations still flagged on closed
 tickets, so D10 and D11 are demonstrably filtering live data, not just fixtures.
 
 **Reversible.** Entirely. `acme_demo` can be dropped; nothing else changed.
+
+## D14 — The dashboards: five calls where the honest answer cost something
+
+**Question.** BUILD-PLAN section 10 specifies the three persona screens down to
+the tile. Five of its instructions could not be followed literally against the
+API D9, D10 and D11 left behind, and each one had a plausible way to *appear*
+to follow it. They are recorded together because they are one judgement applied
+five times: **when the label and the number disagree, change the label.**
+
+### 1. The admin dashboard has one filter bar and two kinds of number under it
+
+The brief asks for "a filter bar (date range, building) applying to all
+widgets". It cannot apply to all widgets, because D9 made two of the eight
+reports refuse `from`/`to` outright — `/reports/blocked-escalated` and
+`/reports/me` answer present-tense questions, and a ticket blocked ninety days
+ago and still blocked is the row those reports exist to surface.
+
+Three options. **Send the dates anyway** and let the API ignore them: the
+dashboard would then label a live figure with a period, which is precisely the
+defect D9 was raised to fix, reintroduced one layer up and harder to see.
+**Drop the live widgets** so the filter really does reach everything: that
+removes the blocked queue and the escalation list, which are the two things an
+admin opens this screen to act on. **Say which is which**, chosen.
+
+The page is two sections. Everything period-scoped sits under a
+`PeriodScopeHeading` reading "Reported in this period — counted over 24 Aug
+2026 – 23 Sep 2026", and the dates are read **off the response's `window`**,
+not off the picker, so the heading cannot name a period the server did not
+apply. Everything current-state sits under a `CurrentScopeHeading` reading
+"Right now — as it stands at 23 Sep 2026, 02:46. The date range above does not
+apply to these." The filter bar says the same thing in one line before either
+section starts.
+
+What it costs is a longer page and a reader who has to notice a heading. What
+it buys, against the demo data, is that "Blocked · 21" and "reported in this
+period and blocked · 11" can both be on screen without either being a lie.
+
+The building filter carries no such caveat and is applied to both, because
+`building_id` narrows *which* tickets are in view rather than *when* they
+happened — the distinction D9 drew when it kept `building_id` on the
+current-state reports.
+
+**Where it is enforced.** `features/dashboard/ScopeHeading.tsx` for the
+headings, and `api/reports.ts` for the half that cannot be got wrong:
+`fetchBlockedEscalated` and `fetchMyReport` take `ReportScopeParams`, which has
+one field, so a caller that tried to pass a date would not compile. That is a
+deliberate second guard — a type is cheaper than a code review.
+
+### 2. Both escalated figures are shown, and the screen says why they differ
+
+`summary.escalated_total` is period-scoped and counts every escalation raised
+on a ticket reported in the period, closed ones included.
+`blocked-escalated.escalated_total` is live-only and counts flagged tickets
+that are still OPEN, IN_PROGRESS or BLOCKED (D10). Against `acme_demo` they
+read 12 and 16.
+
+Showing one would have been simpler. Showing the larger would overstate what
+needs attention; showing the smaller would understate what happened in the
+period. Both are on screen, one per section, and an alert under the live tiles
+names the difference in the reader's words rather than leaving them to work out
+why two tiles labelled "Escalated" disagree.
+
+### 3. "Resolved in the period" has no link, because no list matches it
+
+Every other KPI tile opens the tickets it counted. This one cannot: it sums
+`resolved_in_period` from `/reports/engineer-workload`, which counts by
+`resolved_at`, and `GET /incidents` filters only on `created_at`. A link would
+open a *similar* list — tickets reported in the period that are now resolved —
+which is a different set, and for a short period a very different one.
+
+A wrong link is worse than no link: it teaches a reader that the dashboard's
+numbers cannot be checked. The tile renders as a plain card rather than a
+clickable one, so nothing invites the click. The same approximation *is* used
+for the per-engineer resolved count in the workload table, where the chip above
+the list names the dates it applied — visible rather than silent. Closing the
+gap properly means a `resolved_from`/`resolved_to` filter on `GET /incidents`;
+it is in `DEPLOYMENT-CHECKLIST.md` as work not done.
+
+This tile also excludes a ticket resolved by an admin on an unassigned ticket,
+which the workflow permits by an unusual route (unassign an IN_PROGRESS ticket,
+then resolve it as FACILITY_ADMIN). The count is per engineer, so such a ticket
+belongs to nobody. Rare enough to accept and worth writing down.
+
+### 4. The engineer's fourth tile is not "Resolved this week"
+
+The brief names it so. No endpoint an engineer may call can answer it.
+`/reports/me` is current-state by D9 and carries no period at all;
+`/reports/engineer-workload` does carry a period-scoped `resolved_in_period`
+and is **admin-only**, deliberately, because an engineer who could read it
+could rank their colleagues. `GET /incidents` filters on `created_at`, not
+`resolved_at`, so the client cannot compute it either.
+
+Three ways out. **Widen `/reports/me` to take a period** — rejected: it would
+undo D9 on the endpoint D9 was most concerned about, to serve one tile.
+**Open `/reports/engineer-workload` to engineers** — rejected: a permission
+change to satisfy a label. **Change the label**, chosen. The tile reads
+"Resolved, awaiting confirmation" and counts `assigned.resolved` — the tickets
+this engineer has fixed that are still waiting on their reporter. It is a
+number they can act on, which "resolved this week" mostly is not, and it
+parallels the employee's "Awaiting your confirmation" tile on the other side of
+the same handover.
+
+### 5. The response-time tiles say "median", not "average"
+
+The brief asks for "average time-to-assign / acknowledge / resolve". The
+endpoint computes `percentile_cont(0.5)`, and M7 pass 1 chose the median
+deliberately so that one ticket left over a long weekend cannot move the
+headline. The labels say median. Three words, and the alternative was a
+dashboard that names a statistic it is not showing.
+
+### Smaller shapes, recorded so they are not mistaken for accidents
+
+- **"Confirm fixed" and "Still broken" are drawn from `allowed-transitions`,
+  not from `status === 'RESOLVED'`.** The shortcut was available and would have
+  saved one request per row. It would also have kept drawing the buttons after
+  the transition table changed, drawn them for a viewer who is not the
+  reporter, and drawn "Still broken" past the reopen window — where the API
+  would refuse the click. `InlineTransitionButtons` asks the same endpoint the
+  detail page asks and renders the answer; `only` filters what is drawn from
+  that answer and can never add to it.
+- **"My active tickets" is sorted client-side within the fetched page.**
+  BUILD-PLAN asks for "priority then age" and `IncidentSort` offers no compound
+  ordering. The server sorts by `-priority`, which guarantees the page holds
+  the most urgent tickets, and `sortByPriorityThenAge` decides their order
+  among themselves. Sound here because the list is a fixed top-N; it would not
+  be sound as a general list sort, so the full My Queue screen uses the
+  server's ordering and the helper lives beside the home screen that can afford
+  it.
+- **The status chart is one colour, not five.** The obvious move was the status
+  chip palette — blue Open, orange Blocked, green Resolved. As a five-colour
+  categorical set on a white card it fails: blocked-orange beside
+  resolved-green measures ΔE 3.2 under protanopia, well under the floor of 8,
+  and closed-grey falls below the chroma floor. Those two are adjacent in
+  workflow order and workflow order is not ours to rearrange. Every bar is
+  therefore slot-1 blue and the axis label carries the identity, which is the
+  correct treatment for nominal categories anyway. The chips are unaffected:
+  they carry a word, so their colour never stands alone. Priority is the one
+  exception and gets a validated single-hue ramp, because priority is a
+  genuinely ordered scale and darker-is-more-urgent is information rather than
+  decoration.
+- **Every chart has a table view.** A bar chart puts its values behind a hover,
+  and a hover is not available to a keyboard, a screen reader or a printout.
+  The toggle in each chart card's header gives the same numbers as text and the
+  same drill-downs as links.
+- **The Needs attention panel shows six rows per half, not all of them.**
+  Against `acme_demo` it had 26 unassigned and 16 escalated, which made the
+  dashboard 12,000 pixels tall on a phone and buried the blocked-by-reason
+  panel under them. The heading still states the real total and a link under
+  the rows opens all of them. A panel headed "what needs somebody" is a prompt
+  to act; thirty rows of it is a list to scroll past.
+- **Three list filters arrive only by link.** `category_id`, `assignee_id` and
+  `created_from`/`created_to` are honoured by `useIncidentFilters` but have no
+  control on the filter bar, because they exist to make a dashboard link land
+  on exactly the tickets a tile counted. They are not hidden:
+  `AppliedFilterChips` renders one removable chip for each above the list, so a
+  reader who arrived from a chart can see what was applied on their behalf and
+  take it off. Giving them full controls would be four more controls for
+  everyone, to serve a case that only ever arrives by link.
+- **The admin dashboard is lazy-loaded.** It is the only screen that imports
+  `@mui/x-charts`, which is about a third of the bundle, and `RequireRole`
+  already keeps everyone else off it. Splitting along a line the permission
+  model draws took the main bundle from 406 kB gzipped to 301 kB for every
+  employee and engineer.
+
+**Reversible.** All five, independently. The scope headings are one component;
+the two parameter types are one file; the four relabelled tiles are four
+strings.

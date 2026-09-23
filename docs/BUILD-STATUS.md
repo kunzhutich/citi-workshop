@@ -12,10 +12,9 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, M7 pass 2 complete (`seed_demo`), plus the D11 correction
+**Last updated:** 2026-09-23, M7 complete — all three passes
 **Current branch:** `m7-dashboards-demo-data`
-**Phase in progress:** M7, pass 3 of 3. Passes 1 (report endpoints) and 2
-(`seed_demo`) are done and committed; pass 3 is the three dashboard screens.
+**Phase in progress:** none. M7 is finished. Next is M8 minus the deploy.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
 11, computed with SQL aggregates. 665 backend tests (609 + 56 new), ruff check
@@ -66,6 +65,32 @@ visible recurring-problem seats. Refuses to run unless `settings.is_local`.
 Safe to run twice (second run is a no-op) but not a top-up — documented in the
 return payload and the guide. 683 backend tests (666 + 17), ruff clean.
 
+**M7 pass 3 verified:** the three persona dashboards from BUILD-PLAN section 10,
+replacing M5's placeholders on `/`. 267 frontend tests (211 + 56), 32 Playwright
+cases across two viewports of which 25 run and 7 are deliberate viewport skips
+(12 before), eslint + `tsc -b` + `vite build` clean. **No backend file changed
+in this pass**, so the 683-test suite is untouched and was not re-run for it.
+
+The load-bearing decision is [D14](DECISION-LOG.md) §1: the admin dashboard puts
+period-scoped and current-state widgets in two separately headed sections under
+one filter bar, because D9 means the date range genuinely cannot reach two of
+the eight reports. Against `acme_demo` the two blocked figures read 11 (period)
+and 21 (live) and the two escalated figures read 12 and 16 — all four correct,
+and the screen says which is which rather than picking one. `api/reports.ts`
+enforces the same split in its parameter types, so a screen that tried to window
+a present-tense report would not compile.
+
+Four defects were found by taking screenshots at 1440px and 375px and looking at
+them: bar labels centred in dark ink on saturated fills, the largest bar's label
+dropped for want of axis headroom, an uneven day axis with a clipped last tick,
+and an uncapped attention panel that made the phone page 12,000px tall. A fifth
+— chart `sx` written against class names that do not exist, so the styling was a
+silent no-op — was found by a Playwright assertion that a bar element is present.
+
+Also split the admin dashboard into its own bundle chunk: it is the only screen
+importing `@mui/x-charts` and `RequireRole` already keeps everyone else off it,
+so the main bundle went from 406 kB gzipped to 301 kB.
+
 **M6 verified independently:** 609 backend tests, 211 frontend tests,
 12 Playwright tests (2 deliberate viewport skips), ruff check + format clean,
 eslint + tsc + vite build clean. The full ticket lifecycle completes through
@@ -89,14 +114,14 @@ reviews.
 | `m4-incidents-workflow` | M4 | merged to main (PR #4) |
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
 | `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
-| `m7-dashboards-demo-data` | M7 | in progress, branched off `m6`; passes 1 and 2 committed |
+| `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
 | `m8-docs-and-demo` | M8 minus deploy | not started |
 | `s6-hardening` … | stretch | not started |
 
 ## Remaining plan
 
 1. **M6** — verify when the other session finishes, commit, push.
-2. **M7** — ~~report endpoints~~ (done), ~~`seed_demo`~~ (done), three dashboards. Branch off `m6`.
+2. **M7** — ~~report endpoints~~, ~~`seed_demo`~~, ~~three dashboards~~. All done.
 3. **M8 minus deploy** — README rewrite, architecture diagram, role/permission
    matrix, known limitations, demo script. Branch off `m7`. See decision D1.
 4. **Stretch**, in order S6 → S1 → S3 → S2. See decision D2.
@@ -120,7 +145,14 @@ them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
 - Dev database `acme_incidents_dev`: 37 categories, SFO-1 → Level 3 → 6 desks +
   2 meeting rooms, admins `henry@acme.inc` / `AcmeLocalDev2026!` and
   `admin@acme.inc` (password unknown, harmless).
-- `backend/v1/.env` (gitignored) sets `POSTGRES_NAME=acme_incidents_dev`.
+- `backend/v1/.env` (gitignored) sets `POSTGRES_NAME=acme_incidents_dev`. Switch it
+  to `acme_demo` and restart uvicorn to see the dashboards against 300 incidents
+  over 90 days; switch it back afterwards. See D13.
+- Playwright against `acme_demo` needs `E2E_ADMIN_PASSWORD='AcmeLocalDev2026!!'`
+  — two exclamation marks. The fixture's default is the dev database's password.
+- `@mui/x-charts` was added in M7 pass 3 and is **only** imported by
+  `features/dashboard/`, which is lazy-loaded. Keep it that way: importing a
+  chart anywhere else puts 106 kB gzipped back in every persona's bundle.
 - Run the API with `backend/v1/.venv/bin/uvicorn app.main:app --port 8000`, the
   UI with `npm run dev` in `frontend/` on :3000.
 - Full backend suite takes roughly 5-6 minutes; run it in the background.
