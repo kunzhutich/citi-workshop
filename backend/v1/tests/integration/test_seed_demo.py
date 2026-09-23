@@ -171,6 +171,34 @@ def test_it_creates_one_admin_six_engineers_and_the_employees(
     assert result.users == len(users)
     assert result.demo_password == DEMO_PASSWORD
 
+
+def test_exactly_two_employees_have_left(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+    users_before: set[uuid.UUID],
+) -> None:
+    """The seeded world must contain deactivated people, not merely claim to.
+
+    The users screen renders an "inactive" state that never appears when
+    everyone is active, and the reports deliberately still count a departed
+    employee's old tickets. Both need someone to have actually left.
+
+    This asserts the *property*, not the count. The original test asserted only
+    how many employees existed, which stayed green while the deactivation
+    condition indexed past the end of the loop and nobody was ever deactivated
+    (D34). A count is not a property, and this is the third defect in this
+    project of that exact shape — see also D24 and D25.
+    """
+    users = [user for user in db_session.scalars(select(User)).all() if user.id not in users_before]
+    employees = [user for user in users if user.role == UserRole.EMPLOYEE]
+
+    departed = [employee for employee in employees if not employee.is_active]
+    assert len(departed) == 2, (
+        f"expected exactly two departed employees, found {len(departed)} of {len(employees)}"
+    )
+    # Everyone else is present, so an "inactive" row is the exception on screen.
+    assert len(employees) - len(departed) == SMALL.employees - 2
+
     # Every account is an ACME address, because `ALLOWED_EMAIL_DOMAIN` is the
     # only domain that can sign in.
     assert all(user.email.endswith("@acme.inc") for user in users)

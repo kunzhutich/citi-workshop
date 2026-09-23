@@ -1965,3 +1965,38 @@ employees**, since the absence of one is why this lasted.
 the Users screen's deactivated state. `docs/REVIEW-GUIDE.md` pass 1 says so.
 
 **Reversible.** Not applicable — nothing was changed.
+
+## D35 — D34 fixed: the departed employees now exist, and a test says so
+
+**What D34 recorded.** `seed_demo` claimed to deactivate two employees so the
+users screen would show an inactive row and the reports would demonstrate that a
+departed person's old tickets still count. It never did. `EMPLOYEE_NAMES` holds
+36 names, `DemoSpec.employees` defaults to 30, and the loop ran `range(30)` while
+the deactivation condition targeted indices 34 and 35. Confirmed against the live
+demo database: all 30 seeded employees active, and the only deactivated accounts
+were end-to-end test residue.
+
+**The fix.** One line. The condition now counts from the number actually
+created — `index < created - 2` — rather than from the length of the name list,
+which is deliberately longer than the default spec so that a larger run has names
+to draw on. The discrepancy between those two numbers was the whole bug.
+
+**Why the suite missed it.** `test_it_creates_one_admin_six_engineers_and_the_employees`
+asserted how many employees existed. It never asked how many were active, so it
+stayed green while the feature did nothing.
+
+**This is the third defect of that exact shape in this project.** D24: a heading
+asserted as a proxy for data having loaded. D25: a permission asserted as an
+absence a spinner satisfied. Now a count asserted in place of a property. In each
+case the test named the right behaviour and checked something adjacent to it that
+was easier to reach.
+
+**What was added.** `test_exactly_two_employees_have_left` asserts the property.
+Verified by reverting the fix and watching it fail —
+`expected exactly two departed employees, found 0 of 8` — then restoring it.
+
+**Reversible.** One line in `app/seed/demo.py`, one test.
+
+**Not yet reflected in data.** The two existing databases were seeded before this
+fix, so neither has departed employees until it is reseeded. The cloud database
+will get it from the first seed.

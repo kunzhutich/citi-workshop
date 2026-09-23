@@ -763,13 +763,21 @@ def _seed_people(
         result.engineers += 1
 
     employees: list[User] = []
-    for index in range(min(spec.employees, len(EMPLOYEE_NAMES))):
+    # How many we will actually create, which is not len(EMPLOYEE_NAMES): the
+    # name list is longer than the default spec so that a larger run has names
+    # to draw on. Deactivation below counts from THIS number. Keying it off the
+    # length of the name list instead meant the condition targeted indices 34
+    # and 35 while the loop stopped at 29, so nobody was ever deactivated and
+    # the test — which asserted the employee count, not how many were active —
+    # stayed green. See D34.
+    created = min(spec.employees, len(EMPLOYEE_NAMES))
+    for index in range(created):
         home = _weighted_choice(rng, buildings, BUILDING_WEIGHTS[: len(buildings)])
         employee = _make_user(EMPLOYEE_NAMES[index], UserRole.EMPLOYEE, shared_hash, home)
-        # Two people have left. A users screen where everyone is active never
-        # shows the deactivated state, and the reports still count their old
-        # tickets, which is the behaviour worth demonstrating.
-        employee.is_active = index not in (len(EMPLOYEE_NAMES) - 1, len(EMPLOYEE_NAMES) - 2)
+        # The last two people have left. A users screen where everyone is active
+        # never shows the deactivated state, and the reports still count their
+        # old tickets, which is the behaviour worth demonstrating.
+        employee.is_active = index < created - 2
         session.add(employee)
         employees.append(employee)
         result.employees += 1
