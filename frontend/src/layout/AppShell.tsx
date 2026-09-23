@@ -23,6 +23,7 @@ import { Link as RouterLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { SkipLink } from '../components/SkipLink';
+import { NotificationBell } from '../features/notifications/NotificationBell';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { paths } from '../routes';
 import { AvailabilityToggle } from './AvailabilityToggle';
@@ -153,10 +154,12 @@ export function AppShell() {
           <Box sx={{ flexGrow: 1 }} />
 
           {/*
-            One trailing control, and which one depends on the width. On a
-            phone it is the drawer button: it is the control people reach for
-            most, and the right side of the bar is where a right thumb lands.
-            The account lives at the foot of the drawer instead. On desktop,
+            The trailing controls, and which ones depend on the width. On a
+            phone it is the bell and the drawer button: the drawer is what
+            people reach for most, so it keeps the far corner where a right
+            thumb lands, and the bell goes beside it because an unread badge
+            hidden behind a tap is not a badge at all. The account lives at the
+            foot of the drawer instead. On desktop,
             where reach is not a constraint, the avatar menu keeps its
             conventional corner.
 
@@ -166,18 +169,25 @@ export function AppShell() {
             filter drawer, where it is one tap from the tickets it filters.
           */}
           {isMobile ? (
-            <IconButton
-              edge="end"
-              color="inherit"
-              aria-label="Open navigation"
-              onClick={() => setDrawerOpen(true)}
-            >
-              <MenuIcon />
-            </IconButton>
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              {/* The bell is the one control that earns a place beside the
+                  menu button on a 375px bar. A badge is worthless behind a
+                  tap: the whole point of it is being seen without looking. */}
+              <NotificationBell />
+              <IconButton
+                edge="end"
+                color="inherit"
+                aria-label="Open navigation"
+                onClick={() => setDrawerOpen(true)}
+              >
+                <MenuIcon />
+              </IconButton>
+            </Box>
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               <TicketSearchField />
               {user.role === 'ENGINEER' ? <AvailabilityToggle user={user} /> : null}
+              <NotificationBell />
               <UserMenu user={user} />
             </Box>
           )}

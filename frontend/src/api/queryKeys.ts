@@ -1,5 +1,6 @@
 import type { EngineerQuery } from './engineers';
 import type { IncidentQuery } from './incidents';
+import type { NotificationQuery } from './notifications';
 import type { ReportPeriodParams, ReportScopeParams } from './reports';
 import type { UserQuery } from './users';
 
@@ -46,6 +47,20 @@ export const queryKeys = {
   users: {
     all: ['users'] as const,
     list: (query: UserQuery) => ['users', 'list', query] as const,
+  },
+
+  /**
+   * The notification inbox.
+   *
+   * `all` is the prefix both of the others share, which is what makes one
+   * `invalidateQueries({ queryKey: queryKeys.notifications.all })` after
+   * marking something read refresh the badge and every filter of the list at
+   * once — the two must never disagree about how many are unread.
+   */
+  notifications: {
+    all: ['notifications'] as const,
+    list: (query: NotificationQuery) => ['notifications', 'list', query] as const,
+    unreadCount: ['notifications', 'unread-count'] as const,
   },
 
   /**

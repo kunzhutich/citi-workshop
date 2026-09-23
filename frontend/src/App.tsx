@@ -13,6 +13,7 @@ import { HomePage } from './features/home/HomePage';
 import { IncidentDetailPage } from './features/incidents/IncidentDetailPage';
 import { IncidentsPage } from './features/incidents/IncidentsPage';
 import { ReportPage } from './features/incidents/ReportPage';
+import { NotificationsPage } from './features/notifications/NotificationsPage';
 import { NotFoundPage } from './features/placeholder/NotFoundPage';
 import { StatusPage } from './features/status/StatusPage';
 import { UsersPage } from './features/users/UsersPage';
@@ -57,6 +58,11 @@ export default function App() {
           <Route path={paths.home} element={<HomePage />} />
 
           <Route path={paths.report} element={<ReportPage />} />
+
+          {/* Everyone has an inbox, so this sits outside every `RequireRole`.
+              Reached from the bell in the app bar rather than a nav item: one
+              destination with two doors is one more thing to keep in step. */}
+          <Route path={paths.notifications} element={<NotificationsPage />} />
 
           <Route
             path={paths.myTickets}

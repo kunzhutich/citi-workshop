@@ -108,6 +108,19 @@ export type CloseReason =
 /** `app.models.enums.NoteVisibility`. INTERNAL never reaches an employee. */
 export type NoteVisibility = 'PUBLIC' | 'INTERNAL';
 
+/**
+ * `app.models.enums.NotificationType`.
+ *
+ * Deliberately narrower than `EventType`: not everything worth recording in an
+ * audit log is worth interrupting somebody with. Which capacity hears about
+ * each is decided by `backend/v1/app/notifications.py`, never here.
+ */
+export type NotificationType =
+  | 'STATUS_CHANGED'
+  | 'ASSIGNED'
+  | 'NOTE_ADDED'
+  | 'ESCALATION_CLEARED';
+
 /** `app.models.enums.SeatType`. */
 export type SeatType = 'DESK' | 'MEETING_ROOM' | 'COMMON_AREA' | 'OTHER';
 

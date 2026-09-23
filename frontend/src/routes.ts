@@ -13,6 +13,7 @@ export const paths = {
   /** The persona home page. Which screen that is depends on the role. */
   home: '/',
   report: '/report',
+  notifications: '/notifications',
   myTickets: '/tickets/mine',
   allTickets: '/tickets',
   /**
