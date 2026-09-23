@@ -6685,13 +6685,27 @@ and symbol re-verified — and the phase sections keep the first, which is the t
 amount of reading the code recovers.
 
 **What verifying it found.** All 372 markdown links in the file (176 distinct targets)
-resolve, and of 818 backticked identifiers only two were wrong, both in rule-map tables
-rather than in prose:
+resolve, and of 818 backticked identifiers two in the **existing phase sections** were
+wrong, both in rule-map tables rather than in prose:
 `apply_visibility`, which has been two functions (`apply_incident_visibility` and
 `apply_note_visibility`) since M4, and a gotcha attributing the daily series' timezone
 dependency to `date_trunc` when the code casts with `::date`. Both are corrected in place
-and noted in section 6. The rest of the guide held up — which is the argument for writing
-each section while its phase was fresh rather than reconstructing it here.
+and noted in section 6. The rest of the phase sections held up — which is the argument for
+writing each one while its phase was fresh rather than reconstructing it here.
+
+**What a second pass found in Part I itself**, and the reason it is worth recording: a
+first check asked "does this identifier exist in the source?" and everything passed. A
+second check asked the stricter question the map actually promises — "is it *defined* in
+the file beside it?" — and six rows failed, because an imported name is present in a file
+without being defined there. Two of the six (`LOCATION_SEPARATOR`, `DEFAULT_WINDOW_DAYS`)
+are constants that live in `schemas/` and are used in `routers/` and `services/`; one
+(`revoke_all_refresh_tokens`, twice) is a repository function called from three services;
+one was a Terraform claim that Part I and the M1 section disagreed about. All are fixed.
+
+**The lesson, if you ever re-verify this file:** grep for the name and grep for its
+*definition* are different questions, and a rule map is only worth having if it answers
+the second. The check that works is `def NAME` / `class NAME` / `^NAME =` in the file the
+row points at — not `NAME` anywhere in the tree.
 
 **What the README now contains**, in the order a reviewer meets it: what the application
 does and for whom; the architecture as two Mermaid diagrams (deployed, then local) plus a

@@ -55,14 +55,30 @@ ten tables as a narrative in the order that makes them make sense, the complete
 rule-to-file map merged from all nine per-phase maps, one request — an engineer
 resolving a ticket — followed through every file it touches with real function
 names, a reading order, and one merged glossary of every non-obvious term. **Part
-II** is the unchanged phase log. The guide is now 6,939 lines.
+II** is the unchanged phase log. The guide is now 6,985 lines.
 
-Part I was verified rather than transcribed: every markdown link (372, 176 distinct
-targets) and every backticked identifier (818) was checked against the code. Two
-stale claims were found in the existing phase sections and corrected —
-`apply_visibility`, which has been two functions since M4, and a gotcha
-attributing a timezone dependency to `date_trunc` where the code casts with
-`::date`. Both were in rule-map tables rather than prose.
+Part I was verified rather than transcribed, in two passes. The first checked
+every markdown link (372, 176 distinct targets) and every backticked identifier
+(818) against the code, and found two stale claims in the existing phase
+sections: `apply_visibility`, which has been two functions since M4, and a
+gotcha attributing a timezone dependency to `date_trunc` where the code casts
+with `::date`. Both were in rule-map tables rather than prose.
+
+The second pass asked the stricter question the map promises — is the symbol
+*defined* in the file beside it, rather than merely imported there — and found
+six rows in Part I itself that the first pass could not catch, because an
+imported name is present in a file without being defined in it
+(`LOCATION_SEPARATOR` and `DEFAULT_WINDOW_DAYS` live in `schemas/`,
+`revoke_all_refresh_tokens` in `repositories/users.py`, `RegisterRequest` in
+`schemas/auth.py`, and the Lambda handler/runtime are hardcoded in
+`infra/locals.tf`, not `lambda.tf`). All corrected. Also corrected: a claim that
+every table carries `UUIDPrimaryKeyMixin` — nine of ten do, and
+`engineer_profiles` keys on `user_id`.
+
+Two loose ends in the application code were found and recorded rather than
+changed, since this was a documentation pass: `current_user_id` in
+`app/security/dependencies.py` is defined and never called, and
+`app/models/category.py` carries an empty `if TYPE_CHECKING: pass`.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
 11, computed with SQL aggregates. 665 backend tests (609 + 56 new), ruff check
