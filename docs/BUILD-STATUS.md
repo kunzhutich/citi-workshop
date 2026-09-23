@@ -121,8 +121,14 @@ screen reader.
 **Database note.** Migration `0004` was applied to `acme_incidents_dev`, because
 the application cannot serve a login without that table and Playwright runs
 against that database. It creates one empty table and touches nothing that was
-there. **`acme_demo` has NOT been migrated** and will 500 on login until
-`migrate` is run against it.
+there.
+
+`acme_demo` **has since been migrated** (2026-09-23, after S6 handed back) —
+verified by signing in as `henry@acme.inc` and confirming a wrong password
+returns 401 with the lockout counter live. Category seeding reported 37 already
+present and 0 created, so the action is idempotent as documented. Both
+databases are now at head; the demo script in `docs/DEMO-SCRIPT.md` works
+without any migration step.
 
 **M8 verified:** `README.md` rewritten for this application (281 lines, ~160 of
 them the upstream Citi template, → ~615 lines that are about what was built);
