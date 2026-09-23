@@ -535,3 +535,41 @@ rather than on a second environment test invented here.
 
 **Reversible.** Yes, and cheaply: one line in `_seed_people`, at the price of
 nine seconds per seed.
+
+## D13 — The demo data went into a new database, not over the old one
+
+**Question.** D4 planned to reset `acme_incidents_dev` before seeding, so that
+`seed_demo`'s designed dataset would not be mixed with M6's ad-hoc test residue
+(93 users, 74 incidents, left by Playwright runs and manual checks).
+
+**What happened.** The `DROP DATABASE` was refused by the permission classifier
+as irreversible local destruction. That refusal was correct, and working around
+it would have been the wrong move.
+
+**Chosen.** Seed into a **new** database, `acme_demo`, and leave
+`acme_incidents_dev` exactly as it was.
+
+**Why it is better than the original plan.** Nothing is destroyed, both datasets
+exist side by side, and switching between them is one line in
+`backend/v1/.env`. The owner can compare M6's screens against ad-hoc data with
+the same screens against the designed dataset, which the reset would have made
+impossible.
+
+**How to use it.** `backend/v1/.env` currently reads
+`POSTGRES_NAME=acme_incidents_dev`. Change it to `acme_demo` and restart uvicorn
+to see the dashboards against 300 incidents over 90 days. Change it back to
+return to the old data.
+
+**Logins in `acme_demo`.** `henry@acme.inc` / `AcmeLocalDev2026!!` (note the
+second `!` — the password-change gate forced a change, which is the gate working
+as designed). The 36 generated accounts share the password `seed_demo` returns
+in its payload, `AcmeDemo2026!`.
+
+**Verified against the seeded data.** Response-time medians are monotonic across
+priority — CRITICAL 0.49 h assign / 7.98 h resolve, HIGH 1.72 / 17.74, MEDIUM
+5.39 / 50.2, LOW 17.37 / 124.48 — which is the evidence that the backdated
+events are real rather than everything having been created at seed time. The
+escalated total reads 16 against 13 further escalations still flagged on closed
+tickets, so D10 and D11 are demonstrably filtering live data, not just fixtures.
+
+**Reversible.** Entirely. `acme_demo` can be dropped; nothing else changed.
