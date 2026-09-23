@@ -16,11 +16,11 @@ const families = theme.typography.fontFamily?.split(',').map((name) => name.trim
 
 describe('the font stack', () => {
   it('leads with the families that are actually self-hosted', () => {
-    // `src/fonts.ts` bundles Inter and Roboto, so anything ahead of them here
+    // `src/fonts.ts` bundles Roboto and Inter, so anything ahead of them here
     // would be a family the app hopes the operating system happens to have —
-    // which is how the original fault arose. Inter is first, so it is the one
-    // that renders; Roboto is fetched only if Inter's files cannot be.
-    expect(families.slice(0, 2)).toEqual(['Inter', 'Roboto']);
+    // which is how the original fault arose. Roboto is first, so it is the one
+    // that renders; Inter is fetched only if Roboto's files cannot be.
+    expect(families.slice(0, 2)).toEqual(['Roboto', 'Inter']);
   });
 
   it('ends at a generic family, so there is always something to render', () => {

@@ -95,7 +95,7 @@ The app opens at the sign-in screen. Two ways in:
 
 `npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod`,
 `@hookform/resolvers`, `@fontsource/inter` and `@fontsource/roboto` (both typefaces are
-self-hosted and bundled, not fetched from a CDN; Inter renders and Roboto is the
+self-hosted and bundled, not fetched from a CDN; Roboto renders and Inter is the
 fallback).
 
 ### 5. Run the checks

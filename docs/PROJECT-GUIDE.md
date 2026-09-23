@@ -2633,11 +2633,26 @@ box model rather than by eye:
 
 Every label sat high in its container, with visibly more room underneath it than above.
 
-Inter fixes it outright rather than trading one lean for another: its typographic
-metrics are symmetric, so the midpoint of the capitals lands exactly on the centre of the
-line box — 13.16px above and below in a button, 14.18px in a nav row, 0.00px of lean in
-all three. That is not a lucky number; Inter sets `USE_TYPO_METRICS`, which tells the
-browser to read its `OS/2` typo values, and those are chosen to centre.
+Loading a real font fixes it, and which real font is a second decision. Two were
+measured:
+
+| Family | Button | Nav row | Input | |
+| --- | --- | --- | --- | --- |
+| Roboto | 0.38px | 0.44px | 0.44px | what renders |
+| Inter | 0.00px | 0.00px | 0.00px | the bundled fallback |
+| Nimbus Sans | 3.64px | 4.16px | 4.16px | what rendered before |
+
+Inter is exactly symmetric — its `USE_TYPO_METRICS` flag points the browser at `OS/2`
+typo values chosen to centre — and Roboto is not quite. **Roboto leads anyway.** 0.44px
+is below the threshold of a single CSS pixel, where Nimbus's 4.16px was four of them, so
+the reported fault is gone either way; and Roboto is the family Material UI's own
+component heights, line-heights and paddings were drawn around. Matching the design
+system its components assume is worth more than a fraction of a pixel that no display
+can resolve.
+
+Swapping the first two entries in `theme.ts` reverses that decision, and
+`theme.test.ts` pins whichever order is chosen so the change is deliberate rather than
+incidental.
 
 **Rejected:** a Google Fonts `<link>`. It is a request to a third party on every cold
 load, it fails closed in a locked-down network, and it puts a dependency outside the
@@ -2645,16 +2660,15 @@ distribution that serves everything else. `@fontsource` bundles the same files t
 Vite, so they are emitted into `dist/assets/` with content hashes and served from the same
 CloudFront distribution as the JavaScript, with no external origin in the built output at
 all. Two numbers, and they are not the same one: 192 kB of woff2 is *emitted* across two
-families and four weights each, while a normal load *fetches* the 96 kB of Inter.
+families and four weights each, while a normal load *fetches* the 96 kB of Roboto.
 
-Roboto is bundled too, and the reasoning is worth being precise about, because "ship one
-font" was the wrong instinct. A `@font-face` family is fetched **lazily** — only when
-something needs it — so Roboto costs nothing on a normal load: Inter is first, Inter
-renders, and Roboto's files sit in S3 untouched. What it buys is that the second rung of
-the stack becomes real. Before, if Inter's file 404'd or was blocked, the browser fell
-past a Roboto nobody had installed and landed on Nimbus Sans — straight back to the 4px
-lean. Now it lands on Roboto, which leans 0.44px at worst, and which is the family MUI's
-own component heights were calibrated against in the first place.
+Both families are bundled, and the reasoning is worth being precise about, because "ship
+one font" was the wrong instinct. A `@font-face` family is fetched **lazily** — only when
+something needs it — so the fallback costs nothing on a normal load: Roboto is first,
+Roboto renders, and Inter's files sit in S3 untouched. What it buys is that the second
+rung of the stack becomes real. Before, if the first font's file 404'd or was blocked,
+the browser fell past families nobody had installed and landed on Nimbus Sans — straight
+back to the 4px lean. Now it lands on Inter, which is exactly symmetric.
 
 The fallback order changed too, on the same evidence. `Arial` now precedes `Helvetica`,
 because Arial resolves to metrics that centre to within 0.02em on every platform while
@@ -2911,7 +2925,7 @@ three dependencies, and a fresh `npm install` will resolve them within their car
 rather than to the versions tested here. Not ours to change mid-build, but worth knowing
 if CI ever disagrees with a laptop.
 
-**The bundle is 790 kB of JavaScript, 251 kB gzipped.** Alongside it sit 192 kB of woff2 — two families, four weights each — of which a normal load fetches the 96 kB of Inter, since fallback families are only fetched when they are needed. The JavaScript is almost all Material UI. It is served
+**The bundle is 790 kB of JavaScript, 251 kB gzipped.** Alongside it sit 192 kB of woff2 — two families, four weights each — of which a normal load fetches the 96 kB of Roboto, since fallback families are only fetched when they are needed. The JavaScript is almost all Material UI. It is served
 compressed by CloudFront and is not a problem yet, but M6 adds `@mui/x-data-grid` and M7
 adds `@mui/x-charts`. If it needs attention, route-level `React.lazy` splitting is the
 lever, and the admin screens are the natural split point.

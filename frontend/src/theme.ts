@@ -19,13 +19,14 @@ export const theme = createTheme({
     background: { default: '#f4f6fa', paper: '#ffffff' },
   },
   typography: {
-    // Inter and Roboto are both self-hosted in `fonts.ts`. Inter is first, so
-    // it is the one browsers fetch and render; Roboto is fetched only if that
-    // fails, and is the family MUI's own component heights were calibrated
-    // against. Arial then precedes Helvetica deliberately: Arial resolves to
-    // metrics that centre almost evenly, while Helvetica resolves to Nimbus
-    // Sans on Linux, which leans 0.26em — the fault self-hosting fixes.
-    fontFamily: ['Inter', 'Roboto', 'Arial', 'Helvetica', 'sans-serif'].join(','),
+    // Roboto and Inter are both self-hosted in `fonts.ts`. Roboto is first, so
+    // it is the one browsers fetch and render — and it is the family Material
+    // UI's own component heights were calibrated against, which is the reason
+    // to lead with it. Inter is fetched only if Roboto's files cannot be.
+    // Arial then precedes Helvetica deliberately: Arial resolves to metrics
+    // that centre almost evenly, while Helvetica resolves to Nimbus Sans on
+    // Linux, which leans 0.26em — the fault self-hosting fixes.
+    fontFamily: ['Roboto', 'Inter', 'Arial', 'Helvetica', 'sans-serif'].join(','),
     h1: { fontSize: '1.9rem', fontWeight: 600 },
     h2: { fontSize: '1.35rem', fontWeight: 600 },
     h3: { fontSize: '1.1rem', fontWeight: 600 },

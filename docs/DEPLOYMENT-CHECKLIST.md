@@ -784,7 +784,7 @@ in M6 (`@mui/x-data-grid`) and M7 (`@mui/x-charts`). Measure it before deciding.
 The woff2 alongside it is *not* part of this argument: woff2 is already compressed, and
 CloudFront will not shrink it further. Only the JavaScript, CSS and HTML are at stake.
 (192 kB of font is emitted, two families at four weights each, but a normal load fetches
-only the 96 kB of Inter — fallback families are fetched lazily.)
+only the 96 kB of Roboto — fallback families are fetched lazily.)
 
 ```sh
 BUNDLE=$(curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.js')
@@ -810,9 +810,9 @@ the 4 px vertical lean in buttons, navigation rows and inputs that self-hosting 
 remove, which is invisible unless you are looking for it.
 
 ```sh
-# Every font the built CSS references must be fetchable. Inter is what renders;
-# Roboto is the fallback tier and is only fetched if Inter cannot be, so check
-# both are actually there rather than trusting the one you can see load.
+# Every font the built CSS references must be fetchable. Roboto is what
+# renders; Inter is the fallback tier and is only fetched if Roboto cannot be,
+# so check both are there rather than trusting the one you can see load.
 CSS=$(curl -s "https://$CF/" | grep -o '/assets/index-[^"]*\.css')
 curl -s "https://$CF$CSS" | grep -oE '/assets/(inter|roboto)-[^)]*\.woff2' | sort -u |
   while read -r font; do
@@ -832,10 +832,11 @@ Then confirm it is the font that actually renders. In the browser, on the deploy
 devtools → Network → Font: the four files appear on a cold load. Or in the console:
 
 ```js
-document.fonts.check('600 14px Inter')   // expect true
+document.fonts.check('600 14px Roboto')   // expect true
 ```
 
-✅ **Correct result:** `true`, and a button's label has equal space above and below it.
+✅ **Correct result:** `true`, and a button's label sits centred — 13.08px above the
+capitals against 13.46px below the baseline, which is even to well within a pixel.
 ❌ `false` means the CSS loaded but the font did not, and every fixed-height container is
 back to leaning ~4 px high.
 
