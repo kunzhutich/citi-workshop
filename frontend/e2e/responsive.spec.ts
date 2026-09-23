@@ -92,9 +92,15 @@ test.describe('layout', () => {
       priority: 'Low',
     });
 
+    // Matched as a prefix, not exactly. As of S6 each step's label carries its
+    // state as visually hidden words — "Open, current step", "In progress, not
+    // started" — because Material UI draws done/here/not-yet as a tick, a
+    // filled circle and a grey one, which is shape and colour and nothing a
+    // screen reader can use. The step number is rendered inside the icon, so
+    // the surrounding list item's text begins "1Open…" and does not match.
     const stepper = employeePage.getByRole('list', { name: 'Ticket progress' });
-    const open = await stepper.getByText('Open', { exact: true }).boundingBox();
-    const inProgress = await stepper.getByText('In progress', { exact: true }).boundingBox();
+    const open = await stepper.getByText(/^Open\b/).boundingBox();
+    const inProgress = await stepper.getByText(/^In progress\b/).boundingBox();
     expect(open).not.toBeNull();
     expect(inProgress).not.toBeNull();
 

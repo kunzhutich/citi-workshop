@@ -240,6 +240,57 @@ test.describe('axe: the states a resting page does not show', () => {
   });
 });
 
+test.describe('what a screen reader is given instead of a picture', () => {
+  test('the workflow stepper says which step the ticket is on, in words', async ({
+    employeePage,
+  }) => {
+    await reportIssue(employeePage, {
+      group: 'Hardware',
+      subcategory: 'Docking Station',
+      title: 'The dock drops the second monitor when I unplug the laptop',
+      description: 'Plugging back in brings up one screen; the second needs a reboot.',
+      priority: 'Low',
+    });
+
+    const stepper = employeePage.getByRole('list', { name: 'Ticket progress' });
+
+    // Material UI draws done / here / not-yet as a tick, a filled circle and a
+    // grey circle. None of that is available to a screen reader, so each step
+    // carries its state as words.
+    await expect(stepper.getByText(/^Open, current step/)).toBeAttached();
+    await expect(stepper.getByText(/^In progress, not started/)).toBeAttached();
+    await expect(stepper.getByText(/^Resolved, not started/)).toBeAttached();
+  });
+
+  test('every chart has a text alternative, and one of them is a table', async ({ adminPage }) => {
+    await adminPage.goto('/');
+    await expect(adminPage.getByRole('heading', { name: /Reported/ }).first()).toBeVisible();
+
+    // Each chart is one labelled image rather than a few hundred unlabelled
+    // SVG nodes. `role="img"` also makes the subtree presentational, so the
+    // axis ticks are not read out in emission order.
+    const charts = adminPage.getByRole('img');
+    expect(await charts.count()).toBeGreaterThan(0);
+    for (const chart of await charts.all()) {
+      const label = await chart.getAttribute('aria-label');
+      expect(label, 'a chart must describe itself').toBeTruthy();
+      expect(label).toMatch(/chart/i);
+    }
+
+    // And the flow chart's numbers are reachable without a hover. It was the
+    // one chart on this dashboard with no table twin, which made the claim
+    // that every value is reachable false for the chart with the most values.
+    const flow = adminPage
+      .getByRole('group', { name: 'How to show reported and closed by day' })
+      .getByRole('button', { name: 'Show as a table' });
+    await expect(flow).toBeVisible();
+    await flow.click();
+    await expect(
+      adminPage.getByRole('table', { name: 'Reported and closed by day, as a table' }),
+    ).toBeVisible();
+  });
+});
+
 test.describe('the keyboard', () => {
   /** The element that currently has focus, as a readable description. */
   async function focused(page: Page): Promise<string> {

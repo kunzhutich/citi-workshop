@@ -4,6 +4,7 @@ import Step from '@mui/material/Step';
 import StepLabel from '@mui/material/StepLabel';
 import Stepper from '@mui/material/Stepper';
 import Typography from '@mui/material/Typography';
+import { visuallyHidden } from '@mui/utils';
 
 import type { BlockedReasonType, IncidentStatus } from '../../api/types';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
@@ -24,6 +25,15 @@ import { blockedReasonLabel } from '../../display/labels';
  *
  * Nothing here is a source of truth. It renders `incident.status`; what a user
  * may *do* about that status comes from `allowed-transitions`.
+ *
+ * **What a screen reader gets.** Material UI draws the three states — done,
+ * here, not yet — as a tick, a filled circle and a grey circle, which is
+ * colour and shape and nothing else. Each step therefore carries its state as
+ * visually hidden words, and the current one carries `aria-current="step"`, so
+ * the list reads "Open, done. In progress, current step. Resolved, not
+ * started." rather than four bare nouns in a row. A blocked ticket says
+ * "blocked" in words too: `StepLabel error` is a colour change, and red is not
+ * a thing you can hear.
  */
 
 /** The four milestones, in order. BLOCKED annotates step 2 rather than adding one. */
@@ -72,10 +82,21 @@ export function WorkflowStepper({
           const isCurrent = index === activeStep;
           const showsError = isCurrent && isBlocked;
 
+          const isDone = index < activeStep || status === 'CLOSED';
+
           return (
-            <Step key={step.status} completed={index < activeStep || status === 'CLOSED'}>
+            <Step
+              key={step.status}
+              completed={isDone}
+              // The one step a screen reader should be able to jump to, and
+              // the only non-visual signal that this is where the ticket is.
+              aria-current={isCurrent ? 'step' : undefined}
+            >
               <StepLabel error={showsError} optional={showsError ? blockedDetail() : undefined}>
                 {showsError ? 'Blocked' : step.label}
+                <Box component="span" sx={visuallyHidden}>
+                  {describeStepState({ isDone, isCurrent, isBlocked: showsError })}
+                </Box>
               </StepLabel>
             </Step>
           );
@@ -100,6 +121,25 @@ export function WorkflowStepper({
       ) : null}
     </Box>
   );
+
+  /** The step's state, in words, for the part of the audience that cannot see it. */
+  function describeStepState({
+    isDone,
+    isCurrent,
+    isBlocked: blocked,
+  }: {
+    isDone: boolean;
+    isCurrent: boolean;
+    isBlocked: boolean;
+  }): string {
+    if (blocked) {
+      return ', current step, blocked';
+    }
+    if (isCurrent) {
+      return ', current step';
+    }
+    return isDone ? ', done' : ', not started';
+  }
 
   /** The block reason, rendered under the errored step. */
   function blockedDetail() {

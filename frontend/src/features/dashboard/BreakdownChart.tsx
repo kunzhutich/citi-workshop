@@ -166,70 +166,109 @@ export function BreakdownChart({
         ) : view === 'table' ? (
           <BreakdownTable title={title} data={data} onDrillDown={onDrillDown} />
         ) : (
-          <BarChart
-            layout="horizontal"
-            height={data.length * BAND_HEIGHT + AXIS_BAND}
-            // Room for the category names; the value axis needs almost none.
-            margin={{ left: 4, right: LABEL_GUTTER, top: 4, bottom: 4 }}
-            yAxis={[
-              {
-                scaleType: 'band',
-                data: data.map((datum) => datum.label),
-                categoryGapRatio: CATEGORY_GAP_RATIO,
-                width: 132,
-                // Colour follows the row's own entity, by value, so filtering
-                // a category out never repaints the ones that remain.
-                colorMap: {
-                  type: 'ordinal',
-                  values: data.map((datum) => datum.label),
-                  colors: data.map((datum) => datum.color ?? SERIES_PRIMARY),
+          /*
+           * `role="img"` with a written summary. An SVG chart is a tree of a
+           * few hundred `path`, `rect` and `text` nodes; left as-is a screen
+           * reader walks all of them and reads the axis ticks in whatever
+           * order the library emitted them. `role="img"` makes the subtree
+           * presentational and replaces the lot with one sentence.
+           *
+           * The sentence is a summary, not the data. The data is the table
+           * twin one button away, which the summary points at — a chart with
+           * twelve categories read aloud as a `aria-label` is worse than
+           * silence, and the table has the links as well as the numbers.
+           */
+          <Box role="img" aria-label={summarise(title, data)}>
+            <BarChart
+              layout="horizontal"
+              height={data.length * BAND_HEIGHT + AXIS_BAND}
+              // Room for the category names; the value axis needs almost none.
+              margin={{ left: 4, right: LABEL_GUTTER, top: 4, bottom: 4 }}
+              yAxis={[
+                {
+                  scaleType: 'band',
+                  data: data.map((datum) => datum.label),
+                  categoryGapRatio: CATEGORY_GAP_RATIO,
+                  width: 132,
+                  // Colour follows the row's own entity, by value, so filtering
+                  // a category out never repaints the ones that remain.
+                  colorMap: {
+                    type: 'ordinal',
+                    values: data.map((datum) => datum.label),
+                    colors: data.map((datum) => datum.color ?? SERIES_PRIMARY),
+                  },
                 },
-              },
-            ]}
-            xAxis={[{ min: 0, max: axisMax, tickMinStep: 1 }]}
-            series={[
-              {
-                data: data.map((datum) => datum.value),
-                label: title,
-                // The count beside each bar, so the value is readable without
-                // hovering. Zeroes are left unlabelled: a "0" floating at the
-                // axis reads as a mark rather than as an absence.
-                barLabel: (item) => (item.value ? String(item.value) : null),
-                // **Outside the bar, not centred in it.** Centred was the
-                // library's default and it put dark ink on a saturated fill:
-                // on the Critical bar — the darkest step of the priority ramp
-                // — the number was all but unreadable, and on a short bar it
-                // spilled past the end. Outside, every label sits on the card
-                // in the ordinary secondary ink, at the same contrast whatever
-                // colour the bar is and whatever its length.
-                barLabelPlacement: 'outside',
-              },
-            ]}
-            borderRadius={BAR_RADIUS}
-            // One series, named by the card's own title: a legend box would
-            // repeat the heading and steal a line of the plot.
-            hideLegend
-            grid={{ vertical: true }}
-            onItemClick={(_event, item) => activate(data[item.dataIndex])}
-            // The class names are the library's own — `MuiBarChart-element`
-            // for a bar and `MuiBarChart-label` for its number. The first
-            // version of this guessed `MuiBarElement-root` and
-            // `MuiBarLabel-root`, which match nothing: the bars never showed a
-            // pointer cursor and the labels never took the ink set here. A
-            // Playwright assertion on a bar being present is what found it.
-            sx={(theme) => ({
-              '& .MuiBarChart-element': { cursor: 'pointer' },
-              // A hairline grid, one shade off the surface, so it never
-              // competes with the bars.
-              '& .MuiChartsGrid-line': { stroke: theme.palette.divider },
-              // Axis text wears a text token, never a series colour.
-              '& .MuiChartsAxis-tickLabel': { fill: theme.palette.text.secondary },
-              '& .MuiBarChart-label': { fill: theme.palette.text.secondary, fontSize: 12 },
-            })}
-          />
+              ]}
+              xAxis={[{ min: 0, max: axisMax, tickMinStep: 1 }]}
+              series={[
+                {
+                  data: data.map((datum) => datum.value),
+                  label: title,
+                  // The count beside each bar, so the value is readable without
+                  // hovering. Zeroes are left unlabelled: a "0" floating at the
+                  // axis reads as a mark rather than as an absence.
+                  barLabel: (item) => (item.value ? String(item.value) : null),
+                  // **Outside the bar, not centred in it.** Centred was the
+                  // library's default and it put dark ink on a saturated fill:
+                  // on the Critical bar — the darkest step of the priority ramp
+                  // — the number was all but unreadable, and on a short bar it
+                  // spilled past the end. Outside, every label sits on the card
+                  // in the ordinary secondary ink, at the same contrast whatever
+                  // colour the bar is and whatever its length.
+                  barLabelPlacement: 'outside',
+                },
+              ]}
+              borderRadius={BAR_RADIUS}
+              // One series, named by the card's own title: a legend box would
+              // repeat the heading and steal a line of the plot.
+              hideLegend
+              grid={{ vertical: true }}
+              onItemClick={(_event, item) => activate(data[item.dataIndex])}
+              // The class names are the library's own — `MuiBarChart-element`
+              // for a bar and `MuiBarChart-label` for its number. The first
+              // version of this guessed `MuiBarElement-root` and
+              // `MuiBarLabel-root`, which match nothing: the bars never showed a
+              // pointer cursor and the labels never took the ink set here. A
+              // Playwright assertion on a bar being present is what found it.
+              sx={(theme) => ({
+                '& .MuiBarChart-element': { cursor: 'pointer' },
+                // A hairline grid, one shade off the surface, so it never
+                // competes with the bars.
+                '& .MuiChartsGrid-line': { stroke: theme.palette.divider },
+                // Axis text wears a text token, never a series colour.
+                '& .MuiChartsAxis-tickLabel': { fill: theme.palette.text.secondary },
+                '& .MuiBarChart-label': { fill: theme.palette.text.secondary, fontSize: 12 },
+              })}
+            />
+          </Box>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * One sentence describing a bar chart, for a screen reader.
+ *
+ * Deliberately short. It says what the chart is, how big it is, and where the
+ * extremes are, then names the control that gives every value — which is the
+ * shape of a good `alt` text for a chart: enough to decide whether to go and
+ * read the numbers, not the numbers themselves.
+ */
+function summarise(title: string, data: BreakdownDatum[]): string {
+  const total = data.reduce((sum, datum) => sum + datum.value, 0);
+  const sorted = [...data].sort((a, b) => b.value - a.value);
+  const largest = sorted[0];
+  const smallest = sorted[sorted.length - 1];
+
+  const extremes =
+    data.length > 1
+      ? ` Largest: ${largest.label}, ${largest.value}. Smallest: ${smallest.label}, ${smallest.value}.`
+      : ` ${largest.label}: ${largest.value}.`;
+
+  return (
+    `Bar chart: ${title}. ${data.length} ${data.length === 1 ? 'row' : 'rows'}, ` +
+    `${total} in total.${extremes} Use "Show as a table" for every value.`
   );
 }
 
