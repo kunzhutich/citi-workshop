@@ -15,7 +15,7 @@ import { useNavigate } from 'react-router-dom';
 import type { CurrentUser } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { paths } from '../routes';
-import { describeRole } from './roleLabels';
+import { describeRole, initialsOf } from './roleLabels';
 
 /**
  * Avatar menu in the top bar: who you are, change password, log out.
@@ -92,15 +92,4 @@ export function UserMenu({ user }: { user: CurrentUser }) {
       </Menu>
     </>
   );
-}
-
-/** Build up to two initials from a full name, for the avatar. */
-function initialsOf(fullName: string): string {
-  const parts = fullName.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) {
-    return '?';
-  }
-  const first = parts[0][0];
-  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
-  return (first + last).toUpperCase();
 }

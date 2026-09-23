@@ -22,6 +22,7 @@ import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-rout
 import { useAuth } from '../auth/AuthContext';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { paths } from '../routes';
+import { DrawerAccountSection } from './DrawerAccountSection';
 import { activeNavPath, navItemsFor, reportNavItem } from './navigation';
 import { UserMenu } from './UserMenu';
 
@@ -60,7 +61,7 @@ export function AppShell() {
   const activePath = activeNavPath(location.pathname, [...items, reportNavItem]);
   const bottomItems = items.filter((item) => item.inBottomNav);
 
-  const navigationList = (
+  const workNavigation = (
     <Box sx={{ px: 1.5, py: 2 }} role="navigation" aria-label="Main">
       <Button
         component={RouterLink}
@@ -105,18 +106,6 @@ export function AppShell() {
         })}
       >
         <Toolbar>
-          {isMobile ? (
-            <IconButton
-              edge="start"
-              color="inherit"
-              aria-label="Open navigation"
-              onClick={() => setDrawerOpen(true)}
-              sx={{ mr: 1 }}
-            >
-              <MenuIcon />
-            </IconButton>
-          ) : null}
-
           <Typography
             variant="h6"
             component={RouterLink}
@@ -127,7 +116,27 @@ export function AppShell() {
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />
-          <UserMenu user={user} />
+
+          {/*
+            One trailing control, and which one depends on the width. On a
+            phone it is the drawer button: it is the control people reach for
+            most, and the right side of the bar is where a right thumb lands.
+            The account lives at the foot of the drawer instead. On desktop,
+            where reach is not a constraint, the avatar menu keeps its
+            conventional corner.
+          */}
+          {isMobile ? (
+            <IconButton
+              edge="end"
+              color="inherit"
+              aria-label="Open navigation"
+              onClick={() => setDrawerOpen(true)}
+            >
+              <MenuIcon />
+            </IconButton>
+          ) : (
+            <UserMenu user={user} />
+          )}
         </Toolbar>
       </AppBar>
 
@@ -138,7 +147,14 @@ export function AppShell() {
           slotProps={{ paper: { sx: { width: DRAWER_WIDTH } } }}
         >
           <Toolbar />
-          {navigationList}
+          <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
+            {/* Work above, account below, and the work list is the half that
+                scrolls — so the account never drifts off the bottom of a long
+                navigation, and never gets read as another place to go. */}
+            <Box sx={{ flexGrow: 1, overflowY: 'auto' }}>{workNavigation}</Box>
+            <Divider />
+            <DrawerAccountSection user={user} onNavigate={() => setDrawerOpen(false)} />
+          </Box>
         </Drawer>
       ) : (
         <Drawer
@@ -150,7 +166,9 @@ export function AppShell() {
           }}
         >
           <Toolbar />
-          {navigationList}
+          {/* No account section here: the desktop top bar still has the avatar
+              menu, and duplicating it would give one action two homes. */}
+          {workNavigation}
         </Drawer>
       )}
 

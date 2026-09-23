@@ -1,10 +1,12 @@
 import type { CurrentUser, EngineerLevel, UserRole } from '../api/types';
 
 /**
- * Plain-language names for the API's role and level enums.
+ * How a user is presented to other humans: role wording, and initials.
  *
  * Users never see `FACILITY_ADMIN`. Keeping the mapping in one module means a
- * wording change lands everywhere at once.
+ * wording change lands everywhere at once — and both places that draw an
+ * avatar, the desktop top bar and the mobile drawer, abbreviate a name the
+ * same way.
  */
 const ROLE_LABELS: Record<UserRole, string> = {
   EMPLOYEE: 'Employee',
@@ -35,4 +37,15 @@ export function describeRole(user: CurrentUser): string {
     return `${levelLabel(level)} engineer`;
   }
   return roleLabel(user.role);
+}
+
+/** Build up to two initials from a full name, for an avatar. */
+export function initialsOf(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return '?';
+  }
+  const first = parts[0][0];
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  return (first + last).toUpperCase();
 }

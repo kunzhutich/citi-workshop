@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,6 +39,13 @@ describe('desktop layout', () => {
     expect(screen.getByText('home content')).toBeInTheDocument();
   });
 
+  it('keeps the account in the top bar and out of the sidebar', () => {
+    renderShell(makeUser());
+
+    expect(screen.getByRole('button', { name: /Account menu/ })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Account' })).not.toBeInTheDocument();
+  });
+
   it('still uses the desktop layout at exactly the breakpoint', () => {
     setViewportWidth(MOBILE_MAX_WIDTH + 1);
 
@@ -73,6 +80,20 @@ describe('mobile layout', () => {
     renderShell(makeUser());
 
     expect(screen.getByRole('button', { name: 'Open navigation' })).toBeInTheDocument();
+  });
+
+  it('gives the reachable corner to the drawer button, not the avatar', () => {
+    // Right-handed reach beats convention here: on a phone the trailing
+    // control is the one people open most, and the account moves into the
+    // drawer rather than competing for the same corner.
+    setViewportWidth(375);
+
+    renderShell(makeUser());
+
+    expect(screen.queryByRole('button', { name: /Account menu/ })).not.toBeInTheDocument();
+    const toolbarButton = screen.getByRole('button', { name: 'Open navigation' });
+    const title = screen.getByRole('link', { name: 'ACME Facilities' });
+    expect(follows(title, toolbarButton)).toBe(true);
   });
 
   it('offers employees a floating report button', () => {
@@ -118,6 +139,66 @@ describe('navigation content', () => {
   });
 });
 
+describe('the mobile drawer', () => {
+  it('puts the account below the work navigation', async () => {
+    setViewportWidth(375);
+    renderShell(makeEngineer('LEAD', { full_name: 'Sam Rivera' }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    const work = screen.getByRole('navigation', { name: 'Main' });
+    const account = screen.getByRole('region', { name: 'Account' });
+    expect(follows(work, account)).toBe(true);
+  });
+
+  it('separates the two halves with a divider', async () => {
+    setViewportWidth(375);
+    renderShell(makeUser());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    const work = screen.getByRole('navigation', { name: 'Main' });
+    const account = screen.getByRole('region', { name: 'Account' });
+    const between = screen
+      .getAllByRole('separator')
+      .filter((rule) => follows(work, rule) && follows(rule, account));
+    expect(between).toHaveLength(1);
+  });
+
+  it('names the signed-in user, since the top bar no longer does', async () => {
+    setViewportWidth(375);
+    renderShell(makeEngineer('SENIOR', { full_name: 'Sam Rivera' }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    const account = within(screen.getByRole('region', { name: 'Account' }));
+    expect(account.getByText('Sam Rivera')).toBeInTheDocument();
+    expect(account.getByText('Senior engineer')).toBeInTheDocument();
+  });
+
+  it('carries the account actions', async () => {
+    setViewportWidth(375);
+    renderShell(makeUser());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    const account = within(screen.getByRole('region', { name: 'Account' }));
+    expect(account.getByRole('button', { name: 'Change password' })).toBeInTheDocument();
+    expect(account.getByRole('button', { name: 'Log out' })).toBeInTheDocument();
+  });
+
+  it('signs the user out from the drawer', async () => {
+    setViewportWidth(375);
+    const signOut = vi.fn().mockResolvedValue(undefined);
+    renderShell(makeUser(), paths.home, signOut);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Log out' }));
+
+    expect(signOut).toHaveBeenCalledOnce();
+  });
+});
+
 describe('account menu', () => {
   it('signs the user out', async () => {
     const signOut = vi.fn().mockResolvedValue(undefined);
@@ -151,4 +232,16 @@ function renderShell(user: CurrentUser, route: string = paths.home, signOut = vi
     </Routes>,
     { user, route, signOut },
   );
+}
+
+/**
+ * Whether `later` appears after `earlier` in document order, as siblings.
+ *
+ * A descendant also reports `DOCUMENT_POSITION_FOLLOWING`, which would make
+ * the divider *inside* the work navigation look like a divider *after* it —
+ * so containment is excluded explicitly.
+ */
+function follows(earlier: Element, later: Element): boolean {
+  const position = earlier.compareDocumentPosition(later);
+  return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING) && !earlier.contains(later);
 }
