@@ -20,6 +20,7 @@ EXPECTED_TABLES = {
     "incident_events",
     "incident_notes",
     "incidents",
+    "login_attempts",
     "refresh_tokens",
     "seats",
     "users",
@@ -169,3 +170,26 @@ def test_every_timestamp_column_is_timezone_aware(_migrated_database: Engine) ->
         ).all()
 
     assert naive == [], f"naive timestamp columns: {naive}"
+
+
+def test_login_attempts_can_count_an_address_that_has_no_account(
+    _migrated_database: Engine,
+) -> None:
+    """The lockout counter must have no foreign key to `users`.
+
+    Counting attempts against addresses nobody holds is what stops the 429
+    answering "does this person have an account here?". A foreign key would
+    make those rows impossible to write, and the leak would be back — so the
+    absence is asserted rather than assumed.
+    """
+    inspector = inspect(_migrated_database)
+
+    assert inspector.get_foreign_keys("login_attempts") == []
+
+    (email_column,) = [
+        column for column in inspector.get_columns("login_attempts") if column["name"] == "email"
+    ]
+    # CITEXT, matching `users.email`, so capitalisation cannot buy a second
+    # allowance in the database even if the service forgot to normalise.
+    assert str(email_column["type"]).lower() == "citext"
+    assert inspector.get_pk_constraint("login_attempts")["constrained_columns"] == ["email"]

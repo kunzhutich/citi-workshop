@@ -13,6 +13,7 @@ from app.models.engineer_profile import EngineerProfile
 from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
+from app.models.login_attempt import LoginAttempt
 from app.models.note import IncidentNote
 from app.models.refresh_token import RefreshToken
 from app.models.seat import Seat
@@ -27,6 +28,7 @@ __all__ = [
     "Incident",
     "IncidentEvent",
     "IncidentNote",
+    "LoginAttempt",
     "RefreshToken",
     "Seat",
     "User",

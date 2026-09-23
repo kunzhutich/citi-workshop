@@ -5,17 +5,20 @@ here. Routers validate shapes and call in; they decide nothing.
 """
 
 import logging
+import math
 import re
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.errors import AuthenticationError, ConflictError, ValidationError
+from app.clock import utc_now
+from app.errors import AuthenticationError, ConflictError, RateLimitError, ValidationError
 from app.models.enums import UserRole
 from app.models.user import User
+from app.repositories import login_attempts as login_attempt_repository
 from app.repositories import users as user_repository
 from app.security.passwords import hash_password, verify_password
 from app.security.tokens import (
@@ -43,6 +46,16 @@ MAX_LOCAL_PART_LENGTH = 64
 
 #: Length of a generated temporary password, in URL-safe characters.
 TEMPORARY_PASSWORD_BYTES = 12
+
+
+#: How many consecutive failed sign-ins an email address may accumulate before
+#: it is refused outright.
+MAX_FAILED_LOGIN_ATTEMPTS = 10
+
+#: How long that run has to happen in, and how long the refusal then lasts.
+#: Measured from the *first* failure in the run, so an address is free again
+#: fifteen minutes after its first bad guess however many followed it.
+LOGIN_LOCKOUT_WINDOW = timedelta(minutes=15)
 
 
 def normalise_email(raw_email: str) -> str:
@@ -133,30 +146,156 @@ def register_employee(session: Session, *, email: str, full_name: str, password:
     return user
 
 
-def authenticate(session: Session, *, email: str, password: str) -> User:
-    """Return the user matching these credentials, or raise `AuthenticationError`.
+def authenticate(
+    session: Session,
+    *,
+    email: str,
+    password: str,
+    now: datetime | None = None,
+) -> User:
+    """Return the user matching these credentials, or raise.
 
     One message covers an unknown email, a wrong password and a deactivated
     account, so the endpoint cannot be used to discover who has an account.
     The password is verified even when no user was found, so the response time
     does not leak the answer either.
+
+    After :data:`MAX_FAILED_LOGIN_ATTEMPTS` failures within
+    :data:`LOGIN_LOCKOUT_WINDOW`, the address is refused with a 429 until the
+    window expires — **including when the password is finally right**, which is
+    what makes the lockout worth having rather than a speed bump.
+
+    Two things about counting deserve to be said out loud, because both look
+    like bugs until you see what they are for:
+
+    *Attempts against an address with no account are counted the same way.*
+    The counter is keyed on the submitted address, not on a user row, and the
+    check runs before the lookup. So guessing at ``nobody@acme.inc`` locks out
+    exactly as guessing at a real colleague does, and the 429 says nothing
+    about whether anybody holds that address. A lockout that only applied to
+    real accounts would be a membership oracle with a rate limit attached.
+
+    *Every rejected sign-in counts, including a correct password for a
+    deactivated account.* Not because that attempt was a guess, but because one
+    rule with no branches is the thing that keeps the endpoint uninformative:
+    an attacker who could tell "counted" from "not counted" would have learned
+    which of the three refusals they got.
+
+    The cost is real and is accepted: anybody can lock a colleague's address
+    for fifteen minutes by failing ten logins against it. Keying on the client
+    address instead would trade that for a worse problem — the Function URL is
+    publicly reachable, so ``X-Forwarded-For`` is attacker-controlled and would
+    make the lockout bypassable rather than merely annoying. The window is
+    short, self-clearing and needs no administrator to undo.
     """
+    moment = now or utc_now()
+    window_start = moment - LOGIN_LOCKOUT_WINDOW
+    # `users.email` is CITEXT so the lookup would be case-insensitive anyway;
+    # this normalises the *counter* key, which `login_attempts.email` being
+    # CITEXT likewise protects. Belt and braces, and it matches what the rest
+    # of the file means by an email address.
+    lookup_email = email.strip().lower()
+
+    _require_not_locked_out(session, lookup_email, now=moment, window_start=window_start)
+
     failure = AuthenticationError("Incorrect email or password.", code="INVALID_CREDENTIALS")
 
-    user = user_repository.get_by_email(session, email.strip().lower())
+    user = user_repository.get_by_email(session, lookup_email)
     if user is None:
         verify_password(password, _DUMMY_HASH)
+        _record_failed_login(session, lookup_email, now=moment, window_start=window_start)
         raise failure
 
     if not verify_password(password, user.password_hash):
+        _record_failed_login(session, lookup_email, now=moment, window_start=window_start)
         raise failure
 
     if not user.is_active:
+        _record_failed_login(session, lookup_email, now=moment, window_start=window_start)
         raise failure
 
-    user.last_login_at = datetime.now(UTC)
+    login_attempt_repository.clear(session, lookup_email)
+    user.last_login_at = moment
     session.flush()
     return user
+
+
+def _require_not_locked_out(
+    session: Session,
+    email: str,
+    *,
+    now: datetime,
+    window_start: datetime,
+) -> None:
+    """Refuse the sign-in outright if this address is inside a lockout.
+
+    Checked before the user lookup and before any password verification, so a
+    locked address costs one indexed read rather than a bcrypt comparison. That
+    makes a locked response measurably faster than an unlocked one, and that is
+    fine: the response says it is locked, so its timing reveals nothing the
+    body does not.
+    """
+    attempt = login_attempt_repository.get(session, email)
+    if attempt is None:
+        return
+    if attempt.first_failure_at <= window_start:
+        # The window has expired. The row is stale and the next failure will
+        # overwrite it; `purge_expired` removes it either way.
+        return
+    if attempt.failure_count < MAX_FAILED_LOGIN_ATTEMPTS:
+        return
+
+    unlocks_at = attempt.first_failure_at + LOGIN_LOCKOUT_WINDOW
+    retry_after = max(1, math.ceil((unlocks_at - now).total_seconds()))
+    logger.warning(
+        "Refused a sign-in for a locked address",
+        extra={"failure_count": attempt.failure_count, "retry_after_seconds": retry_after},
+    )
+    raise RateLimitError(
+        "Too many failed sign-in attempts. Try again in a few minutes.",
+        code="TOO_MANY_LOGIN_ATTEMPTS",
+        retry_after_seconds=retry_after,
+    )
+
+
+def _record_failed_login(
+    session: Session,
+    email: str,
+    *,
+    now: datetime,
+    window_start: datetime,
+) -> None:
+    """Count one failure against this address, and commit it.
+
+    **Committed here, not flushed**, for the same reason `rotate_session`
+    commits its mass revocation: the request is about to raise, so the router
+    never reaches its own `session.commit()` and `get_db` closes the session
+    without one — which would roll the count straight back and make the lockout
+    unreachable. A counter that only survives successful requests counts
+    nothing.
+
+    The expired windows are purged in the same transaction. The failure path is
+    the only path that inserts, so this is where the table gets to tidy itself;
+    see `repositories/login_attempts.py::purge_expired` for why there is no
+    sweeper.
+    """
+    login_attempt_repository.purge_expired(session, window_start=window_start)
+    attempt = login_attempt_repository.record_failure(
+        session, email, now=now, window_start=window_start
+    )
+    session.commit()
+
+    if attempt.failure_count == MAX_FAILED_LOGIN_ATTEMPTS:
+        # Logged once, as the address crosses the line, rather than on every
+        # attempt after it. The address itself is not logged: it is a
+        # credential half, and often somebody real.
+        logger.warning(
+            "An email address reached the failed sign-in limit and is locked",
+            extra={
+                "failure_count": attempt.failure_count,
+                "locked_until": attempt.first_failure_at + LOGIN_LOCKOUT_WINDOW,
+            },
+        )
 
 
 def issue_session(session: Session, user: User) -> tuple[str, str, datetime]:
