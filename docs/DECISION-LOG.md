@@ -775,3 +775,145 @@ surfaced it. **If you style a chart, assert on the element you styled.**
 **Reversible.** All five, independently. The scope headings are one component;
 the two parameter types are one file; the four relabelled tiles are four
 strings.
+
+## D15 — How much of the upstream template survives the README rewrite
+
+**Question.** `README.md` was 281 lines, roughly 160 of them the Citi scaffold's:
+the title "Coding Workshop", a "Coding Workshop Example" section reproducing the
+brief verbatim, and Contributing / License / Roadmap / Security / Authors /
+Feedback. This is a **fork of an Apache-2.0 repository**. What must stay, what
+should stay, and what is only there because nobody deleted it?
+
+**Finding: three different kinds of content, and only one of them is an
+obligation.**
+
+1. **Licence and attribution.** Apache-2.0 §4 requires the `LICENSE` file to
+   travel with the work. `LICENSE` is untouched and is not ours to touch. The
+   fork's origin is now stated in one section with a table of what came from the
+   scaffold and what was written here, so nothing in this repository can be read
+   as claiming authorship of `infra/`, `bin/` or the workshop guides.
+2. **Community files that still work.** `CONTRIBUTING.md`, `DCO.md`,
+   `CODE_OF_CONDUCT.md` and `SECURITY.md` describe how Citi takes contributions
+   and vulnerability reports. They are not obligations, but they are live and
+   correct for this repository, and deleting a security-disclosure route is a
+   bad trade for four lines of README. Kept, as links.
+3. **Template furniture that is now wrong.** The verbatim brief (the reviewer has
+   it; reproducing it says nothing about what was built), the Roadmap section
+   pointing at *upstream's* issue tracker (this fork's issues are not there), and
+   the Feedback section asking the reader to star the repository. Removed. Also
+   removed: the scaffold's own "Getting Started → navigate to the main guide",
+   demoted to a link in the last section, because the first thing a reviewer of
+   *this application* needs is not the workshop's index.
+
+**The scaffold authors are still credited**, by name and GitHub handle, under a
+heading that says they wrote the workshop template rather than this application.
+That distinction did not exist in the old README, where the five names sat under
+a bare "Authors" heading directly beneath our setup instructions.
+
+**A defect found while doing it.** The template's own README said "This library is
+licensed under the MIT-0 License." `LICENSE` is, and always was, the **Apache
+License 2.0**, `Copyright 2023 Citigroup, Inc.` The new README states Apache-2.0
+and says in one parenthesis that the earlier claim was wrong, rather than
+silently correcting it — a licence statement that changes without explanation is
+exactly the kind of thing a reviewer should be suspicious of. The `LICENSE` file
+itself is unmodified. Worth reporting upstream.
+
+**Reversible.** Entirely: one file, and the old version is in git.
+
+## D16 — The README states a coverage figure it does not have
+
+**Question.** `docs/full-stack.md` sets explicit coverage goals — 80%+ both
+layers, 90%+ on API endpoints and error cases. Neither `pytest-cov` nor
+`@vitest/coverage-v8` is installed, so no number exists. Install a coverage tool
+and generate one, estimate, or say so?
+
+**Chosen.** Say so, first in the list of known gaps, and describe what *is*
+covered instead: which rules are tested by construction (every workflow row, via
+a suite that parametrises over `TRANSITIONS` itself), which suites run against a
+real database and real migrations, and which four screens have no component tests
+at all.
+
+**Why not just install it.** It is twenty minutes of work and it would produce a
+number. But the number would arrive on the last day of the build, unexamined — a
+coverage report is only worth having if somebody acts on what it shows, and
+there is no phase left in which to act. A figure published to satisfy a rubric
+line, with nothing done about it, is worse than the honest absence: it invites
+the reader to believe the gaps were looked for.
+
+**Why not estimate.** 431 test functions expanding to 683 cases over ~60 endpoints
+would support a confident-sounding guess. It would still be a guess presented as
+a measurement.
+
+**What was done instead.** The gap list names eight specific things, including the
+four untested admin screens (`features/facilities`, `features/categories`,
+`features/users`, `features/engineers`), that end-to-end tests do not run in CI,
+and that nothing at all has been verified against AWS. A reviewer can check every
+one of those in a minute; they cannot check an unaudited percentage at all.
+
+**Reversible.** Yes, and it should be reversed: add `pytest-cov` and
+`@vitest/coverage-v8`, publish the report in CI, and close the specific gaps it
+finds. That is stretch work with a real result, not a documentation change.
+
+## D17 — The demo runs entirely on `acme_demo`, not across two databases
+
+**Question.** D13 left two local databases: `acme_incidents_dev` (sparse, real
+test residue) and `acme_demo` (300 designed incidents over 90 days). The demo
+walks one *new* ticket through its life and then shows the dashboard. Switching
+between them mid-demo means editing `.env` and restarting uvicorn — about thirty
+seconds of dead air, and a signed-out audience.
+
+**Chosen.** Run the whole script on `acme_demo`, including the new ticket.
+
+**Why.** The seeded world contains everything the walkthrough needs and the
+dashboard only makes sense against it: a SENIOR engineer whose specialty matches
+the ticket (Nina Alvarez, Building & Facilities), an admin, thirty employees, and
+90 days of backdated history behind the response-time medians. Reporting the demo
+ticket into `acme_incidents_dev` and then switching would also mean the ticket the
+audience just watched being created is *absent* from the dashboard they are then
+shown, which invites exactly the wrong question.
+
+**What it costs.** The demo ticket is written into the demo database and stays
+there. Run the script three times and `acme_demo` holds three leaks. That is
+acceptable — it is already not pristine (earlier Playwright runs left ~18
+incidents and several deactivated `e2e.*` accounts in it), and `seed_demo`
+refuses to re-seed over an existing world rather than merging into it, so nothing
+silently diverges. The script says all of this under "What you will see that is
+not in the script" rather than letting a presenter discover it in front of an
+audience.
+
+**Reversible.** Drop `acme_demo`, re-run `migrate` and `seed_demo`: about one
+second of compute.
+
+## D18 — Three browsers, and the accounts were verified rather than trusted
+
+Two smaller calls in the demo script, recorded because both were nearly got
+wrong.
+
+**Three separate cookie jars, not three windows.** The script has three personas
+signed in simultaneously. The refresh cookie is `HttpOnly; SameSite=Strict` on
+`localhost:3000`, so two windows of one browser profile share one session and
+signing in as the engineer silently signs the employee out — mid-demo, with no
+error message, looking exactly like a bug in the application. The script
+prescribes a normal window, an incognito window and a *different browser or
+profile* for the third, notes that two incognito windows do not count, and offers
+sign-out-between-acts as the fallback.
+
+**The logins were checked against the stored hashes.** Three documents recorded
+demo credentials and they did not agree on the admin's, which differs from the
+shared demo password by one character and is exactly the kind of thing that
+fails live. Rather than trusting any of them, each account's `password_hash` was
+read out of `acme_demo` and tested with the application's own
+`verify_password` — which matters, because passwords are SHA-256-and-base64
+pre-hashed before bcrypt (`app/security/passwords.py`), so a plain `bcrypt.checkpw`
+against the stored hash returns False for the *correct* password. The first check
+did exactly that and reported that every account was wrong. All six are now
+confirmed: `henry@acme.inc` / `AcmeLocalDev2026!!` (two exclamation marks) and
+the seeded accounts on `AcmeDemo2026!`.
+
+Every figure the script quotes was queried the same way rather than copied from
+an earlier document: 21 blocked now, 16 live escalations against 12 in the
+default 30-day period, 26 unassigned for over 24 hours, 318 incidents.
+
+**Reversible.** Not applicable; this is verification, not design. But it is worth
+re-running before any demo, because the "right now" figures move with the clock
+and the seeded history ages out of a 30-day window.
