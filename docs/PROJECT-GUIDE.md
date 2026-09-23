@@ -131,7 +131,7 @@ runs under. In finished code these are invisible, so they are collected here.
 | Constraint | Imposed by | What it forces |
 | --- | --- | --- |
 | **Exactly one backend service** | `infra/locals.tf` globs `backend/*/requirements.txt` one level deep and turns *every* match into its own Lambda — each with a public, unauthenticated Function URL | One service directory, `backend/v1/`. Creating `backend/anything-else/requirements.txt` silently provisions a second, open endpoint. |
-| **The handler must be `function.handler`, the runtime python3.13** | hardcoded in `infra/lambda.tf` | `function.py` sits at the service root and exposes a module-level `handler`. It cannot be moved into the package. |
+| **The handler must be `function.handler`, the runtime python3.13** | hardcoded in `infra/locals.tf` (`local.backend_names_python`); `infra/lambda.tf` only reads `each.value.handler` / `each.value.runtime` back out of that map | `function.py` sits at the service root and exposes a module-level `handler`. It cannot be moved into the package. |
 | **Every route starts with `/api/v1`** | `infra/cloudfront.tf` builds `path_pattern = "/api/<service-dir-name>*"` and forwards the **full, unmodified** path | The application owns the whole prefix (`API_PREFIX` in `app/config.py`), including the OpenAPI docs. The service directory is named `v1`, so the API version is a directory name. |
 | **No API Gateway, no VPC, no state bucket** | `infra/policy.tftpl` grants no `apigateway:*`, `ec2:CreateVpc`, `ec2:CreateSubnet`, `eks:*` or `docdb:*` | Deployment is a Lambda Function URL behind CloudFront. The VPC and security group are pre-provisioned and adopted by `infra/data.tf`. |
 | **Migrations cannot run from a laptop** | Aurora is `publicly_accessible = false` | `function.py` dispatches on a non-HTTP event shape to `app/services/ops.py`. Direct invoke is IAM-protected and is not routed by CloudFront, so `migrate`, `seed_admin` and `seed_demo` exist without a public maintenance endpoint or a second Lambda. |
@@ -181,12 +181,20 @@ Ten tables. Read them in this order — it is neither alphabetical nor the order
 created in, but the order in which each one becomes necessary.
 
 Everything below is defined in `backend/v1/app/models/`, one module per table, and
-created by `backend/v1/alembic/versions/0001_initial_schema.py`. Two conventions hold
-everywhere and so are declared once in `models/base.py`: every table has
-`id UUID PRIMARY KEY DEFAULT gen_random_uuid()` (`UUIDPrimaryKeyMixin`), and every table
-has `created_at` / `updated_at` as UTC `timestamptz` (`TimestampMixin`) — except the two
-tables that are written once and never updated, which say so by declaring `created_at`
-themselves and omitting `updated_at`.
+created by `backend/v1/alembic/versions/0001_initial_schema.py`. Two conventions are
+declared once in `models/base.py` and then inherited, and **the exceptions to each are
+the interesting part**:
+
+- `UUIDPrimaryKeyMixin` gives a table `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`.
+  Nine of the ten use it. The exception is `engineer_profiles`, whose primary key *is*
+  `user_id` — it is an extension of a user, not an identity of its own (§2.2).
+- `TimestampMixin` gives a table `created_at` and `updated_at` as UTC `timestamptz`.
+  Eight of the ten use it. The exceptions are `incident_events` and `refresh_tokens`,
+  which are written once and never modified, and say so by declaring `created_at`
+  themselves and omitting `updated_at` (§2.7, §2.9).
+
+So the mixins a model does *not* inherit tell you what kind of row it is before you read
+a single column.
 
 ### 2.1 `users` — everyone, one role each
 
@@ -510,7 +518,7 @@ code, not in the table. Where two layers both touch a rule, the row says which o
 | --- | --- | --- |
 | Who may self-register (the `@acme.inc` rule) | `app/services/auth_service.py` | `normalise_email`, `ALLOWED_EMAIL_DOMAIN` |
 | Why `x@acme.inc@evil.com` and `x@sub.acme.inc` are rejected | `app/services/auth_service.py` | `normalise_email` — split on the **last** `@`, then exact domain equality |
-| New accounts are always EMPLOYEE | `app/services/auth_service.py` | `register_employee` hardcodes the role; `RegisterRequest` has no `role` field to ignore |
+| New accounts are always EMPLOYEE | `app/services/auth_service.py` | `register_employee` hardcodes the role; and `RegisterRequest` (in `app/schemas/auth.py`) has no `role` field to ignore |
 | Password length policy | `app/security/passwords.py` | `MIN_PASSWORD_LENGTH`, `MAX_PASSWORD_LENGTH` — mirrored (not decided) by `app/schemas/auth.py` |
 | Password hashing, and the pre-hash that must never be removed | `app/security/passwords.py` | `BCRYPT_ROUNDS`, `hash_password`, `_prehash` |
 | A failed login costs the same time whether the account exists | `app/services/auth_service.py` | `authenticate`, `_DUMMY_HASH` |
@@ -524,7 +532,7 @@ code, not in the table. Where two layers both touch a rule, the row says which o
 | Role permissions at the endpoint | `app/security/dependencies.py` | `require_roles`, and the `ADMIN_ONLY` / `STAFF_ONLY` / `SIGNED_IN` aliases |
 | Engineer-level permissions at the endpoint | `app/security/dependencies.py` | `require_engineer_levels` — admins pass every level check |
 | Who may see deactivated rows | `app/security/dependencies.py` | `get_include_inactive` — refuses the flag rather than ignoring it |
-| Changing your own password ends every session | `app/services/auth_service.py` | `change_password` → `revoke_all_refresh_tokens` |
+| Changing your own password ends every session | `app/services/auth_service.py` | `change_password`, which calls `revoke_all_refresh_tokens` in `app/repositories/users.py` |
 | The first admin account | `app/services/auth_service.py` | `seed_first_admin`, reachable only via the `seed_admin` ops action |
 
 ### 3.2 The incident workflow
@@ -576,7 +584,7 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | Turning recorded user ids into names | `app/services/incident_service.py` | `resolve_event_labels`, `_USER_VALUED_EVENTS` |
 | Title and description bounds (authoritative) | `app/schemas/incident.py` | `IncidentTitle`, `IncidentDescription` |
 | What `?assignee_id=unassigned` means | `app/schemas/incident.py` | `UNASSIGNED`, `AssigneeFilter` |
-| How the location path is rendered | `app/routers/incidents.py` | `_location_summary`, `LOCATION_SEPARATOR` |
+| How the location path is rendered | `app/routers/incidents.py` | `_location_summary` — using `LOCATION_SEPARATOR`, which is defined in `app/schemas/incident.py` |
 | Which `can_*` flags the detail response carries | `app/routers/incidents.py` | `_to_read` |
 
 ### 3.4 Assignment
@@ -660,7 +668,7 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | How `active_ticket_count` is computed | `app/repositories/engineers.py` | `_active_ticket_count_column`, `count_active_tickets` |
 | An admin cannot change their own role or deactivate themselves | `app/services/users.py` | `_reject_self_change` |
 | Promotion to ENGINEER creates a profile; demotion keeps it | `app/services/users.py` | `_apply_role_change` |
-| Deactivating a user ends their sessions | `app/services/users.py`, `app/services/engineers.py` | `revoke_all_refresh_tokens` |
+| Deactivating a user ends their sessions | `app/services/users.py`, `app/services/engineers.py` | both call `revoke_all_refresh_tokens`, which is defined in `app/repositories/users.py` |
 | Email and password are not admin-editable | `app/schemas/user.py` | `UserUpdate` has neither field |
 
 ### 3.10 Reports
@@ -670,7 +678,7 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | **Which reports cover a period and which describe the present** | `app/routers/reports.py` | `ReportPeriod` vs `ReportScopeDep` — two dependencies, so it cannot be got wrong by forgetting |
 | What `from`/`to` filter on a period report | `app/repositories/reports.py` | `_window_clauses` — `created_at`, both ends inclusive |
 | What a current-state report filters — the building, and nothing else | `app/repositories/reports.py` | `_scope_clauses` |
-| Default period, UTC coercion, `from <= to` | `app/services/reporting.py` | `build_window`, `_as_utc`, `DEFAULT_WINDOW_DAYS` |
+| Default period, UTC coercion, `from <= to` | `app/services/reporting.py` | `build_window`, `_as_utc` — the default length itself is `DEFAULT_WINDOW_DAYS` in `app/schemas/report.py` |
 | The instant a current-state snapshot describes | `app/services/reporting.py` | `build_scope` → `ReportScope.as_of` |
 | Which reports are admin-only | `app/routers/reports.py` | `dependencies=[ADMIN_ONLY]` on seven of the eight |
 | Why `/reports/me` needs no role | `app/routers/reports.py` | `get_my_report` — the caller *is* the subject; there is no `?user_id=` |
@@ -802,6 +810,22 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | How a role or level is worded for humans | `layout/roleLabels.ts` | `roleLabel`, `levelLabel`, `describeRole` |
 | Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
 | Which typeface is actually loaded | `fonts.ts` | side-effect imports; `theme.ts` only *asks* for it |
+
+### 3.16 Two things in the code that own no rule
+
+Recorded because a reader who finds them will look for the rule they enforce, and there
+is not one. Neither is a bug; both are loose ends, and both were left alone rather than
+tidied, because this pass changed documentation only.
+
+- **`current_user_id(user)` in `app/security/dependencies.py`** is defined and **never
+  called** — the only occurrence in the repository is its own `def`. Its docstring says
+  it exists "so routes read declaratively", which was presumably the intent before
+  `CurrentUser` made it unnecessary. Deleting it should break nothing; confirm with a
+  grep before doing so.
+- **`app/models/category.py` has an empty `if TYPE_CHECKING: pass` block.** Every other
+  model uses that block to import the types its relationship annotations reference;
+  `Category`'s relationships are self-referential and quote `"Category"`, so there is
+  nothing to import. The block is vestigial.
 ---
 
 ## 4. One request, end to end
@@ -5862,7 +5886,7 @@ guard's `IS_LOCAL` really arrives on the deployed Lambda.
 | `tests/unit/test_ops.py` | 4 more: the registry, the production refusal, and payload validation. No database needed for any of them. |
 | `docs/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
 
-It is invoked exactly as the other two ops actions are — a direct Lambda invoke, or the
+It is invoked exactly as `migrate` and `seed_admin` are — a direct Lambda invoke, or the
 same handler called locally:
 
 ```sh
@@ -6515,10 +6539,13 @@ Only reach for `@mui/x-charts` directly if the form is genuinely different, and 
 data-visualisation guidance before choosing a colour.
 
 **To add a colour.** Put it in `chartPalette.ts`, never in `theme.ts`, and record the
-validator result beside it. Running the check:
-`node scripts/validate_palette.js "#hex,#hex" --mode light --surface "#ffffff"` — the
-surface argument matters, because a contrast figure against the wrong background means
-nothing.
+validator result beside it in a comment, as the existing entries do. **The validator is
+not in this repository** — it came from the data-visualisation guidance used while M7 was
+built, invoked as
+`node <that tool>/validate_palette.js "#hex,#hex" --mode light --surface "#ffffff"`. If
+you no longer have it, any contrast and colour-vision checker will do, but pass the
+**surface** colour explicitly: a contrast figure computed against the wrong background
+means nothing, and the cards these charts sit on are not white.
 
 **To add a filter to the ticket list.** Five places, in order: `IncidentQuery` in
 `api/incidents.ts`; `IncidentFilters` and the three blocks of `useIncidentFilters.ts`
