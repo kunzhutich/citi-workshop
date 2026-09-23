@@ -200,7 +200,9 @@ export function AppShell() {
 
       {isMobile ? (
         <>
-          {user.role === 'EMPLOYEE' ? (
+          {/* Not on the report page itself, where it links to where you
+              already are and covers a card while doing it. */}
+          {user.role === 'EMPLOYEE' && location.pathname !== reportNavItem.path ? (
             <Fab
               color="primary"
               aria-label={reportNavItem.label}

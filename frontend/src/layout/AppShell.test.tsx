@@ -104,6 +104,17 @@ describe('mobile layout', () => {
     expect(screen.getByRole('link', { name: 'Report an issue' })).toBeInTheDocument();
   });
 
+  it('drops the floating button on the report page itself', () => {
+    // It would link to the page you are already on, and cover a card while
+    // doing it — at 375px the FAB sits over the subcategory grid.
+    setViewportWidth(375);
+
+    renderShell(makeUser(), paths.report);
+
+    expect(screen.queryByRole('link', { name: 'Report an issue' })).not.toBeInTheDocument();
+    expect(screen.getByText('report content')).toBeInTheDocument();
+  });
+
   it('keeps the items that do not fit the bottom bar reachable in the drawer', async () => {
     // An admin has six navigation items and the bar holds four. Without the
     // menu button, Categories and Users would be unreachable on a phone.
@@ -228,6 +239,7 @@ function renderShell(user: CurrentUser, route: string = paths.home, signOut = vi
         <Route path={paths.home} element={<span>home content</span>} />
         <Route path={paths.myTickets} element={<span>my tickets content</span>} />
         <Route path={paths.categories} element={<span>categories content</span>} />
+        <Route path={paths.report} element={<span>report content</span>} />
       </Route>
     </Routes>,
     { user, route, signOut },

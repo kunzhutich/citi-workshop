@@ -3072,7 +3072,7 @@ layout engine — they can prove what `useBreakpoint` *decides* at 375 px but no
 anything is laid out at 375 px, because nothing is laid out at all. This phase adds
 Playwright, and the first thing it found was a defect that only exists in a browser.
 
-**Verified against local PostgreSQL only.** 210 frontend tests (up from 112), 609
+**Verified against local PostgreSQL only.** 211 frontend tests (up from 112), 609
 backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
 What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
@@ -3300,7 +3300,7 @@ repository. See the gotchas.
 At 375 px the app bar holds a title and one control, and that control is the drawer
 button — see M5's reasoning about which corner a thumb reaches.
 
-#### Tests — 210 frontend and 12 end-to-end, up from 112 and none
+#### Tests — 211 frontend and 12 end-to-end, up from 112 and none
 
 | File | Count | What it pins down |
 | --- | --- | --- |
