@@ -313,6 +313,18 @@ will, and it must make no difference.
 
 **Reversible.** Yes, symmetrically with D5: `_scope_clauses()` is one function.
 
+> **This entry supersedes D5 and D7 in part**, and both carry a matching marker.
+> D5's rule still governs the six reports that cover a period; what D9 removes
+> is its application to `/reports/blocked-escalated` and `/reports/me`. D7's
+> shape for `/reports/me` stands except for the window. Neither entry is
+> withdrawn — both are worth reading precisely because each one names, in
+> advance, the case that later broke it.
+>
+> D9 was in turn *extended* by [D10](#d10--an-escalation-flag-that-outlives-the-work-it-was-about)
+> and [D11](#d11--finishing-d10-the-same-stale-flag-on-the-home-screen), which
+> fix a latent defect this reversal exposed rather than introduced: the old
+> thirty-day window had been ageing stale `is_escalated` rows out of sight.
+
 ## D10 — An escalation flag that outlives the work it was about
 
 **Question.** `/reports/blocked-escalated` filtered its two halves differently.
@@ -841,6 +853,10 @@ line, with nothing done about it, is worse than the honest absence: it invites
 the reader to believe the gaps were looked for.
 
 **Why not estimate.** 431 test functions expanding to 683 cases over ~60 endpoints
+[**M8 figures, kept as written.** The finished build is 825 backend, 312
+frontend and 82 end-to-end — 1,219 cases over 45 paths / 65 operations. The
+argument is unchanged by the larger number, and deliberately so: a bigger
+denominator makes a guess sound better without making it a measurement.]
 would support a confident-sounding guess. It would still be a guess presented as
 a measurement.
 
@@ -1260,8 +1276,9 @@ sharpest of them — it read `isVisible()` with no wait at all, on a heading tha
 is absent rather than hidden while its query is in flight, so the assertion it
 ends with was very nearly vacuous.
 
-Seven further tests are recorded as borderline and deliberately left alone:
-they reach query-driven content through a retrying assertion that happens to
+Seven further tests are recorded as borderline and deliberately left alone
+(**this count is wrong — see the marker at the end of this entry**): they reach
+query-driven content through a retrying assertion that happens to
 rescue them, or take a layout measurement while a sibling panel is still
 resolving. `assignment.spec.ts:25` is the one worth a second look later — it
 asserts that a JUNIOR does *not* see "Pick up" or "Assign…", but those buttons
@@ -1272,6 +1289,20 @@ for a deliberate change rather than folded into a flake fix.
 
 **Reversible.** Yes, and cheaply — the helper is additive and every call site
 is one line. Nothing in `src/` changed; this is a test-suite change only.
+
+> **Corrected in part by D25 (2026-09-23).** The "seven further tests …
+> borderline and deliberately left alone" above is **ten**. D25 re-derived the
+> list mechanically against this entry's own two descriptions, enumerated all
+> ten, fixed three of them and left seven — and it was that remaining seven,
+> rather than the original count, that made the wrong number look right for as
+> long as it did. `assignment.spec.ts:25`, flagged above as "the one worth a
+> second look later", is the defect D25 is about. Everything else in D24 stands:
+> the twelve definite instances and their fixes are unaffected, and so is the
+> `aria-busy` reasoning.
+>
+> The lesson D25 draws is this entry's own: **a count nobody enumerated is a
+> claim nobody can check.** The lists in D25 exist so that this cannot happen a
+> third time.
 
 ## D25 — A test that reported a permission was enforced without checking it
 
@@ -1345,12 +1376,20 @@ on `allowed-transitions` would work and would tie the test to a URL; the page
 already says when it has finished, in the markup, and that statement survives
 a route being renamed.
 
-**The seven borderline tests D24 left alone.** D24 recorded a count but never
-enumerated them, so the list was re-derived here against its own two
-descriptions — "reach query-driven content through a retrying assertion that
-happens to rescue them" and "take a layout measurement while a sibling panel is
-still resolving". Ten tests match. They are written out below so the list is
-not lost a second time.
+**The borderline tests D24 left alone — D24 said seven, and there are ten.**
+D24 recorded a count but never enumerated them, so the list was re-derived here
+against its own two descriptions — "reach query-driven content through a
+retrying assertion that happens to rescue them" and "take a layout measurement
+while a sibling panel is still resolving". **Ten tests match**, not seven. They
+are written out below so the list is not lost a second time, and D24's sentence
+now points here.
+
+The seven is not simply wrong, which is the part worth understanding: three of
+the ten are fixed in this entry and seven are left, so D24's number happens to
+equal the size of the group that *remains* borderline after this pass. An
+unenumerated count is how that goes unnoticed — the figure stays plausible
+against whichever group you hold in mind. That is the same failure mode as the
+tests themselves, one level up: a claim nobody can check against a list.
 
 *Fixed, being the same shape as the defect above — an absence asserted without
 first establishing the thing that would show it:*

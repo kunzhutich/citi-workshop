@@ -11,6 +11,35 @@ reachable from the VDI.
 **How to use this:** work top to bottom the first time credentials exist. Later phases
 append to the bottom; re-run the whole list after a deploy that changes infrastructure.
 
+**How much there is.** **68 numbered items** across nine phase sections, numbered `N.M`
+where `N` is the phase:
+
+| Section | Items | |
+| --- | --- | --- |
+| Before anything else | — | credentials, no numbered items |
+| M1 — Scaffold and walking skeleton | 6 | 1.1 – 1.6 |
+| M2 — Data model, auth and RBAC | 8 | 2.1 – 2.8 |
+| M3 — Facilities, categories, engineers, users | 6 | 3.1 – 3.6 |
+| M4 — Incidents and workflow | 7 | 4.1 – 4.7 |
+| M5 — Frontend shell and auth | 8 | 5.1 – 5.8 |
+| M6 — Persona screens | 8 | 6.1 – 6.8 |
+| M7 — Dashboards and demo data (three passes) | 12 | 7.1 – 7.12 |
+| S6 — Hardening | 8 | 8.1 – 8.8 |
+| S1 — In-app notifications | 5 | 9.1 – 9.5 |
+| **Total** | **68** | |
+
+Two of the 68 are not things to run: **7.8** is recorded as unverifiable while 7.5 stands,
+and **9.5** is a known limitation stated rather than checked. So there are **66 actionable
+checks**. Below them, "Not yet verifiable, by design" lists a further **8 declared gaps**
+which are not items and have no commands.
+
+There are no `- [ ]` checkboxes — this is prose organised by numbered headings, and the
+numbered headings are the items.
+
+> **Numbering note.** S1's items were `10.1`–`10.5` until this pass and are now
+> `9.1`–`9.5`. There was never a section 9; the jump was a slip, and S1 is the ninth
+> section. Nothing outside this file referenced the old numbers.
+
 ## Before anything else
 
 ```sh
@@ -1026,7 +1055,13 @@ E2E_ADMIN_PASSWORD="<the seed_admin password, already changed>" \
   npx playwright test
 ```
 
-✅ **Correct result:** 12 passed, 2 skipped, the same as locally.
+✅ **Correct result:** **82 passed, 10 skipped**, the same as locally. (This item was
+written at M6, when the suite was 12 passed / 2 skipped; M7, S6 and S1 have since taken it
+to 82/10. The ten skips are all deliberate viewport guards — four desktop-only tests are
+skipped in the `mobile` project and four mobile-only ones in `desktop`, plus the
+describe-level skip in `assignment.spec.ts` — so **the skip count is expected and is not a
+sign of anything wrong**. A skip count other than 10 is worth investigating; a skip count
+of 0 means the project filter is not being applied.)
 ❌ Timeouts on the first test are most likely a cold Aurora — the config allows 90 s per
 test, which is generous locally and may not be after a 15-minute idle. Warm it with a
 `curl https://$CF/api/v1/health` first and re-run before investigating anything else.
@@ -1271,8 +1306,11 @@ The risk is not correctness but what an admin sees: eight spinners for fifteen s
 with nothing saying why.
 
 ```sh
-# Warm, after one request has woken the cluster:
-for r in summary categories locations response-times engineer-workload blocked-escalated; do
+# Warm, after one request has woken the cluster.
+# All seven reports the dashboard actually requests — six period, one current-state.
+# The eighth concurrent request on first paint is GET /incidents, not a report.
+for r in summary categories locations response-times engineer-workload communication \
+         blocked-escalated; do
   curl -s -o /dev/null -w "$r %{time_total}\n" \
     -H "Authorization: Bearer $TOKEN" "$BASE/reports/$r"
 done
@@ -1281,6 +1319,12 @@ done
 ✅ **Correct result:** every warm request under a second, and the cold first one completing
 rather than timing out. ❌ If the cold path is bad enough to matter, the fix is a
 `min_capacity` above zero on the review environment, not a change to the screen.
+
+> **Corrected after S1.** This loop listed six reports and omitted `communication`, so it
+> exercised six of the eight requests the item is named for. `communication` was the
+> report with no screen until S1 gave it one (`CommunicationPanel`), which is exactly why
+> it was easy to leave out of a list of what the dashboard fetches. It is a period report
+> and it is now in the loop.
 
 ### 7.11 The dashboard's number-to-list agreement, against real data
 
@@ -1495,7 +1539,7 @@ that caught the ring being absent in the first place
 
 ## S1 — In-app notifications
 
-### 10.1 Revision 0005 applies to Aurora, and creates the enum type
+### 9.1 Revision 0005 applies to Aurora, and creates the enum type
 
 `0005` is the first revision to create a PostgreSQL enum type outside `0001`, and the
 first to be written after `0001` stopped iterating `ENUM_TYPES`
@@ -1517,7 +1561,7 @@ here with `type "notification_type" does not exist` means the revision half-appl
 applied to one and not the other is the failure mode S6 nearly shipped — the demo
 database was missed and would have 500'd on login.
 
-### 10.2 The unread count is an index-only scan on Aurora, not just on PostgreSQL 18
+### 9.2 The unread count is an index-only scan on Aurora, not just on PostgreSQL 18
 
 The measurement behind [D30](DECISION-LOG.md#d30--thirty-seconds-one-integer-and-a-database-that-sleeps)
 was taken on the development machine's PostgreSQL 18.6. Aurora is 17.7, and an
@@ -1540,7 +1584,7 @@ There is no way to run this without a psql session, so it needs the ops path: ad
 read-only `explain` action, or take the measurement from a local database seeded to the
 same size and treat it as a lower bound.
 
-### 10.3 The poll does not keep Aurora awake — or, if it does, that is a decision
+### 9.3 The poll does not keep Aurora awake — or, if it does, that is a decision
 
 Aurora Serverless v2 runs at `min_capacity = 0` and sleeps when idle. Every open browser
 tab asks for the unread count every thirty seconds, and TanStack Query stops the interval
@@ -1556,7 +1600,7 @@ is a real feature and not a config change. **Nothing here is a bug** — it is a
 consequence of a polled badge on a database that bills for being awake, recorded so that
 the graph does not come as a surprise.
 
-### 10.4 The notifications a demo generates are real, and the read rate starts at zero
+### 9.4 The notifications a demo generates are real, and the read rate starts at zero
 
 The `notifications` table starts empty on any database that already existed
 ([D31](DECISION-LOG.md#d31--what-s1-deliberately-does-not-do-and-what-looking-at-it-found)
@@ -1572,7 +1616,7 @@ with it. If it is not, walk the demo script once before showing the dashboard: r
 ticket, assign it, add a public note, resolve it. That produces one of each of the four
 kinds and puts a number on the tile.
 
-### 10.5 Known limitation to state rather than check: the badge does not announce itself
+### 9.5 Known limitation to state rather than check: the badge does not announce itself
 
 There is no `aria-live` region on the bell, deliberately — a polite announcement every
 thirty seconds on every screen would interrupt whatever a screen-reader user was reading.
@@ -1616,7 +1660,7 @@ These are out of scope until the phase that introduces them:
   automated check substitutes for. Worth half an hour with a real screen reader
   before anybody calls this done.
 - **Whether a stale visibility map ever costs the unread count its index-only scan.**
-  10.2 says how to look; it cannot be looked at without a psql session against Aurora,
+  9.2 says how to look; it cannot be looked at without a psql session against Aurora,
   which the IAM boundary and `publicly_accessible = false` together prevent. Measured
   locally, on a 200,000-row table, it was 3–4 shared buffers and `Heap Fetches: 0`.
 - **The 15-minute lockout window expiring in the cloud.** Locally the expiry is tested

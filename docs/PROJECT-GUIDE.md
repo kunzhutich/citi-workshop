@@ -35,14 +35,26 @@ code and is the one thing a reader cannot reconstruct.
 
 # Part I — The system as a whole
 
-*This part was written last, in M8, and reads the codebase as it finally stands. The
+*This part was first written in M8 and has been kept current through S6 and S1, the two
+stretch phases that shipped after it. It reads the codebase as it finally stands. The
 phase sections in [Part II](#part-ii--the-build-phase-by-phase) are a chronology: they
 record what was built when, and what was being argued about at the time. This part is a
 description: it assumes you have never seen any of it and owes you no history.*
 
-*Every file path, function name and route below was checked against the code at the time
-of writing. Where this part and a phase section disagree, this part is right — a phase
-section is a snapshot of a morning, and some of them are four phases old.*
+*Every file path, function name and route below was checked against the code — not only
+that the identifier exists somewhere, but that it is **defined in the file named beside
+it**, which is the stricter question and the one that catches an imported name posing as
+a local one. Where this part and a phase section disagree, this part is right: a phase
+section is a snapshot of a morning, and the oldest of them are six phases back.*
+
+*The build is finished. **M1**–**M8** are the MVP; **S6** (hardening) and **S1** (in-app
+notifications) are the two stretch phases that followed. Nothing further is planned, and
+the [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built.*
+
+**The system in numbers, as it finally stands:** 12 tables over 5 Alembic revisions ·
+45 paths / 65 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
+transitions · 4 notification rules · 1,219 passing tests (825 pytest, 312 vitest,
+82 Playwright, plus 10 deliberate viewport skips).
 
 ---
 
@@ -145,6 +157,8 @@ runs under. In finished code these are invisible, so they are collected here.
 | **A cold request can take ~15 seconds** | Aurora Serverless v2 runs at `min_capacity = 0.0` and sleeps when idle | `postgres_connect_timeout` defaults to 30 s, the engine uses `pool_pre_ping=True`, and the browser's query client retries once. A hung first request after a quiet period is usually this, not a bug. |
 | **Connection details arrive as env vars** | `infra/locals.tf` injects `IS_LOCAL`, `POSTGRES_*` and `JWT_SECRET` | There is no `DATABASE_URL` and no `docker-compose.yml`. `app/config.py` builds the SQLAlchemy URL from the parts and appends `sslmode=require` when not local. |
 | **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `docs/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
+| **No memory is shared between requests** *(found in S6)* | a Lambda container handles one invocation and the next request may land on a different container | The failed-login counter cannot be an in-process dict, which is how such a thing is usually written. It is the `login_attempts` table — a database row per email address, self-cleaning on the failure path because a sweeper would have nowhere to run against an Aurora that sleeps at `min_capacity = 0`. See §2.10 and D19. |
+| **The server cannot push** *(found in S1)* | a Lambda Function URL cannot hold a connection open, so there is no websocket and no SSE | The unread badge **polls**: one integer every 30 seconds, stopping while the tab is unfocused. This was never a websocket-versus-polling argument — there was nothing to argue with. What it forces instead is that the polled route must be *cheap*, which is why `unread-count` is an index-only scan answered from `ix_notifications_user_id_read_at` with `Heap Fetches: 0`. See D30. |
 
 Two consequences of that list are worth internalising, because they explain choices that
 otherwise look arbitrary:
@@ -186,6 +200,18 @@ For contrast, these were arguments we had with ourselves, not constraints:
   before any dependency runs (D20).
 - **Standard-library JSON logging rather than a logging library**, because
   `requirements.txt` is what Terraform installs into the Lambda package.
+- **Who is notified as a data table, not four `if`s** (S1, D26). `app/notifications.py`
+  is deliberately the sibling of `app/workflow.py`: four `NotificationRule` rows, each
+  carrying its audience *and* that audience's wording in one mapping, so an audience
+  without a sentence cannot be declared. Four services create notifications and each
+  contains one line naming a `NotificationType` and never a person. The module touches
+  no database at all, which is what lets every refusal be unit-tested with no session.
+  The alternative — each service deciding its own recipients — puts four copies of "and
+  also tell the reporter, unless they did it" in the codebase, and the fifth trigger
+  added later is the one that forgets.
+- **A notification stores its sentence rather than re-rendering it** (S1, D27). A row
+  records what was true when it was written; the ticket's *current* status is read live
+  beside it. Those are two different facts and the inbox shows both.
 
 ---
 
@@ -583,9 +609,12 @@ that order.
 
 ## 3. The complete rule-to-file map
 
-Every business rule in the system and the single file that owns it. This merges the nine
-partial maps in Part II, removes the duplicates, and was re-checked against the code:
-every path exists and every symbol named is defined in the file beside it.
+Every business rule in the system and the single file that owns it. This merges the
+**eleven** partial maps in Part II — one per build pass, M1 through S1 — removes the
+duplicates, and was re-checked against the code: every path exists and every symbol named
+is **defined** in the file beside it, not merely imported there. (M8's own §4 map is a
+twelfth `Where the rules live` section, but it maps *documents* rather than rules and is
+not merged here.)
 
 **How to use it.** Find the behaviour in the left column; the middle column is the file to
 open; the right column is what to search for inside it. Backend paths are relative to
@@ -944,6 +973,7 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | Which accessibility rules the build enforces | `e2e/accessibility.spec.ts` | `WCAG_AA` |
 | Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
 | Which typeface is actually loaded | `fonts.ts` | side-effect imports; `theme.ts` only *asks* for it |
+| What "the screen has finished loading" means to an end-to-end test | `frontend/e2e/fixtures/test.ts` | `expectNothingLoading` — one definition, so a test cannot quietly settle for a heading that rendered before any query resolved (D24, D25) |
 
 ### 3.16 One thing in the code that owns no rule
 
@@ -1393,6 +1423,7 @@ current.
 | **Scalar subquery** | A subquery returning exactly one value, usable anywhere an expression is. |
 | **Window function** | A function computing across a set of rows related to the current one without collapsing them. Used to carry each category group's total alongside its subcategory rows. |
 | **`ILIKE`** | Case-insensitive `LIKE`. User search uses it, with `%` and `_` escaped (`_escape_like`) so a user typing `%` does not match everything. |
+| **Partial vs. composite index** | A *composite* index covers several columns in order; a *partial* index covers only the rows matching a `WHERE` clause. `ix_notifications_user_id_read_at` is composite. A partial one (`WHERE read_at IS NULL`) would be smaller, and was not used: the composite also answers "all of this user's read rows", and two indexes are already the write cost `notifications` carries. |
 
 ### 6.3 SQLAlchemy and Alembic
 
@@ -1501,6 +1532,9 @@ current.
 | **Visually hidden** | Off screen but present in the accessibility tree (`@mui/utils`' `visuallyHidden`). Not `display: none`, which removes it from both — and not from the focus order either, which is what makes a skip link possible. |
 | **`aria-current`** | Marks the one item in a set that is current: `"page"` for a navigation link, `"step"` for a stepper. Often the only non-visual signal that a colour change is carrying meaning. |
 | **Sequential focus navigation starting point** | Where the browser resumes Tab from after a click. Clicking a non-focusable element sets it, so clicking the body before a keyboard test does not "reset" anything — it skips whatever precedes the click. |
+| **`refetchInterval` / `refetchIntervalInBackground`** | TanStack Query's polling. `refetchInterval` sets the period; the interval does **not** run while the browser window is unfocused unless `refetchIntervalInBackground` is set, which it deliberately is not. That is what stops an abandoned tab keeping a `min_capacity = 0` Aurora awake. |
+| **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders that control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor — invalid HTML that a screen reader and a keyboard both handle badly. |
+| **`role="img"` on a chart** | Makes the SVG subtree presentational and replaces several hundred unlabelled nodes with a single `aria-label`, written by a `summarise()` helper. Paired with a **table twin**, because a label says what the chart shows and the twin gives the numbers. |
 
 ### 6.7 Testing
 
@@ -7022,7 +7056,7 @@ Facts that live in more than one document, and which copy wins:
 | Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
 | Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
 | The API surface | the running OpenAPI document | README (45 paths / 65 operations), BUILD-PLAN §9 |
-| Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the nine per-phase §4 maps it merges. Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
+| Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the eleven per-phase §4 maps it merges (M1–S1; M8's own §4 maps documents, not rules). Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
 
 ### 5. How to change it
 
@@ -7104,6 +7138,9 @@ to be changed together on that day.
   checked against the morning it was written. Second, **its rule-to-file map is the merge
   of all nine per-phase maps**, so a rule added in a future phase needs adding in two
   places, or the map stops being the thing that answers "where is X" in one hop.
+  *(Written at M8, when there were nine. Two phases followed and both did it: S6's and
+  S1's rules are in Part I §3 as well as in their own §4 maps, so the merge is now of
+  **eleven**. The instruction held.)*
 - **Two claims in the phase sections were stale, and both were in tables.** Corrected in
   place during that pass:
   - the M6 rule map named `apply_visibility` in `app/services/visibility.py`. There has

@@ -1,25 +1,53 @@
 # Build status
 
-Where the autonomous build run has got to. **Updated after every verified step**,
-so that a session resumed after a machine restart can reconstruct its position
-from this file plus `git log`, without relying on conversation memory.
+**The build is finished.** Every phase that was going to be built has been built:
+the MVP `M1`–`M8`, then two stretch phases, `S6` (hardening) and `S1` (in-app
+notifications). Nothing is in progress and no further features are planned.
 
-If you are a resumed session: read this, then `git log --oneline --all`, then
-`docs/DECISION-LOG.md`. Trust git over this file if they disagree — commits are
-written after the work, this file is written after the commit.
+This file was written **during** the build, appended after every verified step,
+so that a session resumed after a machine restart could reconstruct its position
+from this file plus `git log`. That is why it reads as a log rather than an
+essay: the sections below are in the order they were written, not in phase
+order, and each one records what was true **at the time it was written**. Where
+a passage describes a state that a later phase moved on from, it is marked.
+
+For the finished system as it stands, read [`REVIEW-GUIDE.md`](REVIEW-GUIDE.md)
+(what to look at, and how to run it) or
+[`PROJECT-GUIDE.md` Part I](PROJECT-GUIDE.md) (how it works). This file is the
+record of how it got there.
+
+Trust git over this file if they disagree — commits are written after the work,
+this file is written after the commit.
 
 ---
 
-## Position
+## Final state
 
-**Last updated:** 2026-09-23, S1 (in-app notifications) complete
-**Current branch:** `s1-notifications`
-**Phase in progress:** none. S1 is finished. Next is stretch S3 (SLA targets),
-per [D2](DECISION-LOG.md).
+**Last updated:** 2026-09-23, after S1 (in-app notifications) — the last phase.
+**Branch:** `s1-notifications`, which is the tip of the stack and contains
+everything. **Phase in progress:** none. The build is over.
 
-**S1 verified:** backend **825** pytest (738 + 87) · frontend **312** vitest
-(290 + 22) · e2e **82 passed, 10 deliberate viewport skips** (72 + 10 before) ·
-ruff check + ruff format clean · eslint, `tsc -b` and `vite build` clean.
+**Verified on the final tree:**
+
+| | |
+| --- | --- |
+| Backend | **825** pytest |
+| Frontend | **312** vitest (33 files) |
+| End-to-end | **82** Playwright passed, **10** deliberate viewport skips (6 spec files × 2 viewports) |
+| **Total** | **1,219 passing** |
+| Lint / types / build | `ruff check`, `ruff format --check`, `eslint`, `tsc -b`, `vite build` — all clean |
+
+The shape of the thing: **12 tables** (five Alembic revisions, `0001`→`0005`),
+**45 paths / 65 operations** under `/api/v1` on one Lambda, **8 reports**,
+**11 workflow transitions**, **4 notification rules**.
+
+**The one thing that has never run: the AWS deployment.** No credentials were
+issued during the build. Every cloud-only check is written up with its command
+and its expected result in [`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md),
+unrun. See [D1](DECISION-LOG.md).
+
+**S1's own numbers**, for the record: backend 825 (738 + 87) · frontend 312
+(290 + 22) · e2e 82 passed (72 + 10 new), skips unchanged at 10.
 Migration `0005` applied to **both** `acme_incidents_dev` and `acme_demo`.
 
 S1 builds the feature the brief's one measured-but-unacted-on business question
@@ -250,6 +278,15 @@ resolving a ticket — followed through every file it touches with real function
 names, a reading order, and one merged glossary of every non-obvious term. **Part
 II** is the unchanged phase log. The guide is now 6,985 lines.
 
+> **Superseded by S6 and S1.** The figures in the paragraph above were correct
+> when M8 wrote them and are kept as the record of that pass. They are no longer
+> the current state of the guide: S6 added `login_attempts` and S1 added
+> `notifications`, so Part I now narrates **twelve** tables rather than ten, and
+> the guide as a whole is **7,936** lines. The related claim below that "nine of
+> ten" tables carry `UUIDPrimaryKeyMixin` is now **ten of twelve** — the two
+> exceptions are `engineer_profiles`, which keys on `user_id`, and
+> `login_attempts`, which keys on `email` and carries neither mixin.
+
 Part I was verified rather than transcribed, in two passes. The first checked
 every markdown link (372, 176 distinct targets) and every backticked identifier
 (818) against the code, and found two stale claims in the existing phase
@@ -375,8 +412,17 @@ events in `seed_demo` are real rather than stamped at seed time.
 
 ## Branch stack
 
-Each phase branches off the one below. Nothing merges to `main` until the owner
-reviews.
+Each phase branches off the one below. **`s1-notifications` is the tip and
+contains every phase**; reviewing it reviews the whole build. Nothing above M5
+has been merged to `main` — that is deliberate ([D3](DECISION-LOG.md)), so that
+`main` stays a known-good state and rejecting a phase rebases the ones above it
+rather than requiring a revert.
+
+**All branches are pushed.** Every local branch below matches its `origin/`
+counterpart at the same commit. (Earlier revisions of this file recorded M6
+onward as "committed, not pushed (blocked)" — the permission classifier was
+refusing `git push` at the time. That has since been resolved and the pushes
+went through.)
 
 | Branch | Phase | State |
 | --- | --- | --- |
@@ -386,26 +432,29 @@ reviews.
 | `m3-facilities-categories-engineers` | M3 | merged to main (PR #3) |
 | `m4-incidents-workflow` | M4 | merged to main (PR #4) |
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
-| `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
-| `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
-| `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide phase section + guide Part I — committed, **not pushed** |
-| `s6-hardening` | S6 (stretch) | complete, branched off `m8-docs-and-demo`; committed, **not pushed** |
-| `s1-notifications` | S1 (stretch) | complete, branched off `s6-hardening`; committed, **not pushed** |
-| `s3-sla-targets` … | stretch | not started |
+| `m6-persona-screens` | M6 | complete, pushed, awaiting review |
+| `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes pushed |
+| `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide phase section + guide Part I — pushed |
+| `s6-hardening` | S6 (stretch) | complete, branched off `m8-docs-and-demo`; pushed |
+| `s1-notifications` | S1 (stretch) | complete, branched off `s6-hardening`; pushed. **The tip.** |
+| `s3-sla-targets`, `s2-kanban` | stretch | **not started, and not being started** |
 
-## Remaining plan
+## What is left
 
-1. **M6** — verify when the other session finishes, commit, push.
-2. **M7** — ~~report endpoints~~, ~~`seed_demo`~~, ~~three dashboards~~. All done.
-3. **M8 minus deploy** — ~~README rewrite~~, ~~architecture diagram~~,
-   ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~,
-   ~~the project guide's front section~~. Done. See decision D1. Nothing
-   outstanding but the deploy itself.
-4. **Stretch**, in order ~~S6~~ → ~~S1~~ → S3 → S2. See decision D2. S6 and S1
-   are done; S3 (SLA targets) is next.
+Nothing is left to build.
 
-The AWS deploy is not part of this run: no credentials. Every step that needs
-them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
+1. **M1–M8** — done, and the MVP is complete.
+2. **Stretch** — ~~S6~~ → ~~S1~~. Done. S3 (SLA targets) and S2 (a Kanban
+   board) were the next two in [D2](DECISION-LOG.md)'s order and **were never
+   started**; they are recorded as unbuilt scope in the README's known
+   limitations, not as outstanding work.
+3. **Review** — the owner has not seen five phases of UI. That is the real
+   outstanding item, and [`REVIEW-GUIDE.md`](REVIEW-GUIDE.md) is the worklist
+   for it.
+4. **The AWS deploy** — the one thing in this project that has never run. No
+   credentials were issued during the build. Every step that needs them is
+   recorded, with its command and expected result, in
+   [`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md).
 
 ## Standing constraints
 

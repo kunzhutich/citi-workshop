@@ -1,13 +1,34 @@
-# Five-minute demo script
+# Demo script — about eight minutes
 
-One ticket's whole life, across all three personas, ending at the admin dashboard.
+One ticket's whole life, across all three personas, through the inbox, ending at the
+admin dashboard.
 
 Written to be **read aloud while clicking**. Lines in > blockquotes are what you say;
 everything else is what you do. Every account, button label and screen name below was
 checked against the code and against the `acme_demo` database on 2026-09-23.
 
-Total: **5 minutes** of talking, plus about **3 minutes of setup you do before anybody is
-watching**. Do the setup. Half the ways this demo can go wrong are already fixed by it.
+Total: **about 8 minutes** if you read every line, plus about **3 minutes of setup you do
+before anybody is watching**. Do the setup. Half the ways this demo can go wrong are
+already fixed by it.
+
+| Act | Who | Budget |
+| --- | --- | --- |
+| 1 | Eve reports a problem | 1:15 |
+| 2 | Nina picks it up and fixes it | 2:00 |
+| 3 | Eve gets the last word — **and the inbox** | 2:15 |
+| 4 | Henry sees all of it at once | 3:00 |
+
+> **This was a five-minute script until S1.** Act 3 was thirty seconds of "Eve confirms
+> the fix"; the notification material added to it is worth about ninety seconds more, and
+> the budgets above are the re-timed ones. The old timestamps did not survive the
+> arithmetic — at a normal speaking pace Act 3's blockquotes alone run past two minutes.
+>
+> **If you genuinely have only five minutes**, cut from Act 4, not Act 3. Act 4 is the
+> longest act and its second half (the "Blocked, by reason" panel, the category chart
+> drill-down, the KPI drill-through) is three separate demonstrations of the same idea —
+> keep the two-Escalated-figures moment and drop the rest. The bell in Act 3 is the
+> newest thing in the product and the only part that answers the brief's
+> "real-time capabilities"; it is the last thing to cut.
 
 ---
 
@@ -325,9 +346,10 @@ Then click any KPI tile, for example **Blocked**.
 
 **Close.**
 
-> "One ticket, three roles, and one rule table underneath all of it. The 683 backend tests
-> parametrise over that same table, so a transition nobody tested is not a thing that can
-> exist."
+> "One ticket, three roles, and two rule tables underneath all of it — one for what may
+> happen, one for who hears about it. The backend suite parametrises over both, so a
+> transition nobody tested, or a notification rule nobody tested, is not a thing that can
+> exist. That is 825 backend tests, 312 in the browser and 82 end-to-end: 1,219 in all."
 
 ---
 

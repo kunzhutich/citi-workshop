@@ -11,7 +11,10 @@ take, and what is stuck.
 Built inside the [Citi coding-workshop scaffold](#upstream-scaffold-and-licence) — see
 that section for what is ours and what is the template's.
 
-**Status.** Milestones M1–M7 are complete and verified locally; this README is M8.
+**Status.** The build is complete: the MVP (**M1–M8**) plus two stretch phases,
+**S6** (hardening — accessibility, error boundaries, a real 404, login lockout, structured
+logging) and **S1** (in-app notifications). All of it is verified locally; no further
+features are planned.
 **The application has never been deployed to AWS** — no credentials were issued for this
 run. Everything that needs the cloud is written down, with the exact command and the
 expected result, in [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
@@ -19,10 +22,10 @@ See [Known limitations](#known-limitations).
 
 | | |
 | --- | --- |
-| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 45 paths / 65 operations under `/api/v1` |
+| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 12 tables, 45 paths / 65 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
-| **Tests** | 738 backend (pytest) · 290 frontend (Vitest) · 72 end-to-end (Playwright, two viewports, axe-core included) |
-| **Docs** | [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
+| **Tests** | **1,219 passing** — 825 backend (pytest) · 312 frontend (Vitest) · 82 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
+| **Docs** | [Review guide](./docs/REVIEW-GUIDE.md) · [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
 
 **Contents** — [What it does](#what-it-does) · [Architecture](#architecture) ·
 [Roles and permissions](#roles-and-permissions) · [The incident workflow](#the-incident-workflow) ·
@@ -49,17 +52,41 @@ Three personas, one ticket.
   informed: what share of resolved tickets got a public update first, how long the first
   one took, and how much of what the application sent was read.
 
-Everybody also has an **inbox**. A bell in the app bar carries an unread badge; a
-notification is created when a ticket you reported or hold changes status, gains an
-owner, gets a public update from staff, or has its escalation cleared — and never when
-you did the thing yourself. An internal note never produces one. Who hears about what is
-a table of four rules in `backend/v1/app/notifications.py`, not four copies of an `if`.
+Everybody also has an **inbox**. A bell in the app bar carries an unread badge and links
+to `/notifications` — a full page, not a dropdown, so it pages, filters to unread and
+survives a deep link. A notification is created when a ticket you reported or hold
+changes status, gains an owner, gets a public update from staff, or has its escalation
+cleared — and never when you did the thing yourself. An internal note never produces one.
+Who hears about what is a table of four rules in `backend/v1/app/notifications.py`, not
+four copies of an `if`.
 
-The data model is buildings/floors/seats, a two-level category tree, incidents with a
-status/priority/escalation state, notes with public-or-internal visibility, an
-append-only event log that every timing metric is computed from, and one notification
-row per thing a person was told. Full schema:
-[BUILD-PLAN §3](./docs/BUILD-PLAN.md).
+The badge asks the server for one integer every thirty seconds and stops while the tab is
+unfocused. That is not a preference: a Lambda behind a Function URL cannot hold a
+connection open, so there was no websocket to reject ([D30](./docs/DECISION-LOG.md)).
+
+### The data model
+
+**Twelve tables**, created by five Alembic revisions (`0001` → `0005`). Ten arrived with
+the initial schema; `login_attempts` came with S6's login lockout and `notifications`
+with S1.
+
+| Table | What it holds | Added in |
+| --- | --- | --- |
+| `buildings` | Sites. The top of the location tree | `0001` |
+| `floors` | Levels within a building | `0001` |
+| `seats` | Desks and meeting rooms on a floor — a seat is either, and the category decides which the form asks for | `0001` |
+| `categories` | A **two-level** tree: 5 groups, 32 subcategories. A subcategory declares the location detail its reports need | `0001` |
+| `users` | One row per person, carrying the role (`EMPLOYEE` / `ENGINEER` / `FACILITY_ADMIN`), the bcrypt hash and `must_change_password` | `0001` |
+| `engineer_profiles` | The engineer-only half of a user: level, specialties, availability, `max_active_tickets`. Keys on `user_id` — the one table with no surrogate UUID | `0001` |
+| `refresh_tokens` | Hashed refresh tokens, rotated on every use, with reuse detection | `0001` |
+| `incidents` | The ticket: status, priority, escalation flag, reporter, assignee, location, and the lifecycle timestamps the reports are computed from | `0001` |
+| `incident_notes` | Public or `INTERNAL` notes. The visibility filter is a `WHERE` clause, so an employee's response never contains an internal row | `0001` |
+| `incident_events` | **Append-only.** Every accepted transition writes one, with from/to and reason. Every timing metric and every blocked age is read out of here rather than stored on the ticket | `0001` |
+| `login_attempts` | One row per email address, counting failed sign-ins for the lockout. **No foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./docs/DECISION-LOG.md)) | `0004` (S6) |
+| `notifications` | One row per thing a person was told: recipient, `NotificationType`, the incident it is about, the rendered sentence, and `read_at` | `0005` (S1) |
+
+Full schema: [BUILD-PLAN §3](./docs/BUILD-PLAN.md); the narrative version, in the order
+that makes the tables make sense, is [PROJECT-GUIDE Part I](./docs/PROJECT-GUIDE.md).
 
 ## Architecture
 
@@ -172,6 +199,51 @@ Three rules hold this together, and each is enforced in exactly one file:
 | Which rows a user may read | `backend/v1/app/services/visibility.py` (applied to the query, never a serializer) |
 | Which actions the UI offers | `GET /api/v1/incidents/{id}/allowed-transitions` — the frontend renders buttons and dialog fields **only** from this response |
 
+### The API surface
+
+**45 paths, 65 operations**, all under `/api/v1` and all on one Lambda. Browse them at
+<http://localhost:8000/api/v1/docs>.
+
+| Group | Ops | Notes |
+| --- | --- | --- |
+| `/health` | 1 | Proves the connection only — **not** that the schema is there |
+| `/auth/*` | 6 | register, login, refresh, logout, change-password, me |
+| `/buildings`, `/floors`, `/seats`, `/facilities/tree` | 17 | The location tree, including a bulk seat create |
+| `/categories/*` | 5 | The two-level tree |
+| `/engineers/*` | 6 | Includes `PATCH /engineers/me` for own availability and phone |
+| `/users/*` | 3 | List, read, change role / deactivate |
+| `/incidents/*` | 11 | Including `allowed-transitions`, `transitions`, `assign`, `pick-up`, `escalate`, `clear-escalation`, `activity` |
+| `/incidents/{id}/notes`, `/notes/{id}` | 4 | |
+| **`/notifications/*`** | **4** | **S1** — see below |
+| `/reports/*` | 8 | |
+
+**The S1 endpoints.** Four, and every one is scoped to the caller — none of them takes a
+user parameter, and another person's notification is a **404**, not a 403, because a 403
+would confirm the row exists:
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/v1/notifications/unread-count` | `{ "unread": n }` — one integer. This is the polled route: one index-only scan, ~0.1 ms |
+| `GET /api/v1/notifications` | The inbox, paged, `?unread_only=true` optional. Each row carries the ticket's reference, title and **current** status alongside the message |
+| `POST /api/v1/notifications/read-all` | `{ "marked": n }` |
+| `POST /api/v1/notifications/{id}/read` | The row. Idempotent — a second call keeps the first `read_at` |
+
+**The eight reports**, seven admin-only and one (`/reports/me`) for whoever is signed in:
+`summary`, `categories`, `locations`, `response-times`, `engineer-workload`,
+`blocked-escalated`, `communication`, `me`.
+
+Six take a `from`/`to` window; **`blocked-escalated` and `me` refuse one outright** and
+return a `scope` instead of a `window`, because they answer present-tense questions
+([D9](./docs/DECISION-LOG.md)).
+
+`/reports/communication` is the one S1 changed. It already answered "are employees being
+kept informed?" with `informed_pct`, `median_first_public_note_hours` and `reopen_rate_pct`;
+S1 added the **notification read-rate** — `notifications_total`, `notifications_read_total`
+and `notification_read_rate_pct` — so the dashboard can say not just what the application
+sent but how much of it was actually read. It is counted over notifications *to reporters
+about their own tickets*, and a `null` percentage renders as an em dash rather than `0%`,
+because "nothing was resolved" and "nobody was informed" are different facts.
+
 ## Roles and permissions
 
 Three roles: `EMPLOYEE`, `ENGINEER` (levels `JUNIOR`, `SENIOR`, `LEAD`), `FACILITY_ADMIN`.
@@ -199,6 +271,7 @@ never in a route body.
 | Engineer profiles | no | read all; update own availability and phone | full CRUD |
 | Users | no | no | list, change role, deactivate |
 | Dashboard | own home | own home (+ Team page for LEAD) | admin dashboard and all eight reports |
+| Inbox | own only | own only | own only — an admin has no view of anyone else's |
 
 Two things that look like omissions and are not:
 
