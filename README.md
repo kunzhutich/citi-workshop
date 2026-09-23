@@ -317,8 +317,8 @@ cd backend/v1
 .venv/bin/python -c "from function import handler; print(handler({'action': 'seed_admin', 'email': 'admin@acme.inc', 'full_name': 'Facility Admin'}, None))"
 ```
 
-`migrate` upgrades the schema to head and seeds the category reference data (5 groups, 37
-categories); both halves are idempotent, so re-running is safe. `seed_admin` prints a
+`migrate` upgrades the schema to head and seeds the category reference data (5 groups and 32
+subcategories); both halves are idempotent, so re-running is safe. `seed_admin` prints a
 temporary password **once** and flags the account `must_change_password`, so the first
 sign-in must change it. Self-registration always produces an employee, so this is the only
 way to get an admin.
