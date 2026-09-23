@@ -305,6 +305,12 @@ class BlockedEscalatedReport(BaseModel):
     a ticket blocked ninety days ago and still blocked is the row an admin most
     needs to see, and a thirty-day window would hide exactly that one. Only
     `building_id` narrows it. See decision D9.
+
+    **Both halves are live work only.** BLOCKED is a status, so closed tickets
+    drop out of the blocked half by construction; the escalated half restricts
+    `is_escalated` to the active statuses to match, because the flag is never
+    lowered when a ticket closes and a closed ticket cannot be assigned. See
+    decision D10.
     """
 
     scope: ReportScope

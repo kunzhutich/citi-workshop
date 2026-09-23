@@ -1020,6 +1020,74 @@ def test_blocked_escalated_shows_a_ticket_blocked_long_before_the_window(
     assert access["max_age_hours"] == pytest.approx(2160.0, abs=0.05)
 
 
+def test_escalated_list_drops_a_ticket_that_was_closed_while_still_flagged(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """The regression test for D10: a flag outliving the work it was about.
+
+    `is_escalated` is raised by `escalate` and lowered only by
+    `clear_escalation`; resolving or closing a ticket leaves it standing, on
+    purpose, because it is history. So an escalation that was dealt with by
+    fixing the thing rather than by an admin clicking Clear stays flagged for
+    ever. D9 removed the thirty-day window that used to age those rows out, so
+    without a status filter they accumulate until fifty of them crowd the live
+    escalations out of a list capped at `ESCALATED_TICKET_LIMIT`.
+
+    Both tickets below are escalated *more recently* than I2 and I6, so if the
+    filter were missing they would head the list rather than hide at the end of
+    it.
+    """
+    hour = timedelta(hours=1)
+    make_incident(
+        db_session,
+        reporter=dataset.employee_one,
+        category=dataset.hvac,
+        building=dataset.building_a,
+        floor=dataset.floor_a1,
+        status=IncidentStatus.CLOSED,
+        created_at=dataset.now - 3 * timedelta(days=1),
+        closed_at=dataset.now - hour,
+        close_reason=CloseReason.CONFIRMED_FIXED,
+        is_escalated=True,
+        escalation_reason="Escalated, then fixed and closed without clearing",
+        escalated_at=dataset.now - 2 * hour,
+        title="Closed but still flagged",
+    )
+    make_incident(
+        db_session,
+        reporter=dataset.employee_one,
+        category=dataset.hvac,
+        building=dataset.building_a,
+        floor=dataset.floor_a1,
+        status=IncidentStatus.RESOLVED,
+        created_at=dataset.now - 3 * timedelta(days=1),
+        resolved_at=dataset.now - hour,
+        is_escalated=True,
+        escalation_reason="Escalated, then resolved without clearing",
+        escalated_at=dataset.now - 3 * hour,
+        title="Resolved but still flagged",
+    )
+
+    body = get_report(client, "/blocked-escalated", admin_headers, scope_params())
+
+    # Four incidents now carry the flag; only I2 and I6 are still live work.
+    assert body["escalated_total"] == 2
+    assert len(body["escalated"]) == 2
+    assert [row["title"] for row in body["escalated"]] == [
+        "Whole bank of lights out",
+        "Desk lamp socket is dead",
+    ]
+    assert [row["status"] for row in body["escalated"]] == ["IN_PROGRESS", "OPEN"]
+    assert "Closed but still flagged" not in [row["title"] for row in body["escalated"]]
+    assert "Resolved but still flagged" not in [row["title"] for row in body["escalated"]]
+
+    # The blocked half is untouched by this: I3 is still the only blocked one.
+    assert body["blocked_total"] == 1
+
+
 def test_blocked_escalated_still_narrows_to_a_building(
     client: TestClient,
     db_session: Session,

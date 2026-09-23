@@ -161,7 +161,9 @@ def get_blocked_escalated(session: DbSession, scope: ReportScopeDep) -> BlockedE
     """Return blocked tickets grouped by reason with their age, and the escalations.
 
     A live queue, not a period: everything currently blocked or escalated is
-    here however old it is, narrowed only by `building_id`.
+    here however old it is, narrowed only by `building_id`. "Currently
+    escalated" means a flagged ticket that is still open, in progress or
+    blocked — a closed one keeps the flag as history but needs no attention.
     """
     return service.blocked_escalated(session, scope)
 

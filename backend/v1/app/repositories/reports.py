@@ -541,12 +541,33 @@ def _blocked_since() -> ColumnElement[Any]:
     return func.coalesce(latest, Incident.created_at)
 
 
+def _live_escalation_clauses() -> list[ColumnElement[bool]]:
+    """Return the WHERE terms for an escalation somebody can still act on.
+
+    `is_escalated` is raised by `escalate` and lowered *only* by
+    `clear_escalation` — resolving or closing a ticket deliberately leaves it
+    standing, because the flag is history and `incident_events` keeps it. So
+    the flag alone does not answer "what is escalated" in the present tense:
+    the incident has to still be live as well. Shared by the count and the
+    list below so the two cannot drift apart. See decision D10.
+    """
+    return [
+        Incident.is_escalated,
+        Incident.status.in_(ACTIVE_INCIDENT_STATUSES),
+    ]
+
+
 def blocked_escalated_totals(session: Session, scope: ReportScope) -> Row[Any]:
-    """Return how many incidents are blocked right now, and how many escalated."""
+    """Return how many incidents are blocked right now, and how many escalated.
+
+    Both halves are counted over live tickets: BLOCKED is a status and excludes
+    closed work by construction, and the escalated count is restricted to
+    `ACTIVE_INCIDENT_STATUSES` for the same reason. See decision D10.
+    """
     statement = _in_scope(
         select(
             func.count().filter(Incident.status == IncidentStatus.BLOCKED).label("blocked_total"),
-            func.count().filter(Incident.is_escalated).label("escalated_total"),
+            func.count().filter(*_live_escalation_clauses()).label("escalated_total"),
         ).select_from(Incident),
         scope,
     )
@@ -582,7 +603,9 @@ def escalated_tickets(session: Session, scope: ReportScope) -> Sequence[Row[Any]
 
     A list rather than an aggregate, because "what is escalated and why" is
     answered by the reasons people wrote, not by a count of them. Still
-    escalated is still escalated, however old the ticket is.
+    escalated is still escalated, however old the ticket is — but only while
+    the ticket is still live: a closed one carries the flag as history and
+    nobody can act on it. See `_live_escalation_clauses()` and decision D10.
     """
     age_hours = _rounded(_hours(_moment(scope.as_of) - Incident.escalated_at), HOURS_PRECISION)
 
@@ -600,7 +623,7 @@ def escalated_tickets(session: Session, scope: ReportScope) -> Sequence[Row[Any]
             ).select_from(Incident),
             scope,
         )
-        .where(Incident.is_escalated)
+        .where(*_live_escalation_clauses())
         .order_by(Incident.escalated_at.desc().nullslast(), desc(Incident.ticket_number))
         .limit(ESCALATED_TICKET_LIMIT)
     )

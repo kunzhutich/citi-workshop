@@ -326,7 +326,8 @@ def blocked_escalated(session: Session, scope: ReportScope) -> BlockedEscalatedR
     """Build `/reports/blocked-escalated`, ageing everything against `scope.as_of`.
 
     A live queue: everything blocked and everything escalated, however long ago
-    it was reported. See decision D9.
+    it was reported (decision D9) — and, on the escalated half, only while the
+    ticket is still open, in progress or blocked (decision D10).
     """
     totals = repository.blocked_escalated_totals(session, scope)
 
