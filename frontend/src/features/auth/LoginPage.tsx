@@ -12,6 +12,7 @@ import { Link as RouterLink, Navigate, useLocation, useNavigate } from 'react-ro
 import { useAuth } from '../../auth/AuthContext';
 import { paths } from '../../routes';
 import { AuthCard } from './AuthCard';
+import { DemoAccountPicker } from './DemoAccountPicker';
 import { applyApiErrors } from './formErrors';
 import { loginSchema, type LoginValues } from './schemas';
 
@@ -61,6 +62,7 @@ export function LoginPage() {
     register: field,
     handleSubmit,
     setError,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
@@ -132,6 +134,17 @@ export function LoginPage() {
           <Button type="submit" variant="contained" size="large" disabled={isSubmitting}>
             {isSubmitting ? 'Signing in…' : 'Sign in'}
           </Button>
+
+          <DemoAccountPicker
+            onPick={(email, password) => {
+              // `shouldValidate` so a previous failed attempt's error messages
+              // clear as the fields fill, rather than sitting under values that
+              // are now valid.
+              setValue('email', email, { shouldValidate: true });
+              setValue('password', password, { shouldValidate: true });
+              setFormError(null);
+            }}
+          />
         </Stack>
       </form>
     </AuthCard>

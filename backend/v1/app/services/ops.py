@@ -168,13 +168,26 @@ def _op_seed_demo(event: dict[str, Any]) -> dict[str, Any]:
     from app.seed.demo import DEFAULT_SPEC, seed_demo
 
     settings = get_settings()
-    if not settings.is_local:
+    # Refused in a deployed environment unless the caller says, in the payload,
+    # that they know what this does. The accounts it invents share one password
+    # that is published in this repository, so it must never be the accidental
+    # result of an automated deploy — but a workshop demonstration running on a
+    # sandbox account is a legitimate reason to want exactly this data, and
+    # refusing outright meant the deployed application had nothing to show.
+    #
+    # The flag is deliberately verbose. `force: true` would be too easy to copy
+    # from a runbook without reading it.
+    if not settings.is_local and not bool(
+        event.get("i_understand_this_publishes_demo_credentials")
+    ):
         return {
             "created": False,
             "error": (
                 "seed_demo is refused outside local development. It invents accounts "
                 "with a shared, published password and three months of fictional "
-                f"history; environment is '{settings.environment_name}'."
+                f"history; environment is '{settings.environment_name}'. Pass "
+                '"i_understand_this_publishes_demo_credentials": true to proceed '
+                "on a sandbox account you control."
             ),
         }
 
