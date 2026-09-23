@@ -89,6 +89,11 @@ test.describe('layout', () => {
   });
 
   test('the ticket list does not scroll sideways at any width', async ({ employeePage }) => {
+    // Fifteen full page loads, so the file's 90-second default is not enough.
+    // `slow()` triples it rather than naming a number, which is the right
+    // shape: the budget should follow the machine, not a guess made on one.
+    test.slow();
+
     // The test above measures at this project's viewport, and this file has
     // two of them: 375 and 1440. That is what let a real overflow ship.
     //

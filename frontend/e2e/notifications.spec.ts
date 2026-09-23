@@ -29,9 +29,18 @@ import { openTicket, reportIssue, runTransition } from './fixtures/ticket';
  * filter's "Nothing unread", not the all-notifications empty state.
  */
 test.describe('notifications', () => {
-  /** The bell's accessible name carries the count; the badge is decoration. */
+  /**
+   * The bell's accessible name carries the count; the badge is decoration.
+   *
+   * Scoped to the `banner` landmark, which is the app bar. Unscoped, this
+   * also matches the ticket page's back link whenever the reader arrived from
+   * the inbox — that link now names where it goes ("Notifications") and goes
+   * there, which is the whole point of `features/incidents/backTarget.ts`.
+   * Two links to `/notifications` on one screen is correct; a locator that
+   * cannot tell them apart is not.
+   */
   function bell(page: Page) {
-    return page.getByRole('link', { name: /^Notifications/ });
+    return page.getByRole('banner').getByRole('link', { name: /^Notifications/ });
   }
 
   /**

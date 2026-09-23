@@ -54,7 +54,7 @@ test.describe('the way back from a ticket', () => {
   }) => {
     const reference = await reportIssue(employeePage, {
       group: 'Hardware',
-      subcategory: 'Laptop',
+      subcategory: 'Laptop/Desktop',
       title: 'The laptop fan runs flat out whenever it is docked',
       description: 'It is loud enough that people ask about it on calls, and only when docked.',
       priority: 'Low',
@@ -68,11 +68,19 @@ test.describe('the way back from a ticket', () => {
 
     await employeePage.getByText(reference).first().click();
     await expect(employeePage.getByRole('heading', { level: 1 })).toBeVisible();
+    // Kept for the pasted-link case at the end. Read off the address bar,
+    // which is where a person copying a link gets it from.
+    const ticketPath = new URL(employeePage.url()).pathname;
+    expect(ticketPath).toMatch(/^\/tickets\/[0-9a-f-]{36}$/);
 
-    // The link says where it goes. "All tickets" is also the fallback, so it
-    // is asserted here *and* on the direct-link case below, where it is the
-    // only thing that could be right.
-    const back = employeePage.getByRole('link', { name: 'All tickets', exact: true });
+    // Scoped to `<main>`, and that is not fussiness: "All tickets" and "My
+    // tickets" are also navigation links, in the sidebar on a desktop and in
+    // the bottom bar on a phone. An unscoped locator matches two or three
+    // elements and Playwright's strict mode refuses it — which is the same
+    // trap that stopped the whole suite running (D47).
+    const back = employeePage
+      .getByRole('main')
+      .getByRole('link', { name: 'All tickets', exact: true });
     await expect(back).toBeVisible();
     await back.click();
 
@@ -88,7 +96,9 @@ test.describe('the way back from a ticket', () => {
     await employeePage.getByText(reference).first().click();
     await expect(employeePage.getByRole('heading', { level: 1 })).toBeVisible();
 
-    const backToMine = employeePage.getByRole('link', { name: 'My tickets', exact: true });
+    const backToMine = employeePage
+      .getByRole('main')
+      .getByRole('link', { name: 'My tickets', exact: true });
     await expect(backToMine).toBeVisible();
     await backToMine.click();
     await expect(employeePage).toHaveURL(/\/tickets\/mine$/);
@@ -97,16 +107,10 @@ test.describe('the way back from a ticket', () => {
     // A ticket opened directly carries no origin, so the link falls back to a
     // screen every role has. This is the case the old behaviour got right and
     // the one a fix could easily lose.
-    const ticketUrl = await employeePage
-      .getByText(reference)
-      .first()
-      .evaluate((node) => (node.closest('a') as HTMLAnchorElement | null)?.pathname ?? '');
-    expect(ticketUrl).toMatch(/^\/tickets\/[0-9a-f-]+$/);
-
-    await employeePage.goto(ticketUrl);
+    await employeePage.goto(ticketPath);
     await expect(employeePage.getByRole('heading', { level: 1 })).toBeVisible();
     await expect(
-      employeePage.getByRole('link', { name: 'All tickets', exact: true }),
+      employeePage.getByRole('main').getByRole('link', { name: 'All tickets', exact: true }),
     ).toBeVisible();
   });
 });
