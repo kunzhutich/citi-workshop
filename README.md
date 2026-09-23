@@ -21,7 +21,7 @@ See [Known limitations](#known-limitations).
 | --- | --- |
 | **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 41 paths / 61 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
-| **Tests** | 683 backend (pytest) · 271 frontend (Vitest) · 25 end-to-end (Playwright, two viewports) |
+| **Tests** | 738 backend (pytest) · 290 frontend (Vitest) · 72 end-to-end (Playwright, two viewports, axe-core included) |
 | **Docs** | [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
 
 **Contents** — [What it does](#what-it-does) · [Architecture](#architecture) ·
@@ -398,15 +398,16 @@ npx playwright install chromium   # once
 npm run test:e2e                  # or npm run test:e2e:ui
 ```
 
-### Results, as of M8
+### Results, as of S6
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Backend unit + integration | `pytest` | **683 passing** (431 test functions, parametrised) |
+| Backend unit + integration | `pytest` | **738 passing** |
 | Backend lint + format | `ruff check` / `ruff format --check` | clean |
-| Frontend component + hook | `npm test` (Vitest, 29 files) | **271 passing** |
+| Frontend component + hook | `npm test` (Vitest, 31 files) | **290 passing** |
 | Frontend lint + types + build | `npm run lint` / `typecheck` / `build` | clean (ESLint, `tsc -b`, `vite build`) |
-| End-to-end | `npm run test:e2e` | **25 passing**, 7 deliberate viewport skips, across 4 spec files and 2 viewports (1440×900, 375×812) |
+| End-to-end | `npm run test:e2e` | **72 passing**, 10 deliberate viewport skips, across 5 spec files and 2 viewports (1440×900, 375×812) |
+| Accessibility | part of `npm run test:e2e` | axe-core at WCAG 2.1 AA over every screen, at both viewports, with dialogs and drawers open |
 
 The backend suite takes about five to six minutes, most of it bcrypt at cost 12.
 [`.github/workflows/ci.actions.yml`](./.github/workflows/ci.actions.yml) runs the backend
@@ -433,12 +434,15 @@ vitest → vite build) on every push and pull request.
   actions *from* `allowed-transitions`, the transition dialog building itself from
   `required_fields`, list filters round-tripping through the URL, the three dashboards'
   scope rules, and error/loading/empty states.
-- **End-to-end** (`e2e/`, Playwright, real browser, real HTTP) — 16 cases over two viewport
+- **End-to-end** (`e2e/`, Playwright, real browser, real HTTP) — over two viewport
   projects: one ticket's whole lifecycle with three accounts signed in at once (reported →
   picked up → blocked → resumed → resolved → confirmed → reopened), the same workflow
   reached by assignment rather than pick-up, the three dashboards (including that a KPI
-  tile opens exactly the tickets it counted), and the layout assertions jsdom cannot make. It runs against the
-  **development database**, creating accounts and tickets through the API with a unique
+  tile opens exactly the tickets it counted), the layout assertions jsdom cannot make, and
+  — since S6 — an **accessibility** spec: axe-core over every screen with the dialogs and
+  drawers *open*, plus keyboard tests for the tab order, the skip link, focus returning
+  from a dialog, and the questionnaire being completable without a pointer. It runs against
+  the **development database**, creating accounts and tickets through the API with a unique
   suffix per run and deactivating the accounts afterwards; it never drops or truncates
   anything.
 
@@ -465,9 +469,11 @@ Stated plainly, because the rubric asks for coverage figures this project does n
    `features/engineers` (beyond `sortForAssignment`). Their APIs are covered by backend
    integration tests and their happy paths are walked by hand; the screens themselves are
    the thinnest-tested part of the frontend.
-6. **No accessibility audit** (planned as stretch S6), no visual-regression tests, and no
-   test for the CloudFront Function itself. There is also no 404 page — an unknown URL
-   redirects to the home screen.
+6. **No visual-regression tests, and no test for the CloudFront Function itself.**
+   Accessibility *is* now covered — axe-core at WCAG 2.1 AA over every screen at both
+   viewports, plus keyboard tests for the focus order, the dialogs and the drawer — but
+   nothing has been checked with an actual screen reader. The semantics are asserted;
+   how they sound is not. See [D22 and D23](./docs/DECISION-LOG.md).
 7. **`GET /incidents` cannot filter on `resolved_at`**, so one dashboard tile
    ("Resolved in the period") deliberately has no drill-down link — see
    [D14 §3](./docs/DECISION-LOG.md).
@@ -477,7 +483,7 @@ Stated plainly, because the rubric asks for coverage figures this project does n
 
 ## Trade-offs and decisions
 
-Fourteen decisions are recorded with their alternatives in
+Twenty-three decisions are recorded with their alternatives in
 [docs/DECISION-LOG.md](./docs/DECISION-LOG.md); three infrastructure changes in
 [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:
@@ -487,6 +493,22 @@ ask about:
 cannot read a route handler and know what a button does. The benefit is that the rules
 cannot drift between the API and the UI, and that the tests parametrise over the table, so
 an untested row is impossible.
+
+**The login lockout counts addresses that have no account** ([D19](./docs/DECISION-LOG.md)).
+Ten failures per email per fifteen minutes, counted in a table because a Lambda container
+shares no memory with the next one, and counted for *any* address — with no foreign key to
+`users`, so that stays possible. A lockout that only applied to real accounts would answer
+"does this person have an account here?", which is the question the single generic 401
+exists to refuse. The cost is that somebody's address can be locked deliberately; the
+alternative, keying on the client IP, would make the lockout bypassable rather than
+merely annoying, because the Function URL is publicly reachable.
+
+**Accessibility was checked twice, by machine and by hand, and the hand found the one that
+mattered** ([D23](./docs/DECISION-LOG.md)). axe-core went green over an application whose
+focus ring was defined in the theme and rendered on nothing — Material UI's `ButtonBase`
+sets `outline: 0` in a class, which ties with a bare `:focus-visible` and wins on
+injection order. It was found by tabbing to a card and looking at the screenshot. axe
+checks that controls have names, not that a keyboard user can see where they are.
 
 **Current-state reports are not window-scoped; period reports are** ([D5](./docs/DECISION-LOG.md),
 [D7](./docs/DECISION-LOG.md) → **[D9](./docs/DECISION-LOG.md)**). The original rule was
@@ -569,6 +591,23 @@ Scope decisions, all deliberate:
 - **Response times are wall-clock**, not business hours. A ticket raised on Friday evening
   and fixed Monday morning reports ~60 hours.
 - **In-app notifications, a Kanban board and SLA targets are unbuilt** (stretch S1–S3).
+- **Login lockout can be used against somebody.** Ten failed sign-ins against an address
+  lock it for fifteen minutes, whether or not anybody holds it — which is what stops the
+  refusal revealing who has an account, and also means a colleague's address can be locked
+  deliberately. Keying on the client address instead would make the lockout *bypassable*,
+  because the Lambda Function URL is publicly reachable and `X-Forwarded-For` is therefore
+  attacker-controlled. The window is short, clears itself, and needs no administrator to
+  undo. See [D19](./docs/DECISION-LOG.md).
+- **The 404 page returns HTTP 200.** CloudFront rewrites extension-less paths to
+  `/index.html` so deep links survive a reload, so the server cannot know a path is not a
+  route — only the router can, and by then the response has been sent. What the user is
+  told is accurate; the status code is a consequence of single-page routing without a
+  server-side renderer. `/api/*` still returns real 404s, which is the part the rubric
+  cares about.
+- **Accessibility is verified by axe and by keyboard, not by ear.** Every screen passes
+  WCAG 2.1 AA under axe-core at both viewports, and the keyboard paths were driven and
+  screenshotted — but nobody has listened to NVDA, JAWS or VoiceOver read the application.
+  The semantics are asserted; how they sound is not.
 - **Single region, no custom domain, no WAF, no CDN cache tuning beyond the defaults**;
   CloudFront compression is proposed but not applied ([INFRA-CHANGES §4](./docs/INFRA-CHANGES.md)).
 - **Aurora Serverless v2 runs at `min_capacity = 0`** and takes roughly 15 seconds to wake.

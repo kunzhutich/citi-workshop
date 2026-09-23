@@ -12,9 +12,117 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, M8 (documentation) complete — the deploy is deferred
-**Current branch:** `m8-docs-and-demo`
-**Phase in progress:** none. M8 minus the deploy is finished. Next is stretch S6.
+**Last updated:** 2026-09-23, S6 (hardening) complete
+**Current branch:** `s6-hardening`
+**Phase in progress:** none. S6 is finished. Next is stretch S1 (in-app
+notifications), per [D2](DECISION-LOG.md).
+
+**S6 verified:** backend **738** pytest (683 + 55) · frontend **290** vitest
+(271 + 19) · e2e **72 passed, 10 deliberate viewport skips** (25 + 7 before) · ruff check + ruff format clean · eslint,
+`tsc -b` and `vite build` clean.
+
+S6 shipped the five things BUILD-PLAN §15 names, plus the three cleanups M8
+recorded but did not make.
+
+**1. Accessibility.** `@axe-core/playwright` bolted onto the existing fixtures:
+every screen, at both viewports, signed in as the role that owns it, and — the
+part that matters — with the dialogs and drawers *open*, the questionnaire
+part-answered, and the login screen showing an error. WCAG 2.1 AA only;
+`best-practice` rules are deliberately off.
+
+What axe found: `<ul>` containing `<a>` and `<button>` on every signed-in
+screen (four places, three of which nothing was scanning); the OPEN status chip
+at 3.86:1 and HIGH priority at 3.11:1, because the palette defined three tokens
+and left `info`/`warning`/`success`/`error` as Material UI's unchecked
+defaults; the questionnaire's step numbers at 2.64:1; and "Choose a building
+first" — the sentence telling you how to enable a disabled field — as the least
+readable text on the form.
+
+**What tabbing found that axe did not, which is the entry worth reading
+([D23](DECISION-LOG.md)):** the global focus ring added earlier in the same
+phase was doing nothing at all. Material UI's `ButtonBase` sets `outline: 0` in
+its own class; a bare `:focus-visible` has the same specificity, so the winner
+is decided by Emotion's injection order, and Material UI won on every button,
+card and link in the application. Found by tabbing to a category card on the
+report form and looking at the screenshot: the focused card was pixel-identical
+to the four beside it. `body :focus-visible` is one point higher and fixes it.
+A pass that stopped at "axe is green" would have shipped an accessibility phase
+that made the application no easier to use with a keyboard.
+
+Also built rather than only checked: a skip link (first in the tab order on
+every screen, which had 4–11 stops before the content), real `<nav>`/`<main>`
+landmarks with distinct names, `aria-current` on the current page and the
+current stepper step, the bottom bar's items as links rather than buttons
+driven by `onChange`, each stepper step's state in words, `role="img"` plus a
+written summary on both charts, a **table twin for `FlowChart`** — which never
+had one, making the guide's claim that no dashboard value is pointer-only false
+for the chart with the most values in it — and the first live regions in the
+codebase (`aria-live`, `role="status"` and `aria-busy` had zero occurrences
+before this).
+
+**2. Error boundaries.** There were none: a render error unmounted the whole
+tree and gave a white page. Two now — one inside `AppShell` keyed on the
+pathname, where the navigation survives and "try again" is real, and one in
+`main.tsx` outside the router, where the only honest offer is a reload. A
+failed lazy chunk (a tab left open across a deploy) is recognised and offered a
+reload, because retrying re-requests the same dead URL.
+
+**3. The 404 page.** Checked in a browser before changing anything: `path="*"`
+was `<Navigate to="/" replace />`, so a typo, a stale bookmark and a dead link
+all silently rewrote the address bar and landed on the dashboard. A
+non-existent ticket *id* was already handled properly, so it was route-not-found
+specifically that was swallowed. `NotFoundPage` says so and shows the path that
+failed. Its HTTP status is honestly 200 and the component says why
+([D21](DECISION-LOG.md)).
+
+**4. Login lockout.** 10 failures per email per 15 minutes, in a new
+`login_attempts` table because a Lambda container shares no memory with the next
+one. One row per address, keyed on the email, `CITEXT`, **no foreign key to
+`users`** so that addresses with no account are counted identically — otherwise
+the 429 becomes the account-existence oracle the generic 401 exists to prevent.
+Fixed window, not sliding. Self-cleaning on the failure path, because Aurora
+sleeps at `min_capacity = 0` and a sweeper would have nowhere to run. The
+service commits its own count, since the request that increments it is the
+request that then 401s — `rotate_session` set that precedent in M2 and this is
+the second and last such place. Verified against the running stack as well as in
+tests: ten 401s then a 429 carrying `Retry-After: 898`.
+
+**5. Structured JSON logging.** One JSON object per line on stdout, with request
+id, user id where known, method, path, the **route template**, status and
+duration. Nothing secret is logged structurally rather than by filtering: the
+middleware never reads a header, a cookie, a body or the query string. It is the
+project's first middleware, and [D20](DECISION-LOG.md) explains why the standing
+argument against middleware was about rules rather than observation.
+
+**Two silent defects found while building it.** `logger.log(..., exc_info=False)`
+stores the literal `False`, not `None`; formatting that as a traceback raises
+inside the handler, `logging` swallows it to stderr, and the line is lost. And
+Alembic's `env.py` called `fileConfig` with its default
+`disable_existing_loggers=True`, which sets `disabled = True` on every logger
+that already exists *and* replaces the root handler with a plain-text one — so
+one in-process `migrate` would have ended structured logging for the life of a
+warm Lambda container. Both have regression tests.
+
+**The three M8 cleanups**, all verified before removal: the dead
+`current_user_id`, the vestigial `if TYPE_CHECKING: pass` in
+`app/models/category.py`, and `clear_escalation`'s error message, which was only
+correct because the route's `AdminUser` dependency made the other branch
+unreachable. It now refuses with 403 for the wrong caller and 409 for a ticket
+with nothing to clear, mirroring `escalate`.
+
+**Not done, deliberately** ([D22](DECISION-LOG.md)): `eslint-plugin-jsx-a11y`
+is not installed — its peer range stops at ESLint 9 and this project is on 10,
+so it needs `--force`, and the rules it would add turned out to catch nothing
+this codebase does. The questionnaire's cards are still `aria-pressed` toggle
+buttons rather than a radio group; they are labelled, reachable and operable,
+and the cost is tab stops rather than access. And nobody has listened to a real
+screen reader.
+
+**Database note.** Migration `0004` was applied to `acme_incidents_dev`, because
+the application cannot serve a login without that table and Playwright runs
+against that database. It creates one empty table and touches nothing that was
+there. **`acme_demo` has NOT been migrated** and will 500 on login until
+`migrate` is run against it.
 
 **M8 verified:** `README.md` rewritten for this application (281 lines, ~160 of
 them the upstream Citi template, → ~615 lines that are about what was built);
@@ -196,7 +304,8 @@ reviews.
 | `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
 | `m7-dashboards-demo-data` | M7 | complete, branched off `m6`; all three passes committed, **not pushed** |
 | `m8-docs-and-demo` | M8 minus deploy | README, demo script, decision log, guide phase section + guide Part I — committed, **not pushed** |
-| `s6-hardening` … | stretch | not started |
+| `s6-hardening` | S6 (stretch) | complete, branched off `m8-docs-and-demo`; committed, **not pushed** |
+| `s1-notifications` … | stretch | not started |
 
 ## Remaining plan
 
@@ -206,7 +315,8 @@ reviews.
    ~~role/permission matrix~~, ~~known limitations~~, ~~demo script~~,
    ~~the project guide's front section~~. Done. See decision D1. Nothing
    outstanding but the deploy itself.
-4. **Stretch**, in order S6 → S1 → S3 → S2. See decision D2.
+4. **Stretch**, in order ~~S6~~ → S1 → S3 → S2. See decision D2. S6 is done;
+   S1 (in-app notifications) is next.
 
 The AWS deploy is not part of this run: no credentials. Every step that needs
 them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
