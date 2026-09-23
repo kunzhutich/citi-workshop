@@ -11,6 +11,7 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from './backTarget';
 
 export interface IncidentCardListProps {
   incidents: IncidentListItem[];
@@ -29,11 +30,17 @@ export interface IncidentCardListProps {
  * it.
  */
 export function IncidentCardList({ incidents }: IncidentCardListProps) {
+  const ticketLinkState = useTicketLinkState();
+
   return (
     <Box sx={{ display: 'grid', gap: 1.5 }}>
       {incidents.map((incident) => (
         <Card key={incident.id}>
-          <CardActionArea component={RouterLink} to={incidentPath(incident.id)}>
+          <CardActionArea
+            component={RouterLink}
+            to={incidentPath(incident.id)}
+            state={ticketLinkState}
+          >
             <CardContent>
               <Box
                 sx={{

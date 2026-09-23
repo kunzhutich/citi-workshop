@@ -84,7 +84,9 @@ async function expectNoViolations(page: Page, include?: string) {
 test.describe('axe: every screen', () => {
   test('the sign-in screen', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    // `exact` here and below: the demo account picker adds a "Sign in as
+    // someone" accordion, whose header is both a heading and a button.
+    await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
 
     await expectNoViolations(page);
   });
@@ -95,7 +97,7 @@ test.describe('axe: every screen', () => {
     await page.goto('/login');
     await page.getByLabel('Email').fill('nobody.at.all@acme.inc');
     await page.getByLabel('Password').fill('definitely-not-the-password');
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await expect(page.getByRole('alert')).toBeVisible();
 
     await expectNoViolations(page);

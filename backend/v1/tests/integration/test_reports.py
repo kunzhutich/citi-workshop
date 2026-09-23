@@ -603,10 +603,31 @@ def test_summary_reports_created_and_closed_for_every_day_in_the_window(
     assert per_day[five_days_ago]["created"] == 1
     assert per_day[five_days_ago]["closed"] == 1
 
-    # I8 was reported and closed six hours later, both on this day.
-    three_days_ago = (dataset.now - 3 * day).date().isoformat()
-    assert per_day[three_days_ago]["created"] == 1
-    assert per_day[three_days_ago]["closed"] == 1
+    # I8 was reported three days ago and closed six hours later. Six hours
+    # after a wall-clock time crosses midnight whenever the suite runs after
+    # 18:00 UTC, so the closure lands on the next calendar day for part of every
+    # day — this test passed all morning and failed all evening, including in
+    # CI, until the expected day was read from the ticket rather than assumed.
+    #
+    # Pinning I8 to a fixed hour was tried and is wrong: it moves the ticket out
+    # of the three-day window that `test_engineer_workload_scopes_output_to_the_window`
+    # asserts on. The constraint is genuinely unsatisfiable at some hours — I8
+    # must fall after `now - 3 days` for that test and early enough in its day
+    # for this one — so the fixture keeps the wall clock and the assertion reads
+    # the timestamps it actually produced.
+    i8 = dataset.incidents["I8"]
+    assert i8.created_at is not None
+    assert i8.closed_at is not None
+    i8_created_day = i8.created_at.date().isoformat()
+    i8_closed_day = i8.closed_at.date().isoformat()
+
+    assert per_day[i8_created_day]["created"] == 1
+    assert per_day[i8_closed_day]["closed"] == 1
+    # The point of the pair: a closure is bucketed by `closed_at`, not by the
+    # day the ticket was reported. When the six hours do not cross midnight
+    # those are the same row, and when they do they are adjacent rows — either
+    # way the two series are independent, which is what this asserts.
+    assert i8_created_day == (dataset.now - 3 * day).date().isoformat()
 
     # Nothing at all happened on this one, and it is still in the series.
     quiet_day = (dataset.now - 20 * day).date().isoformat()

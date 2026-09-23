@@ -31,6 +31,7 @@ import { EmptyState, QueryState } from '../../components/QueryState';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from '../incidents/backTarget';
 import {
   useMarkAllNotificationsRead,
   useMarkNotificationRead,
@@ -203,6 +204,7 @@ interface NotificationRowProps {
 
 /** One line of the inbox: what happened, which ticket, and how long ago. */
 function NotificationRow({ notification, onOpen, onMarkRead }: NotificationRowProps) {
+  const ticketLinkState = useTicketLinkState();
   const Icon = NOTIFICATION_ICONS[notification.type];
   const isUnread = notification.read_at === null;
 
@@ -229,6 +231,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }: NotificationRowPr
       <ListItemButton
         component={RouterLink}
         to={incidentPath(notification.incident_id)}
+        state={ticketLinkState}
         onClick={onOpen}
         alignItems="flex-start"
         sx={{ py: 1.5, pr: isUnread ? 7 : 2 }}
