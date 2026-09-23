@@ -4,8 +4,11 @@ This layer does three things and deliberately no arithmetic:
 
 * **it resolves the period.** `from` and `to` both default, naive datetimes are
   read as UTC, and an inverted range is refused rather than silently returning
-  nothing. Every endpoint shares one implementation, so "last 30 days" means
-  the same thing on all eight of them;
+  nothing. The six period reports share one implementation, so "last 30 days"
+  means the same thing on all of them. The two current-state reports —
+  `/reports/blocked-escalated` and `/reports/me` — resolve a `ReportScope`
+  instead, which carries a building and an instant and no period at all
+  (decision D9);
 * **it maps aggregate rows onto response models**, filling in the zeroes that
   a `GROUP BY` never produces — a status nobody used still appears in
   `by_status` with a count of 0, because a chart cannot distinguish "none" from
@@ -15,7 +18,8 @@ This layer does three things and deliberately no arithmetic:
   recomputing them.
 
 `now` is a parameter everywhere it matters, defaulting to `app.clock.utc_now`,
-so a test can state what a blocked ticket's age must be instead of measuring it.
+so a test can state what a blocked ticket's age must be instead of measuring
+it. For the current-state reports it is `scope.as_of`.
 """
 
 import uuid
@@ -50,6 +54,7 @@ from app.schemas.report import (
     MyReport,
     PersonalCounts,
     PriorityCount,
+    ReportScope,
     ReportWindow,
     ResponseTimes,
     ResponseTimesReport,
@@ -87,6 +92,21 @@ def build_window(
         )
 
     return ReportWindow(date_from=start, date_to=end, building_id=building_id)
+
+
+def build_scope(
+    *,
+    building_id: uuid.UUID | None,
+    now: datetime | None = None,
+) -> ReportScope:
+    """Resolve the scope of a report that describes the present, not a period.
+
+    There is nothing to validate and no period to default: these reports cover
+    whatever is in the state they ask about, right now. `as_of` is recorded so
+    the response can say which instant it describes and so the ages in the
+    blocked report are measured against a moment a test can pin.
+    """
+    return ReportScope(as_of=now or utc_now(), building_id=building_id)
 
 
 def _as_utc(moment: datetime) -> datetime:
@@ -302,15 +322,13 @@ def engineer_workload(session: Session, window: ReportWindow) -> EngineerWorkloa
 # --- Blocked and escalated ---------------------------------------------------
 
 
-def blocked_escalated(
-    session: Session,
-    window: ReportWindow,
-    *,
-    now: datetime | None = None,
-) -> BlockedEscalatedReport:
-    """Build `/reports/blocked-escalated`, ageing everything against `now`."""
-    moment = now or utc_now()
-    totals = repository.blocked_escalated_totals(session, window)
+def blocked_escalated(session: Session, scope: ReportScope) -> BlockedEscalatedReport:
+    """Build `/reports/blocked-escalated`, ageing everything against `scope.as_of`.
+
+    A live queue: everything blocked and everything escalated, however long ago
+    it was reported. See decision D9.
+    """
+    totals = repository.blocked_escalated_totals(session, scope)
 
     blocked = [
         BlockedGroup(
@@ -319,7 +337,7 @@ def blocked_escalated(
             average_age_hours=_as_float(row.average_age_hours),
             max_age_hours=_as_float(row.max_age_hours),
         )
-        for row in repository.blocked_groups(session, window, now=moment)
+        for row in repository.blocked_groups(session, scope)
     ]
     escalated = [
         EscalatedTicket(
@@ -332,11 +350,11 @@ def blocked_escalated(
             escalated_at=row.escalated_at,
             age_hours=_as_float(row.age_hours),
         )
-        for row in repository.escalated_tickets(session, window, now=moment)
+        for row in repository.escalated_tickets(session, scope)
     ]
 
     return BlockedEscalatedReport(
-        window=window,
+        scope=scope,
         blocked_total=totals.blocked_total,
         escalated_total=totals.escalated_total,
         blocked=blocked,
@@ -365,27 +383,29 @@ def communication(session: Session, window: ReportWindow) -> CommunicationReport
 # --- The caller's own tickets ------------------------------------------------
 
 
-def my_report(session: Session, window: ReportWindow, *, user: User) -> MyReport:
+def my_report(session: Session, scope: ReportScope, *, user: User) -> MyReport:
     """Build `/reports/me` for whoever is asking.
 
     Employees and admins get the tickets they reported. Engineers get those
     **and** the ones assigned to them, which is the pair their home screen
     shows. Nobody gets anybody else's numbers: this endpoint takes no user
     parameter, so there is nothing to tamper with.
+
+    Current state, not a period: these are home-screen tiles, so a ticket
+    somebody raised months ago and is still waiting on is counted. See
+    decision D9.
     """
     reported = _to_personal_counts(
-        repository.personal_counts(session, window, column=Incident.reporter_id, user_id=user.id)
+        repository.personal_counts(session, scope, column=Incident.reporter_id, user_id=user.id)
     )
 
     assigned = None
     if user.role == UserRole.ENGINEER:
         assigned = _to_personal_counts(
-            repository.personal_counts(
-                session, window, column=Incident.assignee_id, user_id=user.id
-            )
+            repository.personal_counts(session, scope, column=Incident.assignee_id, user_id=user.id)
         )
 
-    return MyReport(window=window, role=user.role, reported=reported, assigned=assigned)
+    return MyReport(scope=scope, role=user.role, reported=reported, assigned=assigned)
 
 
 def _to_personal_counts(row: Row[Any]) -> PersonalCounts:

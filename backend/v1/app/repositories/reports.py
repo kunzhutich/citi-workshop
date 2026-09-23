@@ -11,12 +11,19 @@ the platform is.
 
 Three conventions hold throughout.
 
-**The window filters `created_at`.** "Incidents in this period" means incidents
-*reported* in it, for every report, so two tiles on the same dashboard always
-describe the same set of tickets. Three metrics necessarily name a different
-timestamp, and each says so where it is defined: the closed series in
-`per_day`, `resolved_in_period` in the workload report, and the current-state
-snapshot in the workload report's active counts.
+**The window filters `created_at`, where a window applies at all.**
+"Incidents in this period" means incidents *reported* in it, so two tiles on
+the same dashboard always describe the same set of tickets. Three metrics
+necessarily name a different timestamp, and each says so where it is defined:
+the closed series in `per_day`, `resolved_in_period` in the workload report,
+and the current-state snapshot in the workload report's active counts.
+
+**Two reports take no window at all**, because they answer present-tense
+questions: `blocked_escalated_*` and `personal_counts` describe what is in a
+state *now*, so a ticket blocked or opened ninety days ago is still theirs to
+report. They take a `ReportScope` — a building and an instant — rather than a
+`ReportWindow`, and `_scope_clauses()` is the whole of their filtering. See
+decision D9.
 
 **Durations come back in hours**, rounded by PostgreSQL rather than by Python,
 and are `NULL` when the population was empty. `percentile_cont` ignores NULL
@@ -24,8 +31,8 @@ inputs, which is exactly what is wanted: the median time to resolve is over the
 tickets that were resolved, not over the ones that were not.
 
 **`now` is a parameter, never `now()`.** The ages in the blocked and escalated
-report are measured against a moment the caller passes in, so a test can state
-what the answer must be. See `app/clock.py`.
+report are measured against `scope.as_of`, a moment the caller passes in, so a
+test can state what the answer must be. See `app/clock.py`.
 """
 
 import uuid
@@ -69,7 +76,12 @@ from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.seat import Seat
 from app.models.user import User
-from app.schemas.report import ESCALATED_TICKET_LIMIT, TOP_LOCATION_LIMIT, ReportWindow
+from app.schemas.report import (
+    ESCALATED_TICKET_LIMIT,
+    TOP_LOCATION_LIMIT,
+    ReportScope,
+    ReportWindow,
+)
 
 #: Seconds in an hour. Every duration is divided by this in SQL so that the
 #: API never has to explain which unit it is speaking in.
@@ -118,6 +130,24 @@ def _window_clauses(window: ReportWindow) -> list[ColumnElement[bool]]:
 def _in_window(statement: Select[Any], window: ReportWindow) -> Select[Any]:
     """Narrow a statement to the incidents the report covers."""
     return statement.where(*_window_clauses(window))
+
+
+def _scope_clauses(scope: ReportScope) -> list[ColumnElement[bool]]:
+    """Return the WHERE terms for a report that describes the present.
+
+    There is deliberately no date term here. `building_id` narrows *which*
+    tickets are in view and is a scope filter; `from`/`to` would narrow *when*
+    they were reported, and a report answering "what is blocked" must not drop
+    a ticket for having been raised too long ago. See decision D9.
+    """
+    if scope.building_id is None:
+        return []
+    return [Incident.building_id == scope.building_id]
+
+
+def _in_scope(statement: Select[Any], scope: ReportScope) -> Select[Any]:
+    """Narrow a statement to the incidents a current-state report covers."""
+    return statement.where(*_scope_clauses(scope))
 
 
 def _hours(expression: ColumnElement[Any]) -> ColumnElement[Any]:
@@ -511,26 +541,26 @@ def _blocked_since() -> ColumnElement[Any]:
     return func.coalesce(latest, Incident.created_at)
 
 
-def blocked_escalated_totals(session: Session, window: ReportWindow) -> Row[Any]:
-    """Return how many incidents in the period are blocked, and how many escalated."""
-    statement = _in_window(
+def blocked_escalated_totals(session: Session, scope: ReportScope) -> Row[Any]:
+    """Return how many incidents are blocked right now, and how many escalated."""
+    statement = _in_scope(
         select(
             func.count().filter(Incident.status == IncidentStatus.BLOCKED).label("blocked_total"),
             func.count().filter(Incident.is_escalated).label("escalated_total"),
         ).select_from(Incident),
-        window,
+        scope,
     )
     return session.execute(statement).one()
 
 
-def blocked_groups(
-    session: Session,
-    window: ReportWindow,
-    *,
-    now: datetime,
-) -> Sequence[Row[Any]]:
-    """Return blocked incidents grouped by reason, with how long they have waited."""
-    age_hours = _hours(_moment(now) - _blocked_since())
+def blocked_groups(session: Session, scope: ReportScope) -> Sequence[Row[Any]]:
+    """Return every currently blocked incident grouped by reason, with its age.
+
+    "With age" is the point of the report, and an age is only worth reading if
+    the old ones can appear: the longest-blocked ticket is the one an admin is
+    looking for, so nothing is dropped for having been reported long ago.
+    """
+    age_hours = _hours(_moment(scope.as_of) - _blocked_since())
 
     statement = (
         select(
@@ -540,28 +570,24 @@ def blocked_groups(
             _rounded(func.max(age_hours), HOURS_PRECISION).label("max_age_hours"),
         )
         .select_from(Incident)
-        .where(Incident.status == IncidentStatus.BLOCKED, *_window_clauses(window))
+        .where(Incident.status == IncidentStatus.BLOCKED, *_scope_clauses(scope))
         .group_by(Incident.blocked_reason_type)
         .order_by(desc("count"), Incident.blocked_reason_type)
     )
     return session.execute(statement).all()
 
 
-def escalated_tickets(
-    session: Session,
-    window: ReportWindow,
-    *,
-    now: datetime,
-) -> Sequence[Row[Any]]:
+def escalated_tickets(session: Session, scope: ReportScope) -> Sequence[Row[Any]]:
     """Return the escalated tickets themselves, most recently escalated first.
 
     A list rather than an aggregate, because "what is escalated and why" is
-    answered by the reasons people wrote, not by a count of them.
+    answered by the reasons people wrote, not by a count of them. Still
+    escalated is still escalated, however old the ticket is.
     """
-    age_hours = _rounded(_hours(_moment(now) - Incident.escalated_at), HOURS_PRECISION)
+    age_hours = _rounded(_hours(_moment(scope.as_of) - Incident.escalated_at), HOURS_PRECISION)
 
     statement = (
-        _in_window(
+        _in_scope(
             select(
                 Incident.id.label("incident_id"),
                 Incident.ticket_number.label("ticket_number"),
@@ -572,7 +598,7 @@ def escalated_tickets(
                 Incident.escalated_at.label("escalated_at"),
                 age_hours.label("age_hours"),
             ).select_from(Incident),
-            window,
+            scope,
         )
         .where(Incident.is_escalated)
         .order_by(Incident.escalated_at.desc().nullslast(), desc(Incident.ticket_number))
@@ -640,7 +666,7 @@ def communication(session: Session, window: ReportWindow) -> Row[Any]:
 
 def personal_counts(
     session: Session,
-    window: ReportWindow,
+    scope: ReportScope,
     *,
     column: ColumnElement[Any],
     user_id: uuid.UUID,
@@ -650,6 +676,10 @@ def personal_counts(
     `column` is `Incident.reporter_id` or `Incident.assignee_id`. Passing the
     column rather than a flag keeps the two capacities one query with one set
     of segments, so they cannot drift apart.
+
+    No date filter: these are the numbers on somebody's home screen, and "you
+    have one open ticket" must mean all of them, not the ones raised this
+    month. See decision D9.
     """
     columns: list[Any] = [
         func.count().label("total"),
@@ -661,8 +691,8 @@ def personal_counts(
         for status in IncidentStatus
     )
 
-    statement = _in_window(
+    statement = _in_scope(
         select(*columns).select_from(Incident).where(column == user_id),
-        window,
+        scope,
     )
     return session.execute(statement).one()

@@ -39,12 +39,16 @@ When each milestone was reached, as hours after the ticket was reported:
 | I9  | 3 h      | 5 h          | 9 h      | —      | —         | 2       |
 | I10 | —        | —            | —        | —      | —         | 0       |
 
-`I10` exists to prove the window is applied: it is outside the default thirty
-days and must never appear in a count.
+`I10` is outside the default thirty days. It proves the window is applied on
+the six reports that cover a *period*, where it must never be counted — and
+that it is **not** applied on the two that describe the *present*,
+`/reports/blocked-escalated` and `/reports/me`, where a ticket that is still
+open is still open however long ago it was reported (decision D9).
 
-Every test pins the window explicitly to `now - 30 days` … `now`, where `now`
-is captured once when the fixtures are built. One test deliberately omits the
-parameters, to prove the default is the same thing.
+Every test of a period report pins the window explicitly to `now - 30 days` …
+`now`, where `now` is captured once when the fixtures are built. One test
+deliberately omits the parameters, to prove the default is the same thing. The
+two current-state tests send a window as well, to prove it changes nothing.
 """
 
 import uuid
@@ -74,7 +78,7 @@ from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.seat import Seat
 from app.models.user import User
-from app.schemas.report import ReportWindow
+from app.schemas.report import ReportScope
 from app.services import reporting
 from tests.factories import (
     auth_header,
@@ -492,6 +496,17 @@ def window_params(dataset: Dataset, *, building_id: uuid.UUID | None = None) -> 
     return params
 
 
+def scope_params(*, building_id: uuid.UUID | None = None) -> dict[str, str]:
+    """Return the query string for a current-state report: a building, or nothing.
+
+    `/reports/blocked-escalated` and `/reports/me` take no period at all, so
+    there is nothing else to pin. See decision D9.
+    """
+    if building_id is None:
+        return {}
+    return {"building_id": str(building_id)}
+
+
 @pytest.fixture
 def admin_headers(client: TestClient, dataset: Dataset) -> dict[str, str]:
     """Sign in as the fixture admin."""
@@ -864,7 +879,11 @@ def test_engineer_workload_scopes_output_to_the_window(
 def test_blocked_and_escalated_totals_and_reasons(
     client: TestClient, dataset: Dataset, admin_headers: dict[str, str]
 ) -> None:
-    body = get_report(client, "/blocked-escalated", admin_headers, window_params(dataset))
+    body = get_report(client, "/blocked-escalated", admin_headers, scope_params())
+
+    # A live queue, so there is no period to echo back — only the scope.
+    assert "window" not in body
+    assert body["scope"]["building_id"] is None
 
     assert body["blocked_total"] == 1  # I3
     assert body["escalated_total"] == 2  # I2 and I6
@@ -941,8 +960,8 @@ def test_blocked_age_is_measured_from_when_the_ticket_became_blocked(
         created_at=now - 4 * day,
     )
 
-    window = ReportWindow(date_from=now - 30 * day, date_to=now)
-    report = reporting.blocked_escalated(db_session, window, now=now)
+    scope = ReportScope(as_of=now)
+    report = reporting.blocked_escalated(db_session, scope)
 
     assert report.blocked_total == 3
     waiting, access = report.blocked
@@ -957,6 +976,78 @@ def test_blocked_age_is_measured_from_when_the_ticket_became_blocked(
     assert access.count == 1
     assert access.average_age_hours == 96.0
     assert access.max_age_hours == 96.0
+
+
+def test_blocked_escalated_shows_a_ticket_blocked_long_before_the_window(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """The regression test for D9: an old ticket that is still stuck must appear.
+
+    This report was window-scoped under D5, so a ticket blocked ninety days ago
+    and still blocked was missing from the default thirty-day view — the single
+    row an admin most needs to see. The request below still sends that window,
+    because a dashboard with a period picker will, and it must make no
+    difference.
+    """
+    day = timedelta(days=1)
+    make_incident(
+        db_session,
+        reporter=dataset.employee_one,
+        category=dataset.hvac,
+        building=dataset.building_a,
+        floor=dataset.floor_a1,
+        status=IncidentStatus.BLOCKED,
+        blocked_reason_type=BlockedReasonType.ACCESS_REQUIRED,
+        created_at=dataset.now - 90 * day,
+        title="Plant room has been locked since the summer",
+    )
+
+    body = get_report(client, "/blocked-escalated", admin_headers, window_params(dataset))
+
+    # I3, blocked eight days ago, plus the ninety-day-old one.
+    assert body["blocked_total"] == 2
+    groups = {row["blocked_reason_type"]: row for row in body["blocked"]}
+    assert groups["WAITING_ON_PARTS"]["count"] == 1
+    assert groups["ACCESS_REQUIRED"]["count"] == 1
+
+    # No STATUS_CHANGED event on it, so the age falls back to when it was
+    # reported: 90 days is 2160 hours, and it is the oldest thing here.
+    access = groups["ACCESS_REQUIRED"]
+    assert access["average_age_hours"] == pytest.approx(2160.0, abs=0.05)
+    assert access["max_age_hours"] == pytest.approx(2160.0, abs=0.05)
+
+
+def test_blocked_escalated_still_narrows_to_a_building(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """`building_id` is a scope filter and survives D9; only the period went."""
+    day = timedelta(days=1)
+    make_incident(
+        db_session,
+        reporter=dataset.employee_one,
+        category=dataset.hvac,
+        building=dataset.building_a,
+        status=IncidentStatus.BLOCKED,
+        created_at=dataset.now - 90 * day,
+        title="Plant room has been locked since the summer",
+    )
+
+    params = scope_params(building_id=dataset.building_b.id)
+    body = get_report(client, "/blocked-escalated", admin_headers, params)
+
+    assert body["scope"]["building_id"] == str(dataset.building_b.id)
+    # Both blocked tickets are in building A, so building B has none.
+    assert body["blocked_total"] == 0
+    assert body["blocked"] == []
+    # I6 is escalated and in building B; I2 is escalated and in building A.
+    assert body["escalated_total"] == 1
+    assert [row["title"] for row in body["escalated"]] == ["Desk lamp socket is dead"]
 
 
 # --- /reports/communication --------------------------------------------------
@@ -1011,14 +1102,15 @@ def test_me_gives_an_employee_the_tickets_they_reported(
     client: TestClient, dataset: Dataset
 ) -> None:
     headers = auth_header(login(client, dataset.employee_one.email))
-    body = get_report(client, "/me", headers, window_params(dataset))
+    body = get_report(client, "/me", headers, scope_params())
 
     assert body["role"] == "EMPLOYEE"
-    # Eve reported I1 to I5 inside the window, and I10 outside it.
+    # Current state, not a period: Eve reported I1 to I5, and I10 forty-five
+    # days ago. I10 is still OPEN, so it is still on her home screen (D9).
     assert body["reported"] == {
-        "total": 5,
-        "active": 3,  # I1 OPEN, I2 IN_PROGRESS, I3 BLOCKED
-        "open": 1,
+        "total": 6,
+        "active": 4,  # I1 OPEN, I2 IN_PROGRESS, I3 BLOCKED, I10 OPEN
+        "open": 2,  # I1 and I10
         "in_progress": 1,
         "blocked": 1,
         "resolved": 1,  # I4
@@ -1027,11 +1119,14 @@ def test_me_gives_an_employee_the_tickets_they_reported(
     }
     # Only an engineer can be an assignee, so there is no assigned block.
     assert body["assigned"] is None
+    # No period was applied, so none is echoed back.
+    assert "window" not in body
+    assert body["scope"]["building_id"] is None
 
 
 def test_me_gives_an_engineer_both_capacities(client: TestClient, dataset: Dataset) -> None:
     headers = auth_header(login(client, dataset.nina.email))
-    body = get_report(client, "/me", headers, window_params(dataset))
+    body = get_report(client, "/me", headers, scope_params())
 
     assert body["role"] == "ENGINEER"
     # Nina reported nothing herself.
@@ -1048,15 +1143,54 @@ def test_me_gives_an_engineer_both_capacities(client: TestClient, dataset: Datas
     }
 
 
-def test_me_narrows_to_a_building_like_every_other_report(
-    client: TestClient, dataset: Dataset
-) -> None:
+def test_me_narrows_to_a_building(client: TestClient, dataset: Dataset) -> None:
+    """`building_id` is a scope filter, so it survives D9 where the period did not."""
     headers = auth_header(login(client, dataset.employee_two.email))
-    params = window_params(dataset, building_id=dataset.building_b.id)
+    params = scope_params(building_id=dataset.building_b.id)
     body = get_report(client, "/me", headers, params)
 
     # Evan reported I6, I7, I8 in building B and I9 in building A.
     assert body["reported"]["total"] == 3
+
+
+def test_me_counts_a_ticket_reported_long_before_the_window(
+    client: TestClient, db_session: Session, dataset: Dataset
+) -> None:
+    """The regression test for D9: home tiles are current state, not a period.
+
+    `/reports/me` was window-scoped under D7, so a ticket somebody reported
+    sixty days ago and is still waiting on was silently missing from their
+    "Open" tile. The request below still sends the thirty-day window, and it
+    must make no difference.
+    """
+    day = timedelta(days=1)
+    make_incident(
+        db_session,
+        reporter=dataset.employee_two,
+        category=dataset.lighting,
+        building=dataset.building_b,
+        floor=dataset.floor_b1,
+        status=IncidentStatus.OPEN,
+        priority=IncidentPriority.LOW,
+        created_at=dataset.now - 60 * day,
+        title="Stairwell light has been out since July",
+    )
+
+    headers = auth_header(login(client, dataset.employee_two.email))
+    body = get_report(client, "/me", headers, window_params(dataset))
+
+    # Evan reported I6, I7, I8 and I9 inside the window, plus this one sixty
+    # days before it. Two of his five are open: I6 and the sixty-day-old one.
+    assert body["reported"] == {
+        "total": 5,
+        "active": 3,  # I6 OPEN, I7 IN_PROGRESS, the sixty-day-old one OPEN
+        "open": 2,
+        "in_progress": 1,
+        "blocked": 0,
+        "resolved": 1,  # I9
+        "closed": 1,  # I8
+        "escalated": 1,  # I6
+    }
 
 
 # --- Permissions -------------------------------------------------------------
@@ -1101,7 +1235,10 @@ def test_an_admin_can_read_every_report(
     response = client.get(f"{REPORTS}{path}", headers=admin_headers)
 
     assert response.status_code == 200, response.text
-    assert response.json()["window"]["building_id"] is None
+    # The period reports echo the window they measured; the blocked/escalated
+    # queue describes the present and echoes its scope instead (D9).
+    echo = "scope" if path == "/blocked-escalated" else "window"
+    assert response.json()[echo]["building_id"] is None
 
 
 @pytest.mark.parametrize("path", [*ADMIN_REPORTS, "/me"])

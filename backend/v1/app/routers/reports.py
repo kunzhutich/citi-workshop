@@ -11,7 +11,7 @@ engineer" could rank their colleagues.
 access token, so an employee cannot read another employee's counts by
 guessing an id.
 
-All eight accept the same three query parameters, collected by
+Six of them cover a **period** and accept three query parameters, collected by
 `get_report_window`:
 
 * `from` — start of the period, inclusive. Defaults to 30 days before `to`.
@@ -21,6 +21,15 @@ All eight accept the same three query parameters, collected by
 `from` and `to` are the names the build plan specifies and `from` is a Python
 keyword, so the parameters are declared as `date_from` / `date_to` with query
 aliases. Nothing else in the application needs to know that.
+
+The other two — `/reports/blocked-escalated` and `/reports/me` — describe the
+**present** rather than a period, so they accept `building_id` only, collected
+by `get_report_scope`. "Which incidents are blocked" and "what have I got open"
+are present-tense questions: a ticket blocked ninety days ago and still blocked
+is the row that matters most, and a thirty-day window would hide it. They
+therefore declare no `from`/`to` at all rather than accepting a period they
+would ignore, and their responses carry a `scope` rather than a `window`. See
+decision D9.
 """
 
 import uuid
@@ -36,6 +45,7 @@ from app.schemas.report import (
     EngineerWorkloadReport,
     LocationsReport,
     MyReport,
+    ReportScope,
     ReportWindow,
     ResponseTimesReport,
     SummaryReport,
@@ -72,8 +82,18 @@ def get_report_window(
     )
 
 
-#: Routers depend on this rather than declaring the three parameters eight times.
+#: The six period reports depend on this rather than declaring the three
+#: parameters six times.
 ReportPeriod = Annotated[ReportWindow, Depends(get_report_window)]
+
+
+def get_report_scope(building_id: BuildingQuery = None) -> ReportScope:
+    """Collect the scope of a report that describes the present, not a period."""
+    return service.build_scope(building_id=building_id)
+
+
+#: The two current-state reports depend on this. No `from`/`to`: see D9.
+ReportScopeDep = Annotated[ReportScope, Depends(get_report_scope)]
 
 
 @router.get(
@@ -135,11 +155,15 @@ def get_engineer_workload(session: DbSession, window: ReportPeriod) -> EngineerW
     "/blocked-escalated",
     response_model=BlockedEscalatedReport,
     dependencies=[ADMIN_ONLY],
-    summary="What is stuck, and why",
+    summary="What is stuck right now, and why",
 )
-def get_blocked_escalated(session: DbSession, window: ReportPeriod) -> BlockedEscalatedReport:
-    """Return blocked tickets grouped by reason with their age, and the escalations."""
-    return service.blocked_escalated(session, window)
+def get_blocked_escalated(session: DbSession, scope: ReportScopeDep) -> BlockedEscalatedReport:
+    """Return blocked tickets grouped by reason with their age, and the escalations.
+
+    A live queue, not a period: everything currently blocked or escalated is
+    here however old it is, narrowed only by `building_id`.
+    """
+    return service.blocked_escalated(session, scope)
 
 
 @router.get(
@@ -156,8 +180,12 @@ def get_communication(session: DbSession, window: ReportPeriod) -> Communication
 @router.get(
     "/me",
     response_model=MyReport,
-    summary="The caller's own ticket counts",
+    summary="The caller's own ticket counts, as they stand now",
 )
-def get_my_report(session: DbSession, user: CurrentUser, window: ReportPeriod) -> MyReport:
-    """Return the caller's own counts: reported always, assigned for engineers."""
-    return service.my_report(session, window, user=user)
+def get_my_report(session: DbSession, user: CurrentUser, scope: ReportScopeDep) -> MyReport:
+    """Return the caller's own counts: reported always, assigned for engineers.
+
+    Current state, not a period: a ticket the caller raised months ago and is
+    still waiting on belongs on their home screen.
+    """
+    return service.my_report(session, scope, user=user)

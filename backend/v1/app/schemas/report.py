@@ -1,10 +1,16 @@
 """Request and response models for the reporting endpoints.
 
-Every report answers one of the business questions in the brief, and every one
-of them is shaped the same way: a `window` echoing the period that was actually
+Every report answers one of the business questions in the brief. Six of them
+are shaped the same way: a `window` echoing the period that was actually
 measured, then the numbers. The echo is not decoration — `from` and `to` both
 default, so a caller that passed neither still needs to know which thirty days
 it is looking at before it can label a chart.
+
+The other two — `/reports/blocked-escalated` and `/reports/me` — answer
+present-tense questions and are **not** window-scoped. They carry a `scope`
+instead: the building they were narrowed to, and the moment the snapshot was
+taken. A `window` on those responses would advertise a filtering that is not
+happening. See decision D9.
 
 Two naming conventions run through this module.
 
@@ -65,6 +71,24 @@ class ReportWindow(BaseModel):
         alias="to",
         description="End of the period, inclusive. Defaults to now.",
     )
+    building_id: uuid.UUID | None = Field(
+        default=None,
+        description="When set, only incidents reported in this building are counted.",
+    )
+
+
+class ReportScope(BaseModel):
+    """The scope of a report that describes the present rather than a period.
+
+    `/reports/blocked-escalated` and `/reports/me` ask *what is in this state
+    now* — which incidents are blocked, what do I have open — so no date
+    filter applies to them and there is no period to echo back. What they can
+    honestly report is the building they were narrowed to and the instant the
+    snapshot was taken. `building_id` is a scope filter, not a time filter, and
+    survives here for that reason. See decision D9.
+    """
+
+    as_of: datetime = Field(description="The instant this snapshot describes.")
     building_id: uuid.UUID | None = Field(
         default=None,
         description="When set, only incidents reported in this building are counted.",
@@ -274,9 +298,16 @@ class EscalatedTicket(BaseModel):
 
 
 class BlockedEscalatedReport(BaseModel):
-    """`/reports/blocked-escalated` — what is stuck, and why."""
+    """`/reports/blocked-escalated` — what is stuck, and why.
 
-    window: ReportWindow
+    **A live queue, not a period.** Everything currently BLOCKED is here and
+    everything currently escalated is here, however long ago it was reported —
+    a ticket blocked ninety days ago and still blocked is the row an admin most
+    needs to see, and a thirty-day window would hide exactly that one. Only
+    `building_id` narrows it. See decision D9.
+    """
+
+    scope: ReportScope
     blocked_total: int
     escalated_total: int
     blocked: list[BlockedGroup]
@@ -322,9 +353,14 @@ class MyReport(BaseModel):
     present only for engineers, because only an engineer can be an assignee
     (`services/assignment.py` refuses anyone else), and a block of guaranteed
     zeroes on an employee's home screen would be worse than its absence.
+
+    **These counts are current state, not a period.** "Open", "in progress",
+    "blocked" and "awaiting your confirmation" are tiles about what is on
+    somebody's plate right now, so a ticket they raised in February and is
+    still open is counted. See decision D9.
     """
 
-    window: ReportWindow
+    scope: ReportScope
     role: UserRole
     reported: PersonalCounts
     assigned: PersonalCounts | None
