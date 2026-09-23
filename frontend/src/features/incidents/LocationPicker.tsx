@@ -87,7 +87,6 @@ export function LocationPicker({
         onChange={(event) => selectBuilding(event.target.value)}
         error={Boolean(fieldErrors.building_id)}
         helperText={fieldErrors.building_id}
-        slotProps={{ htmlInput: { 'data-testid': 'building-select' } }}
       >
         {tree.buildings.map((option) => (
           <MenuItem key={option.id} value={option.id}>
@@ -106,7 +105,6 @@ export function LocationPicker({
           disabled={!building}
           error={Boolean(fieldErrors.floor_id)}
           helperText={fieldErrors.floor_id ?? (building ? undefined : 'Choose a building first')}
-          slotProps={{ htmlInput: { 'data-testid': 'floor-select' } }}
         >
           {(building?.floors ?? []).map((option) => (
             <MenuItem key={option.id} value={option.id}>
@@ -127,11 +125,8 @@ export function LocationPicker({
           error={Boolean(fieldErrors.seat_id)}
           helperText={
             fieldErrors.seat_id ??
-            (floor
-              ? undefined
-              : `Choose a floor first`)
+            (floor ? undefined : 'Choose a floor first')
           }
-          slotProps={{ htmlInput: { 'data-testid': 'seat-select' } }}
         >
           {seats.map((option) => (
             <MenuItem key={option.id} value={option.id}>

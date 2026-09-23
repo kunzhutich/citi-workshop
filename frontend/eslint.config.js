@@ -41,7 +41,14 @@ export default defineConfig([
     rules: { 'react-refresh/only-export-components': 'off' },
   },
   {
-    files: ['vite.config.ts', 'eslint.config.js'],
+    files: ['vite.config.ts', 'eslint.config.js', 'playwright.config.ts'],
     languageOptions: { globals: globals.node },
+  },
+  {
+    // Playwright specs run in Node and drive a browser; they export nothing
+    // and contain no React, so the component rules do not apply to them.
+    files: ['e2e/**/*.ts'],
+    languageOptions: { globals: globals.node },
+    rules: { 'react-refresh/only-export-components': 'off' },
   },
 ]);

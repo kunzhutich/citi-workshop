@@ -18,7 +18,7 @@ import { useSnackbar } from '../../components/SnackbarContext';
 import { StatusChip } from '../../components/StatusChip';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { paths } from '../../routes';
-import { ActionsCard } from './ActionsCard';
+import { ActionsBar, ActionsCard } from './IncidentActions';
 import { ActivityTimeline } from './ActivityTimeline';
 import { AssignDialog } from './AssignDialog';
 import { ClearEscalationDialog } from './ClearEscalationDialog';
@@ -113,7 +113,17 @@ export function IncidentDetailPage() {
                 {ticket.title}
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
-                <StatusChip status={ticket.status} />
+                {/*
+                  The one test id in the application. "In progress" appears
+                  twice on this page — here, and as the current step of the
+                  WorkflowStepper — so a test asking "what status is this
+                  ticket?" has no unambiguous accessible query. The
+                  alternative is a test that knows which of the two matches
+                  come first, which is a test that breaks on a layout change.
+                */}
+                <Box component="span" data-testid="incident-status">
+                  <StatusChip status={ticket.status} />
+                </Box>
                 <PriorityChip priority={ticket.priority} />
                 {ticket.is_escalated ? <EscalatedFlag reason={ticket.escalation_reason} /> : null}
               </Box>
@@ -231,12 +241,9 @@ export function IncidentDetailPage() {
                     zIndex: 1100,
                     p: 1.5,
                     borderRadius: 0,
-                    display: 'flex',
-                    gap: 1,
-                    overflowX: 'auto',
                   }}
                 >
-                  <ActionsCard
+                  <ActionsBar
                     incident={ticket}
                     transitions={transitions.data ?? []}
                     user={user}
