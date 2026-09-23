@@ -18,9 +18,16 @@ written after the work, this file is written after the commit.
 committed; passes 2 and 3 are `seed_demo` and the dashboards.
 
 **M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
-11, computed with SQL aggregates. 661 backend tests (609 + 52 new), ruff check
+11, computed with SQL aggregates. 664 backend tests (609 + 55 new), ruff check
 and ruff format clean. Every new test asserts a number worked out by hand from
 the fixture table at the top of `tests/integration/test_reports.py`.
+
+**Corrected after pass 1 ([D9](DECISION-LOG.md)):** `/reports/blocked-escalated`
+and `/reports/me` are no longer window-scoped. They answer present-tense
+questions, so a ticket blocked or opened long before the default thirty days
+must still appear; they now filter on `building_id` only, and carry a `scope`
+rather than a `window` in the response. The other six reports are unchanged.
+D5 and D7 are amended in place to point at D9.
 
 **M6 verified independently:** 609 backend tests, 211 frontend tests,
 12 Playwright tests (2 deliberate viewport skips), ruff check + format clean,

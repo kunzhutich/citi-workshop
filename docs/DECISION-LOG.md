@@ -148,6 +148,12 @@ clauses from the two functions that build it, plus the affected assertions in
 ten-minute change — but it should be a deliberate exception, documented on the
 endpoint, not a quiet inconsistency.
 
+> **Superseded in part by D9 (2026-09-23).** The consequence flagged above is
+> exactly what went wrong, and it was reversed. `/reports/blocked-escalated`
+> is no longer window-scoped. Everything else in D5 stands: on the six reports
+> that cover a *period*, the window still filters `created_at`, with the same
+> three named exceptions.
+
 ## D6 — How old is a blocked ticket?
 
 **Question.** Section 11 asks for "BLOCKED tickets grouped by
@@ -205,6 +211,12 @@ February that is still open. Consistency won the argument; if the home screens
 in M7's third pass want all-time counts, they should pass a wide `from` rather
 than the endpoint growing a special case.
 
+> **Superseded in part by D9 (2026-09-23).** That is what happened, and the
+> proposed workaround was wrong: making every caller remember to pass a wide
+> `from` is a bug waiting for the one caller who forgets. `/reports/me` is no
+> longer window-scoped. The rest of D7 stands: `reported` always, `assigned`
+> only for engineers, no user parameter, and `building_id` still applies.
+
 ## D8 — Smaller shapes, recorded so they are not mistaken for accidents
 
 - **Durations are hours, rounded to two decimals, and `NULL` when the population
@@ -223,3 +235,80 @@ than the endpoint growing a special case.
 - **`building_id` is not validated.** An id that matches no building returns
   zeroes rather than a 404. It costs a query per report to do otherwise and the
   only caller is our own dashboard, which picks from a list.
+
+## D9 — Two reports were answering a present-tense question with a period
+
+**Question.** D5 chose one rule — the `from`/`to` window filters `created_at` on
+every report — and D7 applied it to `/reports/me` along with everything else.
+Both entries flagged, in writing, the case that would break it. Does that case
+break it?
+
+**Finding.** It does, on two endpoints, and both were in the flagged list.
+
+1. **`/reports/blocked-escalated`.** The brief's business question is "Which
+   incidents are escalated or blocked **and why?**" — present tense. BUILD-PLAN
+   section 11 asks for "BLOCKED tickets grouped by `blocked_reason_type` **with
+   age**", and an age is only worth reporting if the old ones can appear. Under
+   D5 an incident blocked ninety days ago and still blocked was missing from the
+   default thirty-day view. That is the single most important row in the report:
+   nobody opens a blocked-work queue to find out about the tickets that got
+   blocked this week.
+2. **`/reports/me`.** The tiles it feeds are Open, In Progress, Blocked and
+   Awaiting your confirmation. Those are statuses, not events — "you have one
+   open ticket" is a claim about now. Under D7 an employee's ticket from sixty
+   days ago that was still open was silently absent from their own home screen,
+   and the person best placed to notice the omission is the only person who
+   cannot see the query.
+
+D7's proposed workaround — have the home screens pass a wide `from` — makes the
+correctness of a home screen depend on every caller remembering to defeat a
+filter. The first caller that forgets ships the bug, and it fails quietly.
+
+**Chosen. The rule is now stated in two halves:**
+
+> **A report about *current state* is not window-scoped. A report about
+> *activity during a period* is.**
+
+`/reports/blocked-escalated` and `/reports/me` are the current-state reports.
+They take **no** `from`/`to` — they do not accept the parameters at all, rather
+than accepting a period and ignoring it — and they filter on `building_id`
+only. `building_id` survives because it is a *scope* filter, not a *time*
+filter: it narrows which tickets are in view, not when they happened.
+
+The other six are unchanged and remain period reports: `/reports/summary`
+(including the created-versus-closed daily series), `/reports/categories`,
+`/reports/locations`, `/reports/response-times`, `/reports/engineer-workload`
+(`resolved_in_period` — its active counts were already a live snapshot under
+D5's third exception) and `/reports/communication`. Every median response time
+is genuinely about activity in a period and stays that way.
+
+**Why the response shape changed too.** `BlockedEscalatedReport` and `MyReport`
+used to echo a `window`. A response that reports a period it did not apply is
+worse than one that reports nothing, because a dashboard will happily label a
+chart with it. They now carry a `ReportScope` instead — `as_of` and
+`building_id` — which says exactly what was and was not filtered. The OpenAPI
+document matches: those two routes no longer declare `from`/`to`, so the
+contract cannot imply a windowing that is not happening.
+
+**What this costs.** The one-rule-stated-once property D5 was defending. It is
+now two rules, and a reader has to know which kind of report they are looking
+at. That is acceptable because the distinction is not arbitrary — it follows
+from the tense of the business question, it is visible in the response (a
+`window` or a `scope`), and it is enforced by two different dependencies in
+`app/routers/reports.py` rather than by remembering. A dashboard can still
+explain itself to the person reading it, which was D5's real requirement.
+
+**Where it is written down.** `_window_clauses()` (period) and `_scope_clauses()`
+(current state) in `app/repositories/reports.py`, one function each, and
+`build_window()` / `build_scope()` in `app/services/reporting.py`.
+
+**Regression tests.** `tests/integration/test_reports.py`, one per endpoint,
+both of which fail against the old code:
+`test_blocked_escalated_shows_a_ticket_blocked_long_before_the_window` (an
+incident created 90 days ago and still BLOCKED appears, with a 2160-hour age)
+and `test_me_counts_a_ticket_reported_long_before_the_window` (a ticket reported
+60 days ago and still OPEN is counted). Both deliberately still send the
+thirty-day window in the query string, because a dashboard with a period picker
+will, and it must make no difference.
+
+**Reversible.** Yes, symmetrically with D5: `_scope_clauses()` is one function.

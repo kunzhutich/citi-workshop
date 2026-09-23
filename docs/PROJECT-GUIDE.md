@@ -4091,7 +4091,7 @@ BUILD-PLAN section 11 lists eight business questions and one endpoint each. All 
 exist, all eight are computed by PostgreSQL rather than by Python, and all eight are
 tested against a fixture world small enough to check by hand.
 
-**Verified against local PostgreSQL only.** 661 backend tests (up from 609), ruff check
+**Verified against local PostgreSQL only.** 664 backend tests (up from 609), ruff check
 and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
 that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
@@ -4099,14 +4099,14 @@ that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.m
 
 | File | Responsibility |
 | --- | --- |
-| `app/schemas/report.py` | The window model and one response model per report. Also the three tuning constants: `DEFAULT_WINDOW_DAYS`, `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT`. |
+| `app/schemas/report.py` | The window model, the scope model and one response model per report. Also the three tuning constants: `DEFAULT_WINDOW_DAYS`, `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT`. |
 | `app/repositories/reports.py` | Every aggregate, as SQL. Nothing else in the application issues an aggregate over incidents. |
-| `app/services/reporting.py` | Resolves and validates the window; maps aggregate rows onto response models; nests subcategories under their group. No arithmetic. |
-| `app/routers/reports.py` | The eight endpoints, the three shared query parameters, and the admin-only/self split. |
+| `app/services/reporting.py` | Resolves and validates the window (or, for the two current-state reports, the scope); maps aggregate rows onto response models; nests subcategories under their group. No arithmetic. |
+| `app/routers/reports.py` | The eight endpoints, the two query-parameter dependencies (period and scope), and the admin-only/self split. |
 | `app/models/incident.py` | Gained a module-level `format_reference(ticket_number)`; the `Incident.reference` property now calls it. |
 | `app/main.py` | Mounts `reports.router` under `/api/v1`. |
 | `tests/factories.py` | `make_incident` gained `created_at`, `escalated_at` and `blocked_reason_type`; new `make_event`. |
-| `tests/integration/test_reports.py` | 52 tests. The fixture table at the top of the file is the specification the assertions are read off. |
+| `tests/integration/test_reports.py` | 55 tests. The fixture table at the top of the file is the specification the assertions are read off. |
 
 The endpoints, and the question each answers:
 
@@ -4117,11 +4117,17 @@ The endpoints, and the question each answers:
 | `GET /api/v1/reports/locations` | Top 10 buildings, floors and seats | admin |
 | `GET /api/v1/reports/response-times` | Median time to assign / acknowledge / resolve, overall and per priority | admin |
 | `GET /api/v1/reports/engineer-workload` | Level, availability, live load by status, capacity used, resolved this period | admin |
-| `GET /api/v1/reports/blocked-escalated` | Blocked tickets grouped by reason with age; the escalations and their reasons | admin |
+| `GET /api/v1/reports/blocked-escalated` | What is blocked **right now**, grouped by reason with age; what is escalated right now and why | admin |
 | `GET /api/v1/reports/communication` | Share of resolved tickets whose reporter was told something first; median time to that; reopen rate | admin |
-| `GET /api/v1/reports/me` | The caller's own counts | anyone signed in |
+| `GET /api/v1/reports/me` | The caller's own counts, **as they stand now** | anyone signed in |
 
-All eight take `from`, `to` (default: the last 30 days) and an optional `building_id`.
+**Six of them cover a period** and take `from`, `to` (default: the last 30 days) and an
+optional `building_id`. Their responses echo a `window`.
+
+**Two of them describe the present** — `/reports/blocked-escalated` and `/reports/me` —
+and take `building_id` only. They declare no `from`/`to` at all, and their responses carry
+a `scope` (`as_of`, `building_id`) instead of a `window`. That split is
+[decision D9](DECISION-LOG.md), which partially reversed D5 and D7.
 
 ### 2. Why it is shaped this way
 
@@ -4186,12 +4192,40 @@ ones nobody used. A `GROUP BY` would omit them, and then the client has to decid
 a missing key means "none" or "the server forgot". Making the aggregate a row of
 `FILTER` columns rather than a grouped query is what makes this free.
 
-#### The window rule, and its one uncomfortable consequence
+#### The window rule, in two halves
 
-`from`/`to` filter `created_at` on every report, with three exceptions that name their own
-timestamp. That is [decision D5](DECISION-LOG.md), including the consequence worth
-arguing about: a ninety-day-old ticket that is still blocked does not appear in the
-default thirty-day blocked report. The rule is written down once, in `_window_clauses()`.
+> **A report about *current state* is not window-scoped. A report about *activity during a
+> period* is.**
+
+On the six period reports, `from`/`to` filter `created_at`, with three exceptions that
+name their own timestamp: the closed series in `summary.per_day` (`closed_at`),
+`engineer-workload.resolved_in_period` (`resolved_at`), and engineer-workload's active
+counts (no date filter — "how loaded is Nina" is a question about today).
+
+The two current-state reports take no period at all. `/reports/blocked-escalated` answers
+"which incidents *are* blocked or escalated, and why", and `/reports/me` feeds home tiles
+that read Open / In Progress / Blocked / Awaiting your confirmation. Both are present
+tense. A thirty-day window on the first hides the ticket that has been blocked since June —
+the one row an admin opens that report to find — and on the second it silently drops an
+employee's own ticket from February that is still open.
+
+They keep `building_id`, because that is a **scope** filter and not a **time** filter: it
+narrows which tickets are in view, not when they happened.
+
+This started as one rule (D5, applied to `/reports/me` by D7) and became two
+([D9](DECISION-LOG.md), which reversed both in part). The cost is that a reader has to
+know which kind of report they are looking at; three things make that cheap:
+
+* the distinction follows from the tense of the business question, not from taste;
+* the response says which it is — a `window` or a `scope`;
+* the router enforces it with two dependencies, `get_report_window` and
+  `get_report_scope`, so a route cannot quietly get the wrong one. The two current-state
+  routes do not *accept* `from`/`to`, rather than accepting them and ignoring them: a
+  parameter that is documented and silently discarded is how a dashboard ends up labelling
+  a chart with a period nobody applied.
+
+Each half is written down once — `_window_clauses()` and `_scope_clauses()` in
+`app/repositories/reports.py`.
 
 #### Where "blocked since" comes from
 
@@ -4220,8 +4254,8 @@ first time.
 
 #### `now` is a parameter, never `now()`
 
-Ages are measured against an instant the caller passes in, defaulting to
-`app.clock.utc_now()`. That is the same convention M4 established for the reopen window,
+Ages are measured against an instant the caller passes in — `scope.as_of`, defaulting to
+`app.clock.utc_now()` in `build_scope`. That is the same convention M4 established for the reopen window,
 and it is what lets `test_blocked_age_is_measured_from_when_the_ticket_became_blocked`
 assert `96.0` exactly rather than approximately.
 
@@ -4270,8 +4304,11 @@ survive the trip.
 
 | Rule | File |
 | --- | --- |
-| What `from`/`to` filter, and the building filter | `app/repositories/reports.py` → `_window_clauses` |
+| What `from`/`to` filter, and the building filter, on a period report | `app/repositories/reports.py` → `_window_clauses` |
+| What a current-state report filters — the building, and nothing else | `app/repositories/reports.py` → `_scope_clauses` |
+| Which reports are period and which are current state | `app/routers/reports.py` → `ReportPeriod` vs `ReportScopeDep` |
 | Default period, UTC coercion, `from <= to` | `app/services/reporting.py` → `build_window` |
+| The instant a current-state snapshot describes | `app/services/reporting.py` → `build_scope` |
 | Which reports are admin-only | `app/routers/reports.py` → `dependencies=[ADMIN_ONLY]` per route |
 | Who may be an assignee (hence `/reports/me`'s shape) | `app/services/assignment.py` |
 | When a ticket became blocked | `app/repositories/reports.py` → `_blocked_since` |
@@ -4294,7 +4331,11 @@ new query.
 in the router, one response model, one test class. Follow `/reports/categories`: it is the
 shortest one that does something non-trivial.
 
-**To change what the window means** — `_window_clauses` only. See D5 before you do.
+**To change what the window means** — `_window_clauses` for the six period reports,
+`_scope_clauses` for the two current-state ones. Read D5 and D9 before you do, and note
+which side of the split the report you are changing sits on: moving a report across that
+line means swapping its dependency in the router and its echo field (`window` ↔ `scope`)
+in the response model, not just editing a `WHERE`.
 
 **To add a fixture incident** — add a row to *both* tables in the
 `tests/integration/test_reports.py` docstring, then to `_build_incidents`, then fix every
@@ -4323,6 +4364,14 @@ than in the Lambda — the same instants, different days.
 `_as_utc` attaches UTC explicitly rather than letting the comparison against a
 `timestamptz` column be resolved by the session default. Same value today; not an
 accident tomorrow.
+
+**`/reports/blocked-escalated` and `/reports/me` ignore no parameters — they do not
+accept them.** Sending `?from=...&to=...` to either is not an error (FastAPI discards
+query parameters a route did not declare) and it changes nothing. If you are debugging a
+number on one of those two and reaching for the window, that is the wrong lever: the only
+filter they have is `building_id`. Their responses carry `scope`, not `window`, so a
+client that reads `body["window"]["from"]` will `KeyError` rather than quietly label a
+chart with a period that was never applied. That is deliberate.
 
 **A window of 30 days spans 31 calendar days.** Both ends are inclusive, matching
 `GET /incidents`'s `created_from`/`created_to`. `test_summary_reports_created_and_closed_for_every_day_in_the_window`
