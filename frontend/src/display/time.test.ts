@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatDate, formatDateTime, relativeTime } from './time';
+import { formatDate, formatDateTime, formatHours, relativeTime } from './time';
 
 /**
  * `relativeTime` takes `now` as an argument rather than reading the clock, so
@@ -65,5 +65,29 @@ describe('formatDateTime and formatDate', () => {
   it('include the year, month and day', () => {
     expect(formatDate('2026-06-15T12:00:00Z')).toMatch(/2026/);
     expect(formatDateTime('2026-06-15T12:00:00Z')).toMatch(/2026/);
+  });
+});
+
+describe('formatHours', () => {
+  it('keeps a duration under a day in hours, where the precision matters', () => {
+    expect(formatHours(4.28)).toBe('4h');
+    expect(formatHours(23.4)).toBe('23h');
+  });
+
+  it('turns a longer one into days, because nobody reads 777h', () => {
+    expect(formatHours(35.39)).toBe('1d');
+    expect(formatHours(777.35)).toBe('32d');
+  });
+
+  it('renders nothing-happened as a dash, never as zero', () => {
+    // The API returns null when no ticket reached the milestone being
+    // measured. "0h" would claim it happened instantly, which is the opposite
+    // of what null means.
+    expect(formatHours(null)).toBe('—');
+    expect(formatHours(undefined)).toBe('—');
+  });
+
+  it('still says 0h for a real zero', () => {
+    expect(formatHours(0)).toBe('0h');
   });
 });

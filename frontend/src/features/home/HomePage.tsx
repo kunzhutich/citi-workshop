@@ -1,8 +1,25 @@
+import { lazy, Suspense } from 'react';
+
 import { useAuth } from '../../auth/AuthContext';
 import { FullPageProgress } from '../../components/FullPageProgress';
-import { AdminDashboardPage } from '../dashboard/AdminDashboardPage';
 import { EmployeeHomePage } from './EmployeeHomePage';
 import { EngineerHomePage } from './EngineerHomePage';
+
+/**
+ * The admin dashboard, fetched only when an admin asks for it.
+ *
+ * It is the one screen in the application that pulls in `@mui/x-charts`, and
+ * that library is roughly a third of the bundle. Everybody was paying for it:
+ * an employee reporting a broken monitor downloaded a charting engine they can
+ * never reach, because `RequireRole` keeps them off this screen entirely.
+ * Splitting here is the cheapest possible win — one import, one boundary — and
+ * the cut is along a line the permission model already draws.
+ */
+const AdminDashboardPage = lazy(() =>
+  import('../dashboard/AdminDashboardPage').then((module) => ({
+    default: module.AdminDashboardPage,
+  })),
+);
 
 /**
  * The `/` route, which is a different screen for each persona.
@@ -26,7 +43,11 @@ export function HomePage() {
   }
 
   if (user.role === 'FACILITY_ADMIN') {
-    return <AdminDashboardPage />;
+    return (
+      <Suspense fallback={<FullPageProgress label="Loading the dashboard…" />}>
+        <AdminDashboardPage />
+      </Suspense>
+    );
   }
 
   if (user.role === 'ENGINEER') {
