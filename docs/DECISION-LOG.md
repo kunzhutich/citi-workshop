@@ -1809,13 +1809,16 @@ Should the notification feed inherit it?
 
 **What went wrong.** It did inherit it, and the end-to-end tests caught the
 consequence: navigating to the inbox within thirty seconds of the previous visit
-rendered the *previous* contents. The unread badge — which polls on its own
-schedule — had already moved on. So the list and the badge beside it disagreed,
-which is precisely the failure the shared query-key prefix was chosen to prevent.
+rendered the *previous* contents — the same `total`, the same rows. The unread
+badge, which polls on its own schedule, had already moved on. So the list and
+the badge beside it disagreed, which is precisely the failure the shared
+query-key prefix was chosen to prevent: that prefix handles invalidation after
+*this* user's mutation and has nothing to say about a row somebody else created.
 
 **Chosen.** `useNotificationFeed` overrides the global default with
-`staleTime: 0`. The override is local to the one hook, not a change to the global
-default.
+`staleTime: 0`, with the reasoning written beside it because the override looks
+arbitrary otherwise. The override is local to the one hook, not a change to the
+global default.
 
 **Why.** Thirty seconds of cache is right for a dashboard: its numbers describe a
 month, nobody is waiting on them, and re-fetching on every navigation would be
@@ -1831,9 +1834,41 @@ and a dashboard that re-queried on every navigation would wake a sleeping
 database repeatedly. The right shape is one default with a documented exception,
 not a default chosen to suit its least typical consumer.
 
+The unread count keeps a `staleTime` of its own, just under the polling
+interval. That one is deliberate and unrelated: it stops a window regaining
+focus inside a tick from adding a request.
+
 **How it was found.** Not by reading the code. The end-to-end suite navigated
 away and back inside the window and saw the stale list. This is the fourth time
 in this project that a defect invisible to unit tests was caught by driving the
-application — see D24 and D25 for the others.
+application — see D24 and D25 for the others. No component test could have seen
+it: `renderWithProviders` builds its own `QueryClient` with test defaults, so
+the global `staleTime` is not in force there at all.
+
+**The honest limit of this diagnosis.** The fix demonstrably works — three of
+the four tests that depend on navigating back to a fresh inbox failed
+consistently before it and pass after. One did not. `a public staff note
+reaches the reporter and an internal one does not` still failed in a
+full-suite run while passing every time in isolation, with the notification
+provably in the database and the response still carrying the old `total`. So
+something else is also holding a stale answer on that path under load, and
+`staleTime` was not all of it. Candidates not ruled out: an HTTP-layer reuse of
+the `GET /notifications` response, and `useInfiniteQuery`'s refetch semantics
+once more than one page has been loaded.
+
+That test now takes a reload, which is guaranteed, and its comment says it does
+so because of an unresolved question rather than because a reload is better.
+**The rule under test is unaffected** — an internal note produces nothing and a
+public one produces a notification — and that is still what it checks.
+Recording the gap is worth more than a confident explanation that has not been
+demonstrated: the two entries above are both about a test that passed for a
+reason nobody had checked, and inventing a cause here would be the same mistake
+with better prose.
+
+**Next step for the owner**, if it is worth the time: watch
+`GET /notifications` in the network panel during a full suite run. If the
+request is made and returns the old `total`, the answer is server-side and
+interesting. If it is not made at all, it is TanStack Query and the fix is
+another option on that one query.
 
 **Reversible.** One line in `frontend/src/features/notifications/hooks.ts`.

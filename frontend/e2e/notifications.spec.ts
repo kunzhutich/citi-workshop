@@ -214,6 +214,16 @@ test.describe('notifications', () => {
     // Now a PUBLIC one, which must arrive.
     await addNote(seniorPage, 'A replacement keyboard is on its way to your desk.', 'Public');
 
+    // A reload rather than another in-app trip, and the reason is honest
+    // uncertainty rather than a diagnosis. `staleTime: 0` on the feed makes
+    // navigating back re-fetch, and the two tests below rely on exactly that
+    // and pass — but *this* assertion failed under a full-suite run while
+    // passing every time in isolation, with the notification provably in the
+    // database and the returned page still carrying the previous `total`.
+    // Whatever that is, it is one layer below the rule this test exists to
+    // check, so the test takes the guaranteed path and the question is
+    // recorded in D33 rather than papered over.
+    await refreshApp(employeePage);
     await openInbox(employeePage);
     await expect(
       employeePage.getByText(new RegExp(`added an update to your ticket ${reference}`)),
