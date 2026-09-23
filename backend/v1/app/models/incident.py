@@ -211,4 +211,14 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     @property
     def reference(self) -> str:
         """Return the display form of the ticket number, for example 'INC-000123'."""
-        return f"INC-{self.ticket_number:06d}"
+        return format_reference(self.ticket_number)
+
+
+def format_reference(ticket_number: int) -> str:
+    """Return the display form of a ticket number, for example 'INC-000123'.
+
+    A module-level function as well as the property above, because the reports
+    read ticket numbers out of aggregate result rows rather than out of mapped
+    objects, and the padding must not be written down in two places.
+    """
+    return f"INC-{ticket_number:06d}"
