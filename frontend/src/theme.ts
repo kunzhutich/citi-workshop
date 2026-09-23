@@ -85,7 +85,23 @@ export const theme = createTheme({
          * leave a ring behind — the reason authors used to delete focus styles
          * altogether, and the problem this pseudo-class exists to solve.
          */
-        ':focus-visible': {
+        /*
+         * `body :focus-visible`, not `:focus-visible`.
+         *
+         * Material UI's `ButtonBase` sets `outline: 0` in its own root class.
+         * A bare `:focus-visible` has the same specificity as that class
+         * (0,1,0), so which one wins comes down to stylesheet order — and
+         * Emotion injects the component's styles after `CssBaseline`'s, so
+         * Material UI won. The ring was present in the theme, absent on every
+         * button, card and navigation link in the application, and a passing
+         * axe run said nothing about it: axe does not check that focus is
+         * visible, only that things have names.
+         *
+         * It was found by tabbing to a category card and looking at the
+         * screenshot. Adding `body` costs one element to the selector and
+         * takes the specificity to (0,1,1), which beats the class.
+         */
+        'body :focus-visible': {
           outline: `3px solid ${current.palette.primary.main}`,
           outlineOffset: 2,
         },
@@ -94,7 +110,7 @@ export const theme = createTheme({
          * ring on it would be invisible. White is the only thing guaranteed to
          * contrast with the surface its controls sit on.
          */
-        '.MuiAppBar-root :focus-visible': {
+        'body .MuiAppBar-root :focus-visible': {
           outline: `3px solid ${current.palette.common.white}`,
           outlineOffset: 2,
         },
