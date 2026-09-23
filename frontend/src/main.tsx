@@ -7,6 +7,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
 import { AuthProvider } from './auth/AuthProvider';
+import { SnackbarProvider } from './components/SnackbarProvider';
 // Side-effect import: registers the @font-face rules theme.ts relies on.
 import './fonts';
 import { theme } from './theme';
@@ -30,6 +31,8 @@ if (!container) {
 
 // AuthProvider sits inside BrowserRouter because the guards it feeds are
 // routes, and outside App because every route depends on the session.
+// SnackbarProvider wraps App rather than sitting inside the shell, so a screen
+// outside the shell can confirm something too.
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
@@ -37,7 +40,9 @@ createRoot(container).render(
         <CssBaseline />
         <BrowserRouter>
           <AuthProvider>
-            <App />
+            <SnackbarProvider>
+              <App />
+            </SnackbarProvider>
           </AuthProvider>
         </BrowserRouter>
       </ThemeProvider>
