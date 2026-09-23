@@ -15,7 +15,7 @@ Nothing further is planned.
 | --- | --- |
 | **Total review time** | ~2 hours for the full worklist · **40 minutes** for the short version (§7) |
 | **Verified** | 1,219 tests pass — 825 pytest, 312 vitest, 82 Playwright |
-| **Never run** | **The AWS deployment.** Not once. See §3. |
+| **Deployed** | **Live at <https://d3jo3ezb7ss05m.cloudfront.net>** — you can review the deployed app as well as the local one. 30 of 68 cloud checks observed, 36 not. See §3. |
 | **Most likely to be broken** | The four admin screens and `/team` — see §5, pass 1 |
 
 ---
@@ -122,7 +122,22 @@ doing this pass rather than reading a test report.
 Do this first and give it fifteen minutes. Most of the ways a review goes wrong
 are already fixed here.
 
-### 2.1 Prerequisites
+> **Or skip all of it.** The app is deployed:
+> **<https://d3jo3ezb7ss05m.cloudfront.net>**. No PostgreSQL, no Python, no Node,
+> no database switch, and a **demo account picker** on the sign-in screen that
+> fills the form in one click. It carries the same 300-incident demo world as
+> local.
+>
+> **Two things to know before you do.** ⚠️ **Aurora sleeps** — load the page and
+> sign in a minute before you start, or your first screen is spinners for up to
+> fifteen seconds (and the very first request can be dropped entirely; retry
+> once). And **`henry@acme.inc` does not exist in the cloud** — the admin there is
+> `demo.admin@acme.inc`.
+>
+> §3 "Reviewing the deployed app" says which parts of the worklist are better
+> done there. Everything in §5 works against either target.
+
+### 2.1 Prerequisites *(local only)*
 
 PostgreSQL 17 or newer, Python 3.13, Node 22. No Docker, no LocalStack, no
 `docker-compose.yml` — the database runs natively and the app is two processes.
@@ -288,35 +303,93 @@ about ten seconds a switch.
 4 + 5 + 1 = 10. A skip count other than 10 is worth investigating; a skip count of
 0 means the project filter is not being applied.
 
-### Not verified
+### The AWS deployment — run, and partly verified
 
-**The AWS deployment has never run. Not once.**
+**It has run.** The application is live at
+**<https://d3jo3ezb7ss05m.cloudfront.net>**, and this section used to say the
+opposite. **You can now review the deployed app as well as the local one**, and
+for some things it is the better target — see "Reviewing the deployed app" below.
 
-Be plain about what this means. No credentials were issued during the build, so
-nothing in this application has executed in the cloud. Not the Lambda package, not
-CloudFront, not Aurora. Every cloud-only behaviour is *designed*, *configured* and
-*written down* — and entirely unproven:
+**What the deployment settled.** These were the structural risks, and all of them
+hold in the cloud:
 
-- whether the Lambda package is under the size limit
-- whether `/api/v1` survives CloudFront without the prefix being stripped
-- whether the refresh cookie's path works behind the distribution
-- whether repeatable query parameters (`status=A&status=B`) survive
-- whether the API's 404s stay 404s rather than being rewritten to 200
-- whether `CREATE EXTENSION` succeeds on Aurora
+- the participant IAM boundary permits everything `infra/` asks for
+- the Lambda package is under the size limit, and 512 MB imports the app
+- `/api/v1` survives CloudFront with the prefix **not** stripped
+- the API's errors stay errors — an unauthenticated call returns **401**, not a
+  200 serving `index.html`. That is the rubric line the one unavoidable `infra/`
+  change exists to protect, and it works.
+- `CREATE EXTENSION` succeeds on Aurora — `pgcrypto` and `citext` both, which
+  every primary key depended on
+- `JWT_SECRET` reaches the Lambda (64 characters), and `IS_LOCAL=false` applies
+  `sslmode=require`
+- the migration and seed ops-invoke paths both run; the deployed database holds
+  300 incidents, 1,813 events, 37 users and 3 buildings
+- CloudFront compression is live — 994 kB raw, 309 kB gzipped
+- SPA deep links work, and the demo accounts sign in
+
+**What the deployment found.** Two defects that **no local test could have
+caught**: a login loop ([D38](DECISION-LOG.md)) and a missing `Cache-Control`
+header ([D36](DECISION-LOG.md)). Both are fixed. This is the sixth phase in a row
+where the most valuable defect was found by looking at a running thing rather
+than by running a suite — and the first where looking *locally* would not have
+been enough either. §1's argument now has a cloud-shaped exhibit.
+
+**What it did *not* settle. This is the part to keep hold of.** **30 of the 68
+cloud-only checks carry an observation; 36 do not.** Still unproven in the cloud:
+
+- whether repeatable query parameters (`status=A&status=B`) survive the
+  distribution — and, more basically, whether **any** query string reaches the
+  Lambda. Its failure mode is a wrong answer that looks right: every filter
+  silently returning page one.
+- whether the refresh cookie's `Secure`, `SameSite` and `Path` attributes are
+  what we think
 - whether timestamps serialise as UTC from the Lambda
-- what a ~15-second Aurora cold start does to the first page load
+- whether full-text search works on Aurora's `english` configuration
+- whether the login lockout trips, and whether its 429 and `Retry-After` survive
+- whether the log lines are JSON in CloudWatch and queryable
+- whether there is a visible focus ring against the **production** CSS — the one
+  place the specificity fight is decided, and the exact defect
+  [D23](DECISION-LOG.md) caught
 
-All 68 of these are written up with the exact command and the expected result in
-[DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). **Treat the deployment as
-unknown until that list has been walked.** A local review, however thorough,
-cannot substitute for any item on it.
+Every one of the 68 is marked individually with what was observed, and the file
+ends with a prioritised **"What to walk next"**, in
+[DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). **Do not read "deployed" as
+"verified".**
 
-Also never done, and not the same as "failing":
+### Reviewing the deployed app
+
+The deployed app has the **same demo world** as local — 300 incidents, 90 days —
+so the whole worklist in §5 can be run against it. Two things make it easier than
+local, and one makes it harder.
+
+**Easier.** There is no database switch to get wrong (§2.2 is the single most
+expensive mistake in a local review, and it does not exist in the cloud), and the
+sign-in screen carries a **demo account picker**: one click fills the form, so
+switching personas costs seconds. `demo.admin@acme.inc` is the admin —
+`henry@acme.inc` is a local-only account and does **not** exist in the cloud.
+
+**Harder.** ⚠️ **Aurora sleeps.** `min_capacity = 0`, so the first request after an
+idle period waits ~15 seconds or is **dropped outright** — both have been
+observed. **Load the page and sign in a minute before you start**, or the first
+screen you look at will be three spinners and you will spend your first ten
+minutes debugging a database waking up.
+
+**Worth doing on the deployed app specifically**, because local cannot answer
+them: pass 5's focus ring (the production CSS is concatenated differently), the
+charts in pass 3 (Vite's production build tree-shakes the vendored d3
+differently from the dev server), and anything involving a filter or a
+drill-down link, since query-string forwarding is unverified.
+
+### Also never done, and not the same as "failing"
 
 - **No coverage measurement**, either side. Neither `pytest-cov` nor
   `@vitest/coverage-v8` is installed, so the rubric's 80% cannot be claimed or
   disproved ([D16](DECISION-LOG.md)).
 - **No load or performance testing.** No Artillery, no JMeter, no p95 figures.
+  The one real number now on record is `/reports/summary` answering in **0.20 s
+  warm** against the deployed stack with 300 incidents behind it — a single
+  measurement of the heaviest report, not a performance test.
 - **No screen reader.** Everything was checked with axe and with a keyboard.
   Nobody has listened to NVDA, JAWS or VoiceOver read the application. **The
   semantics are asserted; how they sound is not.** Worth half an hour if you have
@@ -676,10 +749,12 @@ cannot see, and the two viewports — which is most of the value.
 - **A defect** → it is a real one; nothing here is merged to `main` yet, so it can
   be fixed on its branch. `s1-notifications` is the tip and contains every phase.
 - **A judgement call you disagree with** → check [DECISION-LOG.md](DECISION-LOG.md)
-  first. Thirty-four decisions are recorded with the alternatives that were
+  first. Thirty-nine decisions are recorded with the alternatives that were
   rejected and why; the ones most likely to come up on a click-through are D9 and
   D14 (the two kinds of dashboard number), D21 (the 404's status code), D26 and D30
-  (notifications and polling) and D31 (what S1 deliberately does not do).
+  (notifications and polling) and D31 (what S1 deliberately does not do). If you
+  are reviewing the deployed app, add D36 and D38 (the login loop, and the wrong
+  diagnosis of it) and D39 (what deploying proved and what it cost).
 - **Something the docs got wrong** → say so. The documents were reconciled against
   the code, but reconciliation catches contradictions, not omissions.
 

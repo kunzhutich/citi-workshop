@@ -41,10 +41,14 @@ The shape of the thing: **12 tables** (five Alembic revisions, `0001`→`0005`),
 **45 paths / 65 operations** under `/api/v1` on one Lambda, **8 reports**,
 **11 workflow transitions**, **4 notification rules**.
 
-**The one thing that has never run: the AWS deployment.** No credentials were
-issued during the build. Every cloud-only check is written up with its command
-and its expected result in [`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md),
-unrun. See [D1](DECISION-LOG.md).
+~~**The one thing that has never run: the AWS deployment.**~~ **It has now run.**
+Credentials were issued after the build finished, and the application is live at
+<https://d3jo3ezb7ss05m.cloudfront.net>. **30 of the 68 cloud-only checks now
+carry an observation and 36 do not**, each marked individually in
+[`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md). See
+[the deployment section below](#the-aws-deployment-2026-09-23), [D1](DECISION-LOG.md)
+for the choice to build without credentials, and [D39](DECISION-LOG.md) for what
+deploying proved.
 
 **S1's own numbers**, for the record: backend 825 (738 + 87) · frontend 312
 (290 + 22) · e2e 82 passed (72 + 10 new), skips unchanged at 10.
@@ -454,10 +458,11 @@ Nothing is left to build.
 3. **Review** — the owner has not seen five phases of UI. That is the real
    outstanding item, and [`REVIEW-GUIDE.md`](REVIEW-GUIDE.md) is the worklist
    for it.
-4. **The AWS deploy** — the one thing in this project that has never run. No
-   credentials were issued during the build. Every step that needs them is
-   recorded, with its command and expected result, in
-   [`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md).
+4. ~~**The AWS deploy** — the one thing in this project that has never run.~~
+   **Done, 2026-09-23.** It ran, it works, and it found two defects nothing else
+   could have. What is left is the **36 checklist items the deploy did not
+   exercise** — see [the deployment section](#the-aws-deployment-2026-09-23) and
+   [`DEPLOYMENT-CHECKLIST.md`](DEPLOYMENT-CHECKLIST.md) § "What to walk next".
 
 ## Standing constraints
 
@@ -465,8 +470,9 @@ Nothing is left to build.
   `POSTGRES_TEST_NAME`; check `pgrep -af pytest` before starting.
 - Do not push to `upstream` (the Citi template). `origin` is the owner's repo.
 - Do not merge anything to `main`.
-- Infra edits are limited to the three recorded in `docs/INFRA-CHANGES.md`;
-  a fourth (`compress`) is proposed and awaiting the owner's mentor.
+- Infra edits are limited to the **four** recorded in `docs/INFRA-CHANGES.md`.
+  The fourth (`compress`) was proposed, put to the workshop organisers, approved
+  and applied — see [D37](DECISION-LOG.md). It is no longer pending.
 - Commit after every verified step, not at phase end — the VDI may stop without
   warning and uncommitted work is the only thing that cannot be recovered.
 
@@ -512,3 +518,114 @@ right; the tests were silent about it.
 in `acme_incidents_dev`. Harmless, and consistent with the e2e suite, which
 leaves its tickets behind by design. `acme_demo` — the database the demo script
 uses — is unaffected.
+
+## The AWS deployment (2026-09-23)
+
+**It ran, and it worked.** This is the section that every "never run" line in
+this file used to point at. The application is live:
+
+**<https://d3jo3ezb7ss05m.cloudfront.net>**
+
+| | |
+| --- | --- |
+| CloudFront distribution | `E2VHVFRYPQ6HKT` |
+| Lambda | `coding-workshop-v1-1bd1dfd7` |
+| Aurora cluster | `coding-workshop-rds-1bd1dfd7` — PostgreSQL **17.7**, database `codingworkshop` |
+| S3 bucket | `coding-workshop-website-1bd1dfd7` |
+| AWS account | `332991882156` — **a sandbox shared with other workshop participants** |
+| Region | `us-east-2` |
+
+### What the apply did
+
+`terraform apply` reported **`10 added, 1 changed, 0 destroyed`** on its first
+run. It was an **update, not a cold start**: Aurora, CloudFront and S3 were
+already present from a partial deploy on **2026-09-22**, before the application
+existed. The additions were the **Lambda**, its **SQS dead-letter queue**,
+**`JWT_SECRET`** and the **CloudFront Function** for SPA routing.
+
+**The IAM boundary permits everything `infra/` asks for.** That was the open
+question behind every deployment worry in this project, and the answer is yes.
+
+### Confirmed working in the cloud
+
+- **`JWT_SECRET` reaches the Lambda** — 64 characters, via
+  `random_password.jwt_secret` in `infra/locals.tf`. Checklist item **2.5**.
+- **`IS_LOCAL = false`**, so `sslmode=require` is applied to Aurora.
+- **`pgcrypto` and `citext` create on Aurora.** Every primary key depended on
+  this, and it was the checklist's stated highest-risk item (**2.1**).
+- **The ops-invoke migration path works.** `{"action":"migrate"}` upgraded the
+  schema to head and seeded **5 category groups**.
+- **A 512 MB Lambda imports FastAPI, SQLAlchemy and psycopg** within its timeout.
+- **The CloudFront 404 fix works.** An unauthenticated API call returns **401**,
+  not a 200 serving `index.html`. This is the one `infra/` change with no
+  workaround, and it is the rubric line the change exists to protect.
+- **SPA deep links work** — `/tickets` returns 200.
+- **CloudFront compression is live** — the JS bundle is **994 kB raw, 309 kB
+  gzipped**.
+- **`Cache-Control: no-store` is live** on API responses, 200s and errors alike.
+- **`seed_demo` ran against Aurora** — **300 incidents, 1,813 events, 37 users,
+  3 buildings**.
+- **The demo accounts sign in to the deployed app**, and the demo account picker
+  works at **1440 px and 375 px**: one click fills the form, Sign in lands on the
+  dashboard.
+- **A warm `/reports/summary` takes 0.20 s** against the full demo dataset.
+
+### The Aurora cold start is real, and was observed
+
+`min_capacity = 0`, so the cluster sleeps. Two observations:
+
+1. The **first `migrate` invoke failed** with `server closed the connection
+   unexpectedly`. The second, immediately after, succeeded. So a first request
+   against a sleeping cluster is not merely slow — it can be **dropped**.
+2. **Six seconds after signing in**, the engineer home still showed three
+   "Loading…" spinners while Aurora woke.
+
+This was predicted in the checklist and is now confirmed.
+
+**The mitigation for a demonstration is to load the page about a minute
+beforehand.** Raising `min_capacity` to 0.5 would also work, but it costs money
+continuously on a shared sandbox account and deviates from the scaffold's
+default, so it was declined. `docs/DEMO-SCRIPT.md` carries the warning where
+somebody running a demo will actually see it.
+
+### Two bugs found by deploying, and only by deploying
+
+Both are fixed and both are recorded:
+
+- **[D38](DECISION-LOG.md#d38--correcting-d36-the-login-loop-was-a-redirect-not-a-cache)**
+  — a login loop between the change-password screen and the sign-in screen, which
+  could only appear once deployed. Found by walking checklist item **5.5**.
+- **[D36](DECISION-LOG.md#d36--the-deployed-app-could-not-be-signed-into-and-only-the-deployed-app)**
+  — a missing `Cache-Control` header on every API response. Found while chasing
+  D38, and kept on its own merits.
+
+Neither could appear locally: the Vite dev proxy does not cache, and a redirect
+loop needs a real session revocation behind a real distribution. See
+[D39](DECISION-LOG.md) for what the deployment cost and what it bought.
+
+### What this does *not* claim
+
+**30 of the 68 checklist items carry a cloud observation — 16 verified, 14
+partly. 36 do not.** The deployment proved the structural risks and left most of
+the per-endpoint behavioural checks untouched: query-string forwarding through
+the distribution (**3.2**, whose failure looks like success), the refresh
+cookie's attributes, full-text search on Aurora, the lockout and its 429, JSON
+logs in CloudWatch, and the focus ring against the production CSS.
+
+`DEPLOYMENT-CHECKLIST.md` marks every item individually and ends with a
+**"What to walk next"** list. Do not read "deployed" as "verified".
+
+### Standing facts worth not rediscovering
+
+- The deployed database is **deliberately seeded with demo data**. `seed_demo`
+  refuses to run deployed unless the payload carries
+  `"i_understand_this_publishes_demo_credentials": true`; that flag was passed
+  once, knowingly. The consequence is 37 accounts sharing one password that is
+  published in this repository. There is **no `unseed_demo`** — the way back is
+  to drop and recreate the database.
+- **`henry@acme.inc` does not exist in the cloud.** It is a local
+  `acme_incidents_dev` account that pre-dates the demo seed. The deployed admin
+  is `demo.admin@acme.inc`.
+- Do not point the Playwright suite at the deployed URL casually: it creates
+  accounts and tickets in whatever database it is given and leaves the tickets
+  behind. That is how `acme_demo` came to hold 318 incidents rather than 300.

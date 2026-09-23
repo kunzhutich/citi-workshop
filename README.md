@@ -15,10 +15,25 @@ that section for what is ours and what is the template's.
 **S6** (hardening — accessibility, error boundaries, a real 404, login lockout, structured
 logging) and **S1** (in-app notifications). All of it is verified locally; no further
 features are planned.
-**The application has never been deployed to AWS** — no credentials were issued for this
-run. Everything that needs the cloud is written down, with the exact command and the
-expected result, in [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
-See [Known limitations](#known-limitations).
+
+**🚀 Deployed to AWS and live: <https://d3jo3ezb7ss05m.cloudfront.net>** *(2026-09-23)*
+
+The sign-in screen carries a **demo account picker** — one click fills the form, so you
+can see all three personas without typing. The deployed database holds the same 90-day
+demo world as local: 300 incidents, 37 users, 3 buildings.
+
+⚠️ **Load the page about a minute before you need it.** Aurora Serverless v2 runs at
+`min_capacity = 0` and sleeps when idle; the first request after a quiet period waits for
+it to wake, and can be dropped outright. This is the cluster waking, not a fault. See
+[Known limitations](#known-limitations).
+
+**What is and is not proven in the cloud.** Deploying verified the things that would have
+stopped it dead — the IAM boundary, the Lambda package, `CREATE EXTENSION` on Aurora,
+`JWT_SECRET`, the CloudFront 404 fix, the migration path — and it found **two defects that
+no local test could have found** (D36 and D38). It did not walk every endpoint.
+**30 of the 68 cloud-only checks now carry an observation and 36 do not**, each marked
+individually with what was seen, in
+[docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
 
 | | |
 | --- | --- |
@@ -97,7 +112,20 @@ that makes the tables make sense, is [PROJECT-GUIDE Part I](./docs/PROJECT-GUIDE
 
 ## Architecture
 
-### Deployed (AWS) — designed and configured, not yet verified
+### Deployed (AWS) — live at <https://d3jo3ezb7ss05m.cloudfront.net>
+
+| | |
+| --- | --- |
+| CloudFront distribution | `E2VHVFRYPQ6HKT` |
+| Lambda | `coding-workshop-v1-1bd1dfd7` |
+| Aurora cluster | `coding-workshop-rds-1bd1dfd7` — PostgreSQL 17.7, database `codingworkshop` |
+| S3 bucket | `coding-workshop-website-1bd1dfd7` |
+| Account / region | `332991882156` (a sandbox shared with other workshop participants) · `us-east-2` |
+
+`terraform apply` reported **10 added, 1 changed, 0 destroyed**. Aurora, CloudFront and S3
+already existed from a partial deploy on 2026-09-22, before the application did; the
+Lambda, its SQS dead-letter queue, `JWT_SECRET` and the CloudFront Function were the
+additions. The participant IAM boundary permits everything `infra/` asks for.
 
 ```mermaid
 graph TD
@@ -152,12 +180,21 @@ graph TD
 | TLS to the database | none | `sslmode=require` |
 | Refresh cookie | `Secure=false` (HTTP) | `Secure=true` |
 | Migrations | `handler({"action": "migrate"})` in-process | `aws lambda invoke` with the same payload |
-| `seed_demo` | allowed | **refused** — `_op_seed_demo` checks `settings.is_local` |
+| `seed_demo` | allowed | refused **unless** the payload carries `"i_understand_this_publishes_demo_credentials": true` — `_op_seed_demo` checks `settings.is_local` first |
 | Config source | `backend/v1/.env` (gitignored) | env vars injected by `infra/locals.tf` |
 
 The single switch is `IS_LOCAL`. It drives `sslmode`, the cookie's `Secure` flag, the
 refusal to start with a weak `JWT_SECRET`, and the `seed_demo` guard — one answer in the
-codebase to "is this production", not four.
+codebase to "is this production", not four. It is confirmed to arrive as `"false"` in the
+deployed Lambda, which is what makes `sslmode=require` apply.
+
+⚠️ **The deployed database is deliberately seeded with demo data.** `seed_demo` refuses to
+run deployed unless the caller passes an explicit, deliberately verbose flag; that flag
+was passed once, knowingly, so that the deployed application has something to show. The
+consequence is that the deployed database holds **37 accounts sharing one password that is
+published in this repository**. That is acceptable only because this is a throwaway
+sandbox deployment of a workshop submission holding nothing real, and it is the first
+thing that would have to change if it were not. There is no `unseed_demo`.
 
 The paths are identical on purpose: `infra/cloudfront.tf` forwards `/api/v1*` to the
 Lambda **without stripping the prefix**, so the application owns the whole path in both
@@ -563,12 +600,15 @@ Stated plainly, because the rubric asks for coverage figures this project does n
    Aurora's cold start (~15 s from 0 ACU) is documented rather than measured.
 3. **End-to-end tests do not run in CI.** They need a browser, a database and both servers;
    the CI job stops at `vite build`. They are run locally, by hand, per phase.
-4. **Nothing has been verified against AWS.** Every cloud-only behaviour — Lambda package
-   size, the `/api/v1` prefix surviving CloudFront, the refresh cookie's path, repeatable
-   query parameters through the distribution, error codes not being rewritten to 200,
-   Aurora's `CREATE EXTENSION`, timestamp serialisation — is written up with its exact
-   command and expected result in
-   [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md), unrun.
+4. **AWS is partly verified — 30 of 68 checks, not all of them.** The application is
+   deployed and working, and the structural risks are settled: the Lambda package fits,
+   the `/api/v1` prefix survives CloudFront, Aurora's `CREATE EXTENSION` succeeds,
+   `JWT_SECRET` arrives, API errors are not rewritten to 200, and the migration and seed
+   paths both run. **Still unverified in the cloud:** query-string forwarding through the
+   distribution, the refresh cookie's attributes and path, timestamp serialisation,
+   full-text search on Aurora, the lockout and its 429, JSON logs in CloudWatch, and the
+   focus ring against the production CSS. Every one is marked individually, with what was
+   observed, in [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
 5. **Four admin screens have no component tests.** Vitest covers 33 files, none of them
    under `features/facilities`, `features/categories`, `features/users` or
    `features/engineers` (beyond `sortForAssignment`). Their APIs are covered by backend
@@ -588,8 +628,8 @@ Stated plainly, because the rubric asks for coverage figures this project does n
 
 ## Trade-offs and decisions
 
-Thirty-four decisions are recorded with their alternatives in
-[docs/DECISION-LOG.md](./docs/DECISION-LOG.md); three infrastructure changes in
+Thirty-nine decisions are recorded with their alternatives in
+[docs/DECISION-LOG.md](./docs/DECISION-LOG.md); four infrastructure changes in
 [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:
 
@@ -681,15 +721,18 @@ a world that could not exist. Instead each incident is given a full intended pat
 drawn duration per hop, and the walk stops at `now`; status falls out of age. The price is
 that the status mix cannot be dialled directly.
 
-**The three `infra/` edits, and why they are the only ones**
+**The four `infra/` edits, and why they are the only ones**
 ([docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md)). The participant IAM role cannot create a
 VPC, subnets or an API Gateway, so this project deliberately authors no infrastructure. The
 one change with no workaround: the scaffold maps **every** 404 to a 200 serving
 `/index.html`, distribution-wide, which would rewrite the API's "incident not found" into
 an HTML page and directly contradicts the rubric. It is replaced with a CloudFront Function
-on the default behaviour only. The other two raise Lambda memory from 128 MB (too small to
-import FastAPI + SQLAlchemy) to 512 MB, and generate `JWT_SECRET` with Terraform so it is
-never committed.
+on the default behaviour only — **and the deployment confirmed it works**: an
+unauthenticated API call returns 401, not a page of HTML, while `/tickets` still returns
+200. The other three raise Lambda memory from 128 MB (too small to import FastAPI +
+SQLAlchemy) to 512 MB, generate `JWT_SECRET` with Terraform so it is never committed, and
+enable CloudFront compression — the last approved by the workshop organisers and now
+measured at **994 kB raw against 309 kB gzipped** on the deployed bundle.
 
 **Stacked branches, nothing merged to `main`.** Each phase branches off the previous one
 and waits for review, so `main` stays a known-good state and rejecting a phase rebases the
@@ -697,11 +740,26 @@ ones above it rather than requiring a revert ([D3](./docs/DECISION-LOG.md)).
 
 ## Known limitations
 
-**Not deployed.** No AWS credentials were issued for this build, so nothing above has run
-in the cloud — see [Testing → Known gaps](#known-gaps) and
-[docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md), which lists every cloud-only
-check with its command and expected output. [D1](./docs/DECISION-LOG.md) records the choice
-to do the rest of M8 anyway.
+**The deployed app sleeps, and waking it takes time.** Aurora Serverless v2 runs at
+`min_capacity = 0`, so the cluster shuts down when idle. The first request after a quiet
+period either waits roughly fifteen seconds or is **dropped outright** — both were
+observed. **The mitigation is to load the page about a minute before you need it.**
+Raising `min_capacity` to 0.5 would remove the wait but bills continuously on a shared
+sandbox account, so it was declined. If you open the live URL cold, the first screen will
+sit on spinners; that is the database waking, not a fault.
+
+**The deployment is verified in part, not in full.** 30 of the 68 cloud-only checks now
+carry an observation; 36 do not. See [Testing → Known gaps](#known-gaps) and
+[docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md), where every item is marked
+with what was seen. [D1](./docs/DECISION-LOG.md) records the choice to build the rest of M8
+before credentials existed; [D39](./docs/DECISION-LOG.md) records what deploying then
+proved, and the two defects it found that nothing else could have.
+
+**The deployed database carries published credentials.** 37 demo accounts share one
+password that is in this repository, put there deliberately so the live URL has something
+to demonstrate. Fine for a throwaway sandbox; not a pattern to copy. See
+`frontend/src/features/auth/demoAccounts.ts`, which says the same thing next to the
+credentials themselves.
 
 Scope decisions, all deliberate:
 

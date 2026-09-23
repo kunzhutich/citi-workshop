@@ -7,9 +7,15 @@ Written to be **read aloud while clicking**. Lines in > blockquotes are what you
 everything else is what you do. Every account, button label and screen name below was
 checked against the code and against the `acme_demo` database on 2026-09-23.
 
-Total: **about 8 minutes** if you read every line, plus about **3 minutes of setup you do
-before anybody is watching**. Do the setup. Half the ways this demo can go wrong are
-already fixed by it.
+Total: **about 8 minutes** if you read every line, plus **setup you do before anybody is
+watching** — about 3 minutes locally, or about 1 minute from the deployed URL. Do the
+setup. Half the ways this demo can go wrong are already fixed by it.
+
+**You can run this locally or against the deployed app** at
+<https://d3jo3ezb7ss05m.cloudfront.net>. The walkthrough is identical; only the setup
+differs. See **"Where are you demonstrating from"** below — and if you pick deployed,
+**read the Aurora cold-start warning in it**, because it is the one thing that will make a
+working application look broken in front of an audience.
 
 | Act | Who | Budget |
 | --- | --- | --- |
@@ -32,9 +38,113 @@ already fixed by it.
 
 ---
 
+## Where are you demonstrating from? Local or deployed
+
+**There are now two ways to run this script.** The walkthrough itself — all four acts,
+every button label, every blockquote — is **identical**. Only the setup differs.
+
+| | **Local** | **Deployed** |
+| --- | --- | --- |
+| URL | `http://localhost:3000` | **<https://d3jo3ezb7ss05m.cloudfront.net>** |
+| Point `.env` at `acme_demo` | **yes** — and restart uvicorn | **no** `.env`, nothing to switch |
+| Run uvicorn and `npm run dev` | **yes**, two terminals | **no**, nothing to run |
+| Signing in | type the email and password | **one click** — the demo account picker |
+| The admin account | `henry@acme.inc` | **`demo.admin@acme.inc`** — henry does not exist there |
+| Warm-up needed first | no | **YES — about a minute. See below.** |
+| Setup time | ~3 minutes | ~1 minute, most of it waiting for Aurora |
+
+**Which to use.** Deployed is the better demonstration — it is the real thing, on real
+infrastructure, and it removes the single most common way this demo goes wrong (pointing
+at the wrong database). Local is the safer fallback if the network is unreliable, and it
+is instant on every request.
+
+> # ⚠️ If you demonstrate from the deployed URL, read this
+>
+> **Open <https://d3jo3ezb7ss05m.cloudfront.net> and sign in about a minute before
+> anybody is watching.**
+>
+> Aurora Serverless v2 runs at `min_capacity = 0`. It **shuts down when idle**, and the
+> first request after a quiet period either waits roughly fifteen seconds or is
+> **dropped outright**. Both have been seen. Six seconds after a sign-in on a cold
+> cluster, the home screen still showed three "Loading…" spinners.
+>
+> **This will ruin a live demo if you do not know about it.** It looks exactly like a
+> broken application: you click Sign in, and nothing happens for a quarter of a minute.
+>
+> It is not a bug and there is nothing to fix. The database is waking up. Raising
+> `min_capacity` to 0.5 would remove the wait, but it bills continuously on a shared
+> sandbox account, so it was deliberately not done.
+>
+> **The fix is a minute of your time.** Load the page, sign in, click through to a ticket
+> list, and leave the tab open. Then start talking. If the cluster has gone back to sleep
+> by the time you begin, warm it again — it sleeps after a period of idleness, not on a
+> timer you can predict.
+
+### Demonstrating from the deployed URL
+
+**1. Warm it up.** See the box above. This is the step people skip.
+
+**2. There is no setup.** No `.env` to edit, no `POSTGRES_NAME` to check, no uvicorn to
+restart, no `npm run dev`. The database switch that "Before you start" spends a page on is
+a purely local concern — **the entire "1. Point the API at the demo database" section
+below does not apply to you.** The deployed app has one database and it is already the
+demo world: 300 incidents, 1,813 events, 37 users, 3 buildings, seeded straight into
+Aurora.
+
+**3. Sign in with the demo account picker.** The deployed sign-in screen lists the seeded
+accounts, grouped by persona and — for engineers — by level, because what an engineer may
+do depends on it. **One click fills the form**; press Sign in. No typing, no passwords on
+screen, no "let me just check that email address". It works at 1440 px and at 375 px.
+
+The picker is `frontend/src/features/auth/DemoAccountPicker.tsx`, reading
+`demoAccounts.ts`. Every account it lists uses `AcmeDemo2026!`.
+
+**4. You still need three browser profiles.** The refresh cookie now lives on the
+CloudFront domain rather than `localhost:3000`, but the rule is unchanged: two windows of
+one browser profile share one session. See "2. Three signed-in browsers, not one" below —
+all of it still applies.
+
+**5. The cast is the same, with one substitution.**
+
+| Role | Local | Deployed |
+| --- | --- | --- |
+| Employee | Eve Carter — `eve.carter@acme.inc` | same, **or** pick `amara.obi@acme.inc` from the picker |
+| Engineer | Nina Alvarez — `nina.alvarez@acme.inc` | same (SENIOR, Building & Facilities) |
+| Admin | Henry — `henry@acme.inc` / `AcmeLocalDev2026!!` | **`demo.admin@acme.inc` / `AcmeDemo2026!`** |
+
+**`henry@acme.inc` does not exist in the cloud.** It is a local `acme_incidents_dev`
+account that pre-dates the demo seed, and `seed_demo` does not create it. Use
+`demo.admin@acme.inc` (Ada Whitfield) — it is a `FACILITY_ADMIN`, it is on the picker, and
+it will not stop you with a password-change screen. **The two-exclamation-marks warning
+below is a local problem you no longer have.**
+
+Eve Carter and Nina Alvarez both exist in the deployed database — they are
+`EMPLOYEE_NAMES[0]` and the first entry in `ENGINEER_SEEDS` in
+`backend/v1/app/seed/demo.py` — so the script's named cast works as written.
+
+**6. What is genuinely different once you are in.** Almost nothing. The same screens, the
+same buttons, the same workflow. Two things to expect:
+
+- **A pause on the first request of any kind after an idle spell.** That is the cold
+  start again. If it happens mid-demo, say "the database scales to zero when nobody is
+  using it, so it is waking up" — which is true, and is a better story than pretending it
+  did not happen.
+- **Tickets you create are real and permanent**, exactly as locally. Run the demo twice
+  and there are two. There is no reset.
+
+**7. Afterwards: nothing to undo.** No `.env` to put back, no servers to stop. The
+"Afterwards" section at the end of this file is local-only.
+
+---
+
 ## Before you start
 
-### 1. Point the API at the demo database
+> **Demonstrating from the deployed URL?** Sections 1 and 4 below are local-only — you
+> have no `.env` and no `localhost`. Section 2 (three browsers) and section 3 (the cast,
+> with `demo.admin@acme.inc` for Henry) still apply. See "Demonstrating from the deployed
+> URL" above.
+
+### 1. Point the API at the demo database *(local only)*
 
 The dashboards are only worth showing against 90 days of data. That lives in a separate
 database, `acme_demo` — `acme_incidents_dev` is nearly empty by comparison (121 incidents
@@ -124,8 +234,12 @@ Every other seeded account — 6 engineers, 30 employees — uses `AcmeDemo2026!
 
 Check these before the audience arrives, because each one is a demo-killer:
 
-- `curl -s localhost:3000/api/v1/health` returns `"healthy"` — proves Vite, the proxy and
-  uvicorn are all up and the database is reachable.
+- **Local:** `curl -s localhost:3000/api/v1/health` returns `"healthy"` — proves Vite, the
+  proxy and uvicorn are all up and the database is reachable.
+- **Deployed:** `curl -s https://d3jo3ezb7ss05m.cloudfront.net/api/v1/health` — and note
+  that this **doubles as your warm-up**. If it takes fifteen seconds, that is Aurora
+  waking and you have just saved your first minute. Run it twice; the second should be
+  fast.
 - Sign in as Nina and confirm her home screen's **"Unassigned in your specialties"**
   section is not empty (it should list Building & Facilities tickets).
 - Open Henry's **Dashboard** and check the numbers are not all zero. If the "Reported in
@@ -370,7 +484,9 @@ Then click any KPI tile, for example **Blocked**.
 | **"Start work"** is missing | The ticket has no assignee yet; it is a guard, not a bug | Pick it up first |
 | **"Confirm fixed"** is missing for Eve | Only the reporter sees it, and only while the ticket is RESOLVED | Check you are in Eve's window, and that Nina actually resolved rather than closed |
 | Eve's screen has not changed | The client caches; her window has not refetched | Reload the page |
-| A first request hangs for ~15 seconds | **Only in the cloud**: Aurora Serverless v2 runs at `min_capacity = 0` and takes about 15 s to wake from idle. There is no local equivalent | Warm it with one request a minute before you start, and never open a cloud demo cold |
+| A first request hangs for ~15 seconds, **or fails outright** | **Only in the cloud**, and **confirmed on the deployed stack, 2026-09-23**: Aurora Serverless v2 runs at `min_capacity = 0`. A first request after idle waits ~15 s **or is dropped** — a `migrate` invoke failed with `server closed the connection unexpectedly` and succeeded on the retry. There is no local equivalent | **Retry once.** Then warm it with one request a minute before you start, and never open a cloud demo cold |
+| Spinners on the deployed home screen for several seconds after sign-in | Same cause. Six seconds after a cold sign-in, three "Loading…" spinners were still up while Aurora woke | Wait. Say "the database scales to zero when idle, so it is waking up" — it is true and it is a better line than silence |
+| Sign-in refused for `henry@acme.inc` **on the deployed URL** | Henry is a local `acme_incidents_dev` account. `seed_demo` does not create him, so **he does not exist in the cloud** | Use `demo.admin@acme.inc` / `AcmeDemo2026!`, or just click it on the demo account picker |
 
 ### What you will see that is not in the script
 
@@ -392,12 +508,16 @@ Then click any KPI tile, for example **Blocked**.
   over 24 h 26, verified 2026-09-23). "Right now" figures are relative to today, so a week
   later they will differ. Say "about twenty" and you will never be wrong.
 
-### Afterwards
+### Afterwards *(local only)*
 
 ```sh
 # backend/v1/.env
 POSTGRES_NAME=acme_incidents_dev   # and restart uvicorn
 ```
+
+**If you demonstrated from the deployed URL there is nothing to undo** — no `.env`, no
+servers. The ticket you created stays in the deployed database, which is expected; there
+is no reset and none is needed.
 
 ---
 
@@ -431,3 +551,6 @@ Each of these is one extra minute and shows something the main script skips.
   into a sticky bar at the bottom of the screen.
 - **The API itself** — <http://localhost:8000/api/v1/docs>. 45 paths, 65 operations, and
   `GET /incidents/{id}/allowed-transitions` is the one the frontend leans on.
+  `docs_url` is mounted unconditionally in `backend/v1/app/main.py`, so the deployed
+  equivalent is `https://d3jo3ezb7ss05m.cloudfront.net/api/v1/docs` — **not yet opened in
+  the cloud**, so try it before you promise it to an audience.
