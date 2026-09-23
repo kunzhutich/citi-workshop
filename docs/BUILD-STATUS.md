@@ -12,10 +12,19 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, before M6 review
-**Current branch:** `m6-persona-screens`
-**Phase in progress:** M6, being built in a separate Claude session (not by the
-autonomous runner). Not yet reviewed, committed by me, or pushed.
+**Last updated:** 2026-09-23, M6 verified and M7 started
+**Current branch:** `m7-dashboards-demo-data`
+**Phase in progress:** M7, pass 1 of 3 (report endpoints). Passes 2 and 3 are
+`seed_demo` and the dashboards.
+
+**M6 verified independently:** 609 backend tests, 211 frontend tests,
+12 Playwright tests (2 deliberate viewport skips), ruff check + format clean,
+eslint + tsc + vite build clean. The full ticket lifecycle completes through
+the UI at both desktop and phone widths — M6's acceptance criterion.
+
+**Blocked:** `git push` is refused by the permission classifier, so
+`m6-persona-screens` is committed locally but NOT pushed. Everything else
+continues; the owner needs to push, or grant the permission.
 
 ## Branch stack
 
@@ -30,8 +39,8 @@ reviews.
 | `m3-facilities-categories-engineers` | M3 | merged to main (PR #3) |
 | `m4-incidents-workflow` | M4 | merged to main (PR #4) |
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
-| `m6-persona-screens` | M6 | in progress, not pushed |
-| `m7-dashboards-demo-data` | M7 | not started |
+| `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
+| `m7-dashboards-demo-data` | M7 | in progress, branched off `m6` |
 | `m8-docs-and-demo` | M8 minus deploy | not started |
 | `s6-hardening` … | stretch | not started |
 
