@@ -917,3 +917,262 @@ default 30-day period, 26 unassigned for over 24 hours, 318 incidents.
 **Reversible.** Not applicable; this is verification, not design. But it is worth
 re-running before any demo, because the "right now" figures move with the clock
 and the seeded history ages out of a 30-day window.
+
+## D19 — Where a failed-login counter can live when there is no shared memory
+
+**Question.** BUILD-PLAN S6 asks for a lockout after 10 failed sign-ins per
+email per 15 minutes. Where does the counter live, what does it count, and what
+cleans it up?
+
+**Where.** A table, `login_attempts`. There was never a second option. A Lambda
+container shares no memory with the next one, so an in-process counter resets on
+every cold start and disagrees between two warm ones — ten attempts spread over
+three containers would be three counts of three or four, and the lockout would
+never fire. The database is the only shared state this system has.
+
+One row per email, not one row per attempt. A row *is* the current window: when
+it started and how many failures are in it. A credential-stuffing run against
+one address therefore costs one row rather than one row per guess. The email is
+the primary key, the way `engineer_profiles` keys on `user_id` — there is no
+identity here beyond the address, and a surrogate key would make two counters
+for one address possible. `CITEXT`, matching `users.email`, so varying the
+capitalisation cannot buy a second allowance.
+
+**What it counts, and the part that is easy to get wrong.** Attempts against
+addresses that have **no account** are counted identically, the check runs
+*before* the user lookup, and the table has **no foreign key to `users`** so that
+those rows are possible at all. A lockout that only applied to real accounts
+would answer "does this person have an account here?" — which is exactly the
+question the single generic 401 exists to refuse, and it would have undone a
+defence M2 built deliberately. `test_migration.py` asserts the absence of that
+foreign key, because it is load-bearing rather than an omission.
+
+Every rejected sign-in counts, including a correct password for a deactivated
+account. Not because that attempt was a guess, but because one rule with no
+branches is what keeps the endpoint uninformative: an attacker who could tell
+"counted" from "not counted" would have learned which of the three refusals they
+received.
+
+**The window is fixed, not sliding** — measured from the first failure in the
+run. A sliding window would let somebody keep a colleague's address locked
+indefinitely by failing one login every fourteen minutes.
+
+**Self-cleaning, because there is nowhere for a sweeper to run.** Aurora
+Serverless v2 is at `min_capacity = 0` and sleeps when idle, so a scheduled job
+would have to wake the cluster on a timer for the sole purpose of deleting rows
+nobody is reading — which costs more than the rows do. Every failed login
+deletes the windows that have expired, and the failure path is the only path
+that inserts, so the table stays the size of whatever attack is happening right
+now.
+
+**Two smaller shapes, recorded so they are not mistaken for accidents.**
+
+*The service commits on its own.* The request that increments the counter is the
+request that then raises 401, so the router never reaches its `session.commit()`
+and `get_db` closes the session without one — which would roll the count
+straight back and make the lockout unreachable. `rotate_session` set this
+precedent in M2 for its mass revocation; this is the second and last place a
+service commits for itself, and both are security responses that have to outlive
+the request that failed.
+
+*`authenticate` now takes an injectable `now`.* Every other time-windowed rule
+in this codebase does (`app/clock.py`'s docstring is about exactly this), and
+without it the expiry could only be tested by sleeping for fifteen minutes.
+
+**The cost, accepted.** Anybody can lock a colleague's address for fifteen
+minutes by failing ten logins against it. The alternative — keying on the client
+address — trades that for something worse: the Lambda Function URL is publicly
+reachable, so `X-Forwarded-For` is attacker-controlled and the lockout would
+become *bypassable* rather than merely annoying. A bypassable lockout is not a
+lockout. The window is short, clears itself and needs no administrator to undo,
+and this is written up in the README's known limitations.
+
+**Also.** Migration `0004` was applied to `acme_incidents_dev`, because the
+application cannot serve a login without that table and the Playwright suite
+runs against that database. It creates one empty table and touches nothing that
+was there. `acme_demo` was left alone and will need the same `migrate` before it
+is next used.
+
+**Reversible.** Yes. One migration, one model, one repository and about seventy
+lines in `auth_service.py`; `downgrade()` drops the table.
+
+## D20 — The first middleware, in a codebase that argues against middleware
+
+**Question.** Structured logging has to record a request id, the route, the
+status and the duration. Those are properties of a *request*, and this
+application has no middleware at all — `security/dependencies.py` and the guide
+both argue explicitly against them.
+
+**Finding: the argument was about rules, and it still holds.** What M2 rejected
+was a middleware that *pattern-matches URLs to decide who may pass*. Its reasons
+were that the gate then lives somewhere no route mentions, that the URL list
+drifts from the router, and that a new route defaults to unprotected. All three
+are about a middleware **deciding** something.
+
+**Chosen.** Add one, `RequestLogMiddleware`, and say why it is not the thing that
+was rejected.
+
+**Why.** It decides nothing. It cannot refuse a request, cannot change a
+response body, and removing it changes no behaviour — only the record of it. And
+the thing it needs is the thing a dependency cannot be: it has to wrap requests
+that fail *before any dependency runs*, which is every 404, every malformed body
+and every 500. A `Depends` on every route would also be a list that drifts from
+the router, which is the objection restated.
+
+It is a **pure ASGI** middleware rather than `BaseHTTPMiddleware`, and that is
+not a style preference: the latter runs the rest of the application in a
+separate task, which breaks the context variable carrying the request id and
+buffers the response.
+
+**The direction a context variable cannot travel.** The request id flows
+downward on a `ContextVar`, which works — a worker thread inherits a copy of the
+context, so it sees values set before it started. The *user id* has to flow
+back up, from the dependency that verified the token to the middleware that
+writes the line, and a `ContextVar.set` inside a thread is invisible to its
+caller. FastAPI runs this application's synchronous dependencies and endpoints
+in worker threads, so that direction had to be a plain dict on the ASGI scope,
+shared by reference. This is the kind of thing that appears to work in a test
+and produces empty fields in production.
+
+**Reversible.** Yes — deleting one `add_middleware` line restores the previous
+behaviour exactly.
+
+## D21 — An unknown URL gets a page, not a redirect
+
+**Question.** BUILD-PLAN S6 asks for a 404 page. What does the application do
+now?
+
+**Finding, checked in a browser before anything was changed.** `App.tsx` had
+`<Route path="*" element={<Navigate to={paths.home} replace />} />`. Signed in,
+a mistyped URL silently rewrote the address bar and landed on the dashboard;
+signed out it bounced on to the login screen. A typo, a stale bookmark and a
+dead link pasted into a chat all looked exactly like "you asked for the home
+page". A ticket **id** that does not exist was already handled properly — "That
+ticket does not exist." — so it was route-not-found specifically that was being
+swallowed.
+
+**Chosen.** A `NotFoundPage` that says so, shows the path that failed, and
+offers two places to go. Inside the shell, so the navigation is still there to
+leave by.
+
+**Why.** `NotPermittedPage` had already made this argument in M6 and its
+docstring states it: "An explanation, not a redirect: a URL someone pasted to
+you should tell you why it will not open." The catch-all was the one place that
+did not follow it. Showing the path matters more than it sounds — the most
+useful thing a person can do with a dead link is see which character of it is
+wrong.
+
+**The HTTP status really is 200, and that is not a bug we can fix here.**
+CloudFront rewrites every extension-less path to `/index.html` so that deep
+links survive a reload (`docs/INFRA-CHANGES.md` item 1), which means the server
+cannot know the path is not a route. Only the router knows, and by then the
+response has been sent. A genuine 404 needs server-side rendering, which this
+architecture deliberately does not have. What the user is told is accurate; the
+network log is a consequence of SPA routing. Nothing crawls it: the whole
+application is behind a login.
+
+**Signed out, an unknown URL still goes to the login screen**, because the
+catch-all sits inside the authenticated group. That is the right answer rather
+than a compromise — the application is not browsable without a session, and
+after signing in the bad URL resolves to the page that can explain it.
+
+**Reversible.** Yes — one route element.
+
+## D22 — What the accessibility pass covered, and three things it did not
+
+`docs/full-stack.md` lists "Accessibility (a11y) and inclusivity" as an Expected
+Capability for the frontend and nothing in M1–M8 had addressed it; that is why
+S6 went first (see [D2](#d2--which-stretch-features-in-what-order)).
+
+**Chosen: axe-core in the existing Playwright suite, at WCAG 2.1 AA, plus a
+manual keyboard pass — and the manual pass is not optional.** See
+[D23](#d23--what-tabbing-found-that-axe-did-not) for what that bought.
+
+`best-practice` rules are deliberately **not** enabled. They include opinions
+(`landmark-unique`, `region`) that are worth arguing about rather than failing a
+build over, and mixing them in makes a real violation harder to find among them.
+
+**Scanned with things open, not only at rest.** A screen's resting markup is not
+the markup a person interacts with, so the suite scans the workflow dialog open,
+the assign dialog open, the mobile navigation drawer open, the mobile filter
+sheet open, the questionnaire after each section it reveals, and the login
+screen with an error on it.
+
+**Three things not done, with reasons.**
+
+1. **`eslint-plugin-jsx-a11y` is not installed.** Its peer range stops at ESLint
+   9 and this project is on ESLint 10; installing it needs `--force` or
+   `--legacy-peer-deps`. Forcing a peer-dependency conflict into a graded
+   repository to gain a lint rule is a bad trade, and the rules it would have
+   caught — clickable non-interactive elements, unlabelled icon buttons — turned
+   out to be things this codebase does not do: every `onClick` in `src/` is on a
+   real control, and all three `IconButton`s were already labelled. Worth
+   revisiting when the plugin supports ESLint 10.
+
+2. **The questionnaire's cards are still toggle buttons, not a radio group.**
+   Each `SelectableCard` is a `ButtonBase` with `aria-pressed`, so the five
+   category cards are five tab stops where a radio group would be one with
+   arrow-key navigation. A radio group is arguably the more correct semantic.
+   It was not done because it is a rewrite of the component's interaction
+   model — roving `tabindex`, arrow handling, group labelling — and it would
+   change the accessible role every existing test and fixture queries by. The
+   cards are labelled, reachable, operable by Space and Enter, and they announce
+   their pressed state; the cost is tab stops, not access. Recorded as a known
+   gap rather than quietly left.
+
+3. **The drawer's account rows are `div role="button"`, not `<button>`.** That
+   is Material UI's `ListItemButton` default component. They are focusable,
+   operable and announced as buttons, and axe is satisfied; changing the
+   rendered element for no measurable gain risked a visual regression. Noted
+   rather than changed.
+
+**Reversible.** The scans are additive. The fixes are not, and should not be.
+
+## D23 — What tabbing found that axe did not
+
+Recorded because the count is the argument, exactly as it was for the
+screenshots in [D14](#d14--the-dashboards-five-calls-where-the-honest-answer-cost-something).
+
+**axe went green while the application had no visible focus indicator at all.**
+A global `:focus-visible` rule was added to `theme.ts` in the same session. It
+did nothing. Material UI's `ButtonBase` sets `outline: 0` in its own root class;
+a bare `:focus-visible` selector has the same specificity as a class, so the
+winner is decided by stylesheet order, and Emotion injects a component's styles
+after `CssBaseline`'s. Every button, card and navigation link in the application
+had the ring in the theme and no ring on screen.
+
+It was found by tabbing to a category card on the report form and **looking at
+the screenshot**: the focused card was pixel-identical to the four beside it.
+`body :focus-visible` is one specificity point higher and fixes it.
+
+axe has nothing to say about this, and never would: it checks that controls have
+accessible names, not that a sighted keyboard user can see where they are. A
+pass that had stopped at "axe is green" would have shipped a theme rule that did
+nothing, and the phase would have reported an accessibility pass that had made
+the application no easier to use with a keyboard.
+
+**Four more things came from driving it rather than scanning it:**
+
+1. The two smallest MUI text greys are used for things that are not disabled.
+   The questionnaire's step numbers and the helper text on a disabled field —
+   "Choose a building first", the sentence that tells you how to enable the
+   control — were the least readable text on the form at 2.64:1.
+2. The `<ul> → <a>` structure violation was in four places, and three of them
+   were on screens nothing was scanning. They were found by looking for the
+   same shape elsewhere after axe reported the first; the suite now covers those
+   screens, because a rule the suite does not exercise is a rule it does not
+   enforce.
+3. **The first fix for the chip contrast was wrong in an instructive way.**
+   `#0277bd` is 4.80:1 against white and 4.43:1 against the page background, and
+   an outlined chip sits on both. It was only caught because axe was re-run
+   after the fix rather than assumed. Both ratios are now recorded beside all
+   four colours, including the two that already passed.
+4. **A keyboard test written the obvious way tests the wrong page.** Playwright's
+   `goto` resolves while the application still shows "Restoring your session…",
+   which has no focusable element at all — and clicking the body first to
+   "reset" focus makes it worse, because clicking a non-focusable element sets
+   the browser's sequential focus navigation starting point, so Tab resumes from
+   there and skips the skip link. Both mistakes make a working application look
+   broken, which is the expensive direction to be wrong in.
+
+**Reversible.** Not applicable; this is verification.

@@ -81,7 +81,7 @@ decides everything and commits nothing. A router commits.
 > directory tree is in [the README's Code layout section](../README.md#code-layout) and
 > is not repeated here; what follows is why the layers exist rather than what is in them.
 
-**3. PostgreSQL** holds ten tables and is not merely a store. Constraints that can be
+**3. PostgreSQL** holds eleven tables and is not merely a store. Constraints that can be
 expressed in the schema are expressed there (a `BLOCKED` ticket cannot exist without a
 blocked reason), the full-text search document is a generated column the application
 cannot desynchronise, and every number on the admin dashboard is computed by an
@@ -172,13 +172,22 @@ For contrast, these were arguments we had with ourselves, not constraints:
   survives a reload.
 - **Period reports and current-state reports as two different shapes** — the decision
   that took three passes to get right (D5 → D9 → D10 → D11).
+- **Exactly one middleware, and it decides nothing.** `RequestLogMiddleware` writes one
+  JSON line per request. The standing argument against middleware in this codebase is
+  about middleware that *enforces* something by pattern-matching URLs; observability is
+  the case that argument does not cover, and it needs to wrap the requests that fail
+  before any dependency runs (D20).
+- **Standard-library JSON logging rather than a logging library**, because
+  `requirements.txt` is what Terraform installs into the Lambda package.
 
 ---
 
 ## 2. The data model as a narrative
 
-Ten tables. Read them in this order — it is neither alphabetical nor the order they were
-created in, but the order in which each one becomes necessary.
+Eleven tables. Read them in this order — it is neither alphabetical nor the order they
+were created in, but the order in which each one becomes necessary. The last two stand
+apart from the other nine: they are about *sessions* rather than about the estate, and
+neither has a foreign key into the domain.
 
 Everything below is defined in `backend/v1/app/models/`, one module per table, and
 created by `backend/v1/alembic/versions/0001_initial_schema.py`. Two conventions are
@@ -186,12 +195,14 @@ declared once in `models/base.py` and then inherited, and **the exceptions to ea
 the interesting part**:
 
 - `UUIDPrimaryKeyMixin` gives a table `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`.
-  Nine of the ten use it. The exception is `engineer_profiles`, whose primary key *is*
-  `user_id` — it is an extension of a user, not an identity of its own (§2.2).
+  Nine of the eleven use it. The two exceptions are `engineer_profiles`, whose primary
+  key *is* `user_id` — it is an extension of a user, not an identity of its own (§2.2) —
+  and `login_attempts`, keyed on the email address the attempts were against (§2.10).
 - `TimestampMixin` gives a table `created_at` and `updated_at` as UTC `timestamptz`.
-  Eight of the ten use it. The exceptions are `incident_events` and `refresh_tokens`,
-  which are written once and never modified, and say so by declaring `created_at`
-  themselves and omitting `updated_at` (§2.7, §2.9).
+  Eight of the eleven use it. The exceptions are `incident_events` and `refresh_tokens`,
+  which are written once and never modified and say so by declaring `created_at`
+  themselves while omitting `updated_at` (§2.7, §2.9), and `login_attempts`, whose two
+  timestamps are the same two facts said in domain words (§2.10).
 
 So the mixins a model does *not* inherit tell you what kind of row it is before you read
 a single column.
@@ -469,7 +480,36 @@ which a salted hash cannot do.
 This table is the only stateful part of authentication. Access tokens are stateless JWTs
 and are never stored.
 
-### 2.10 Where a new field goes
+### 2.10 `login_attempts` — the counter that must not leak
+
+`email CITEXT PRIMARY KEY`, `failure_count`, `first_failure_at`,
+`last_failure_at`. One row per address, holding the current run of consecutive
+failed sign-ins; ten of them inside fifteen minutes and the address is refused with
+a 429 until the window expires (`app/services/auth_service.py`).
+
+**The primary key is the email**, like `engineer_profiles` keying on `user_id`: there
+is no identity here beyond the address the attempts were against, and a surrogate key
+would make two counters for one address possible. `CITEXT` so that varying the
+capitalisation cannot buy a second allowance.
+
+**There is deliberately no foreign key to `users`, and that absence is the design.**
+Attempts against an address nobody holds are counted exactly like attempts against a
+real colleague's, and the lockout check runs before the user lookup — so the 429 says
+nothing about whether anybody holds that address. A foreign key would make those rows
+impossible to write, and the endpoint would go back to answering "does this person
+have an account here?". `tests/integration/test_migration.py` asserts the absence.
+
+No `TimestampMixin`: `first_failure_at` and `last_failure_at` *are* this row's created
+and updated times, and saying so in domain words is better than two generic columns
+meaning the same thing. The expiry is measured from `first_failure_at`, which is what
+makes the window **fixed** rather than sliding — a sliding window could be held open
+for ever by one failure every fourteen minutes.
+
+The table cleans itself: every failed login deletes the windows that have expired, and
+the failure path is the only path that inserts. Aurora sleeps at `min_capacity = 0`, so
+there is nowhere for a scheduled sweeper to run. See [D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory).
+
+### 2.11 Where a new field goes
 
 The point of the above is to make this predictable. The questions, in order:
 
@@ -522,6 +562,13 @@ code, not in the table. Where two layers both touch a rule, the row says which o
 | Password length policy | `app/security/passwords.py` | `MIN_PASSWORD_LENGTH`, `MAX_PASSWORD_LENGTH` — mirrored (not decided) by `app/schemas/auth.py` |
 | Password hashing, and the pre-hash that must never be removed | `app/security/passwords.py` | `BCRYPT_ROUNDS`, `hash_password`, `_prehash` |
 | A failed login costs the same time whether the account exists | `app/services/auth_service.py` | `authenticate`, `_DUMMY_HASH` |
+| How many failed sign-ins an address gets, and in how long | `app/services/auth_service.py` | `MAX_FAILED_LOGIN_ATTEMPTS` (10), `LOGIN_LOCKOUT_WINDOW` (15 min) |
+| Whether an address is locked right now, checked before the lookup | `app/services/auth_service.py` | `_require_not_locked_out` |
+| That a failure is counted **and committed**, since the request then fails | `app/services/auth_service.py` | `_record_failed_login` |
+| That the count is exact when two attempts race | `app/repositories/login_attempts.py` | `record_failure` — one `INSERT … ON CONFLICT DO UPDATE` |
+| That the window is fixed, so hammering cannot extend it | `app/repositories/login_attempts.py` | `record_failure`, `window_is_live` |
+| That the counter table cleans itself without a sweeper | `app/repositories/login_attempts.py` | `purge_expired` |
+| That an address with no account is counted identically | `app/models/login_attempt.py` | the absence of a `ForeignKey`; asserted in `tests/integration/test_migration.py` |
 | Token lifetimes | `app/security/tokens.py` | `ACCESS_TOKEN_TTL` (15 min), `REFRESH_TOKEN_TTL` (7 days) |
 | What is in an access token, and what is not trusted from it | `app/security/tokens.py` | `create_access_token`, `AccessTokenClaims` — role is re-read from the DB every request |
 | Refresh-token rotation, and what a replayed token does | `app/services/auth_service.py` | `rotate_session` — a revoked token revokes **every** session for that user |
@@ -729,7 +776,14 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | A session per request, always closed | `app/db.py` | `get_db` |
 | What time it is | `app/clock.py` | `utc_now` |
 | The error response shape | `app/errors.py` | `api_error_handler`, registered in `app/main.py` |
-| Which exception means which status | `app/errors.py` | `ValidationError` 422, `AuthenticationError` 401, `AuthorizationError` 403, `NotFoundError` 404, `ConflictError` 409 |
+| Which exception means which status | `app/errors.py` | `ValidationError` 422, `AuthenticationError` 401, `AuthorizationError` 403, `NotFoundError` 404, `ConflictError` 409, `RateLimitError` 429 |
+| How a 429 says when to come back | `app/errors.py` | `RateLimitError`, and `Retry-After` in `api_error_handler` — derived from the body, never passed separately |
+| What a log line contains, and what is never in one | `app/observability.py` | `JsonFormatter`, `SENSITIVE_KEY_PARTS`, `redact` |
+| Which id a request is logged under | `app/observability.py` | `_resolve_request_id`, `SAFE_REQUEST_ID`, `REQUEST_ID_HEADER` |
+| What one request's line says | `app/observability.py` | `RequestLogMiddleware`, `_log_request`, `_level_for` |
+| How a concrete path becomes an aggregatable route | `app/observability.py` | `_route_template` |
+| Where logging is switched on, for every environment | `app/observability.py` | `configure_logging`, called by `app/main.py::create_app` |
+| That a migration does not silence the container that ran it | `app/migrations.py` | `upgrade_to_head`; with `disable_existing_loggers=False` in `alembic/env.py` |
 | How a refused transition returns the legal ones | `app/errors.py` | `ConflictError.extra`, merged into the body |
 | What "healthy" means | `app/services/health.py` | `build_health_report`, `check_database`, `API_VERSION` |
 | Which routers are mounted | `app/main.py` | `create_app` |
@@ -808,24 +862,37 @@ And the part a table cannot express, in `app/services/incident_service.py`:
 | How a duration in hours is worded | `display/time.ts` | `formatHours` |
 | How a bare `YYYY-MM-DD` is read without losing a day | `display/time.ts` | `parseCalendarDay` |
 | How a role or level is worded for humans | `layout/roleLabels.ts` | `roleLabel`, `levelLabel`, `describeRole` |
+| What an unknown client URL does | `App.tsx` | the `path="*"` route → `features/placeholder/NotFoundPage.tsx` |
+| What a render error shows, and how to recover from it | `components/ErrorBoundary.tsx` | `ErrorBoundary`; mounted twice — in `layout/AppShell.tsx` and `main.tsx` |
+| Which render errors need a reload rather than a retry | `components/staleBundle.ts` | `isChunkLoadError` |
+| Where the keyboard's way past the navigation is | `components/SkipLink.tsx` + `layout/AppShell.tsx` | `SkipLink`, `MAIN_CONTENT_ID` |
+| Which navigation surface is which, to a screen reader | `layout/AppShell.tsx` | the two `<nav>` labels: "Main" and "Quick links" |
+| How the current page is signalled other than by colour | `layout/AppShell.tsx` | `aria-current="page"` |
+| What a stepper step says about its own state | `features/incidents/WorkflowStepper.tsx` | `describeStepState`, `aria-current="step"` |
+| What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each; `role="img"` |
+| How an async state change is announced | `components/QueryState.tsx`, `components/FullPageProgress.tsx` | `role="status"` + `aria-live="polite"` |
+| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| Which status colours were contrast-checked, and against which surfaces | `theme.ts` | `palette.info` / `warning` / `success` / `error` — both ratios are in the comment |
+| Which accessibility rules the build enforces | `e2e/accessibility.spec.ts` | `WCAG_AA` |
 | Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
 | Which typeface is actually loaded | `fonts.ts` | side-effect imports; `theme.ts` only *asks* for it |
 
-### 3.16 Two things in the code that own no rule
+### 3.16 One thing in the code that owns no rule
 
-Recorded because a reader who finds them will look for the rule they enforce, and there
-is not one. Neither is a bug; both are loose ends, and both were left alone rather than
-tidied, because this pass changed documentation only.
+Recorded because a reader who finds it will look for the rule it enforces, and there is
+not one.
 
-- **`current_user_id(user)` in `app/security/dependencies.py`** is defined and **never
-  called** — the only occurrence in the repository is its own `def`. Its docstring says
-  it exists "so routes read declaratively", which was presumably the intent before
-  `CurrentUser` made it unnecessary. Deleting it should break nothing; confirm with a
-  grep before doing so.
-- **`app/models/category.py` has an empty `if TYPE_CHECKING: pass` block.** Every other
-  model uses that block to import the types its relationship annotations reference;
-  `Category`'s relationships are self-referential and quote `"Category"`, so there is
-  nothing to import. The block is vestigial.
+- **`features/placeholder/ComingSoonPage.tsx`** is a complete component that no route
+  renders; the only occurrences of its name in the repository are its own `interface`
+  and `function`. It is a leftover from M5, when the persona screens were placeholders.
+  Deleting it should break nothing; confirm with a grep before doing so. It was left
+  alone in S6 because S6's remit named the two loose ends below and not this one, and
+  widening a cleanup on your own initiative is how unrelated changes end up in a diff.
+
+Two others were here until S6 and are now gone: `current_user_id` in
+`app/security/dependencies.py`, which was defined and never called, and an empty
+`if TYPE_CHECKING: pass` in `app/models/category.py`. M8 found both and recorded them
+rather than changing them, because M8 was a documentation pass; S6 removed them.
 ---
 
 ## 4. One request, end to end
@@ -1285,6 +1352,10 @@ current.
 | **Same-origin / CORS** | Two URLs are same-origin if scheme, host and port match. Because ours always do, no CORS configuration exists anywhere in this codebase. |
 | **XSS** | Cross-site scripting — injected JavaScript running on your page. The reason the access token is in memory and the refresh token is `HttpOnly`. |
 | **RBAC** | Role-based access control. Here: three roles, plus three engineer *levels* checked separately, plus per-ticket relationships (reporter, assignee) that are not roles at all. |
+| **Account lockout** | Refusing sign-ins for an address after too many failures. Ours is 10 per email per 15 minutes, counted in `login_attempts` — including for addresses that have no account, which is what stops the refusal revealing who holds one. |
+| **Fixed vs sliding window** | A fixed window expires a set time after it *opened*; a sliding one, a set time after the last event in it. A sliding lockout can be held open for ever by one failure every fourteen minutes, so this one is fixed. |
+| **`Retry-After`** | The HTTP header saying how long to wait before retrying. Derived here from the response body's `retry_after_seconds`, so the two cannot disagree. |
+| **Upsert (`INSERT … ON CONFLICT DO UPDATE`)** | PostgreSQL's atomic insert-or-update. In its `SET` clause a bare column name means the **existing** row's value and `excluded.x` the row being inserted. It holds a row lock for the statement, which is what makes the failure count exact under concurrency. |
 
 ### 6.5 FastAPI, Pydantic and the backend framework
 
@@ -1301,6 +1372,12 @@ current.
 | **Frozen dataclass** | `@dataclass(frozen=True)` — immutable and hashable. `Transition` is one, so a workflow row cannot be mutated at runtime. |
 | **`frozenset`** | An immutable set. `allowed_actors` is one, so set intersection answers "may this caller use this row?" directly. |
 | **Sentinel value** | A special value standing for a case a normal value cannot express — here the literal string `'unassigned'` for `?assignee_id=`, meaning "tickets nobody owns". |
+| **ASGI middleware (pure)** | A callable wrapping `(scope, receive, send)` that awaits the app below it in the *same* task, so context variables propagate. Starlette's `BaseHTTPMiddleware` runs the app in a separate task, which breaks that and buffers the response. |
+| **ASGI scope** | The per-connection dictionary an ASGI application is handed. A plain dict shared by reference, which is why the request's log context lives there: it is the one channel that survives FastAPI running a synchronous endpoint in a worker thread. |
+| **`ContextVar`** | Python's per-task/per-thread variable. A thread inherits a *copy*, so values set before a call propagate down into it and values set inside it do not propagate back out. The request id travels down on one; the user id cannot. |
+| **Structured logging** | One JSON object per line instead of prose, so a log service can index and query the fields. `filter status >= 500` works only because of it. |
+| **Request id / correlation id** | One value shared by every line written while handling one request. Ours prefers the caller's `x-request-id`, then the Lambda request id — which is what CloudWatch files the invocation under, so the two views join. |
+| **Route template** | `/api/v1/incidents/{incident_id}` rather than one path per ticket. What makes a log aggregatable. |
 
 ### 6.6 React and the frontend
 
@@ -1331,6 +1408,18 @@ current.
 | **FAB** | Floating action button — the phone's "Report an issue" shortcut. |
 | **Code splitting / lazy route** | Loading part of the bundle only when needed. The admin dashboard is lazy-loaded because it is the only screen importing `@mui/x-charts`. |
 | **`useSearchParams`** | React Router's hook for the URL query string, which is where every list filter lives so views are bookmarkable and shareable. |
+| **Error boundary** | A React class component that catches an error thrown while rendering its subtree and shows a fallback instead of unmounting the whole tree. There is no hook equivalent. It does not catch errors in event handlers, timers or rejected promises — those are handled where they happen. |
+| **Chunk-load error** | The failure of a lazily imported bundle, typically a tab left open across a deploy asking for a filename that no longer exists. The one render error where retrying is useless: only a reload fetches the new `index.html`. |
+| **axe-core** | The accessibility rule engine most automated checkers use. It runs inside the page and reports violations it can decide mechanically. `@axe-core/playwright` runs it against a Playwright page. |
+| **WCAG 2.1 AA** | The Web Content Accessibility Guidelines at their middle conformance level — the usual legal and procurement bar. Expressed to axe as the tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`. |
+| **Contrast ratio** | How different two colours are in luminance, 1:1 to 21:1. AA wants 4.5:1 for text under 24px. It must be checked against every surface the text appears on — here both `#ffffff` and the page's `#f4f6fa`. |
+| **Landmark** | An element naming a region of the page for navigation: `<header>`, `<nav>`, `<main>`. A screen reader can jump between them, which is why two must not share a name. |
+| **Skip link** | A link, first in the tab order and visually hidden until focused, that jumps past the navigation to the content. Its target needs `tabIndex={-1}` or the browser scrolls there without moving focus. |
+| **`:focus-visible`** | The CSS pseudo-class matching focus the browser thinks should be shown — keyboard yes, mouse click no. Beware: it has class-level specificity, and Material UI's `ButtonBase` sets `outline: 0` in a class of its own. |
+| **Live region** | An element a screen reader announces when its contents change, without moving focus. `aria-live="polite"` waits for a pause; `role="alert"` interrupts. Loading states are polite; failures are alerts. |
+| **Visually hidden** | Off screen but present in the accessibility tree (`@mui/utils`' `visuallyHidden`). Not `display: none`, which removes it from both — and not from the focus order either, which is what makes a skip link possible. |
+| **`aria-current`** | Marks the one item in a set that is current: `"page"` for a navigation link, `"step"` for a stepper. Often the only non-visual signal that a colour change is carrying meaning. |
+| **Sequential focus navigation starting point** | Where the browser resumes Tab from after a click. Clicking a non-focusable element sets it, so clicking the body before a keyboard test does not "reset" anything — it skips whatever precedes the click. |
 
 ### 6.7 Testing
 
@@ -6983,3 +7072,405 @@ overwrites the first.
 mode during a demo is indistinguishable from the application being broken. The demo
 script's are: health endpoint, a non-empty unassigned queue, and a dashboard whose date
 range still covers the seeded history.
+
+---
+
+## Phase S6 — Hardening: accessibility, error boundaries, 404, lockout, JSON logs
+
+*The first stretch phase, and it goes first for a reason worth stating.
+`docs/full-stack.md` lists "Accessibility (a11y) and inclusivity" as an Expected
+Capability of the frontend, and nothing in M1–M8 had addressed it. An unmet
+stated criterion outranks a new feature, however much better the new feature
+would demo — that is [D2](DECISION-LOG.md#d2--which-stretch-features-in-what-order).*
+
+### 1. What was built
+
+**Backend.**
+
+| File | Responsibility |
+| --- | --- |
+| `app/observability.py` | **New.** The JSON log formatter, the logging configuration, the request-logging middleware, and the small amount of per-request state the middleware needs. |
+| `app/models/login_attempt.py` | **New.** One row per email address: the current run of consecutive failed sign-ins. |
+| `app/repositories/login_attempts.py` | **New.** The four queries that counter needs — read, atomic increment, clear, purge. |
+| `alembic/versions/0004_login_attempts.py` | **New.** Creates `login_attempts`. Head moves `0003 → 0004`. |
+| `app/services/auth_service.py` | `authenticate` gains a lockout check before the user lookup, a failure counter on all three refusal paths, and an injectable `now`. |
+| `app/errors.py` | `RateLimitError` → 429, plus a `Retry-After` header derived from the body's `retry_after_seconds`. |
+| `app/main.py` | Calls `configure_logging()` and mounts the application's first middleware. |
+| `app/migrations.py`, `alembic/env.py` | Stop Alembic's `fileConfig` silencing the application's loggers and replacing its log handler. |
+| `app/config.py` | One new setting, `log_level`. |
+| `function.py` | Loses its lone `setLevel` line; `create_app()` owns logging now. |
+| `app/security/dependencies.py` | Binds the verified user id to the request's log context. The dead `current_user_id` helper is gone. |
+| `app/models/category.py` | The vestigial `if TYPE_CHECKING: pass` is gone. |
+| `app/services/incident_service.py` | `clear_escalation` refuses with the right status for the right reason. |
+
+**Frontend.**
+
+| File | Responsibility |
+| --- | --- |
+| `components/ErrorBoundary.tsx` | **New.** Catches a render error so one component failing does not blank the application. |
+| `components/staleBundle.ts` | **New.** Recognises a failed lazy chunk, which is the one render error where "try again" is useless. |
+| `components/SkipLink.tsx` | **New.** The first focusable element on every screen. |
+| `features/placeholder/NotFoundPage.tsx` | **New.** What an unknown URL says, replacing a silent redirect. |
+| `e2e/accessibility.spec.ts` | **New.** axe-core over every screen at both widths, plus the keyboard tests axe cannot replace. |
+| `layout/AppShell.tsx` | Real `<nav>` landmarks, `aria-current="page"`, the skip link, a route-level error boundary, and a bottom bar of links rather than buttons. |
+| `theme.ts` | A visible focus ring, a contrast-checked status palette, readable disabled helper text, `prefers-reduced-motion`. |
+| `features/incidents/WorkflowStepper.tsx` | Each step's state in words; `aria-current="step"`. |
+| `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `role="img"` with a written summary; a table twin for the flow chart, which had none. |
+| `components/QueryState.tsx`, `FullPageProgress.tsx` | Loading states are polite live regions rather than silent spinners. |
+| `layout/DrawerAccountSection.tsx`, `features/facilities/FacilitiesPage.tsx`, `features/incidents/AssignDialog.tsx` | `<li>` wrappers, so a `<ul>` contains list items. |
+| `features/incidents/ReportSection.tsx` | The step number is readable. |
+| `App.tsx`, `main.tsx` | The catch-all route renders a page; the root boundary wraps everything. |
+
+### 2. Why it is shaped this way
+
+**The lockout counter is a table because nothing else is shared.** A Lambda
+container shares no memory with the next one: an in-process counter resets on
+every cold start and disagrees between two warm ones, so ten attempts spread
+over three containers would be three counts of three or four and the lockout
+would never fire. The database is the only shared state in this architecture.
+The alternatives considered and rejected were a column on `users` (impossible —
+the interesting case is an address with no user row) and an in-memory LRU
+(wrong for the reason above). See [D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory).
+
+**One row per email, not per attempt.** A row *is* the window. A
+credential-stuffing run against one address costs one row rather than one per
+guess, and the whole rule — "ten in fifteen minutes" — is answerable from that
+row without an aggregate.
+
+**No foreign key to `users`, deliberately.** Attempts against an address nobody
+holds are counted identically to attempts against a real colleague's, and the
+check runs *before* the lookup. A lockout that only applied to real accounts
+would answer "does this person have an account here?", which is precisely the
+question M2's single generic 401 exists to refuse. `test_migration.py` asserts
+the absence of that key, because it is load-bearing rather than an omission.
+
+**A fixed window, not a sliding one.** Expiry is measured from the *first*
+failure in the run. With a sliding window an attacker could hold a colleague's
+address locked indefinitely by failing one login every fourteen minutes.
+
+**Self-cleaning, because there is nowhere to put a sweeper.** Aurora runs at
+`min_capacity = 0` and sleeps; a scheduled job would wake the cluster on a timer
+to delete rows nobody reads. Every failed login purges the expired windows
+instead, and the failure path is the only path that inserts.
+
+**A middleware, in a codebase that argues against middleware.** M2's argument —
+in `security/dependencies.py`'s docstring and in §1.3 above — is about a
+middleware that *decides* something by pattern-matching URLs. This one decides
+nothing, cannot refuse a request, and has to wrap requests that fail before any
+dependency runs, which is every 404 and every 500. That is the thing a
+`Depends` cannot be. It is pure ASGI rather than `BaseHTTPMiddleware` because
+the latter runs the application in a separate task, which breaks the context
+variable carrying the request id. [D20](DECISION-LOG.md#d20--the-first-middleware-in-a-codebase-that-argues-against-middleware).
+
+**Standard library logging, no new dependency.** `requirements.txt` is what
+Terraform installs into the Lambda package, so `structlog` or
+`aws-lambda-powertools` would have grown the deployed artefact. A
+`logging.Formatter` subclass and `json.dumps` cost nothing and are about forty
+lines.
+
+**Nothing secret is logged structurally, not by filtering.** The middleware
+never reads a header, a cookie, a body or the query string, so there is no code
+path on which a password or a token could reach a line. The query string is
+excluded because it carries what somebody typed into the search box.
+`SENSITIVE_KEY_PARTS` is a second belt for fields application code passes
+itself.
+
+**Two error boundaries, because there are two failures.** One inside `AppShell`
+around `<Outlet />`, keyed on the pathname, where the navigation survives and
+"try again" is a real offer. One in `main.tsx` outside the router, for the shell
+and the providers themselves, where nothing is left to navigate with and the
+only honest offer is a reload.
+
+**A 404 page rather than a redirect**, following `NotPermittedPage`, which had
+already made the argument in M6: a URL somebody pasted to you should tell you
+why it will not open. [D21](DECISION-LOG.md#d21--an-unknown-url-gets-a-page-not-a-redirect).
+
+**axe-core *and* a keyboard pass.** axe decides what a machine can decide — a
+missing name, a failing contrast ratio, a skipped heading level. It cannot see
+whether the focus ring is visible or whether Escape returns focus, and it went
+green over an application with no focus indicator at all.
+[D23](DECISION-LOG.md#d23--what-tabbing-found-that-axe-did-not).
+
+### 3. How the pieces connect
+
+**A failed sign-in, end to end.**
+
+```
+POST /api/v1/auth/login   {"email": "…", "password": "…"}
+  └─ RequestLogMiddleware.__call__            (observability.py)
+     ├─ scope["acme.log_context"] = {}        ← the dict the user id comes back in
+     ├─ _resolve_request_id                   ← x-request-id | Lambda id | uuid4
+     ├─ _request_id.set(...)                  ← every log line below joins this request
+     └─ await self.app(...)
+        └─ routers/auth.py::login
+           └─ auth_service.authenticate
+              ├─ utc_now()                                 (clock.py)
+              ├─ _require_not_locked_out
+              │    └─ login_attempts.get  → SELECT … WHERE email = :email
+              │       └─ 10 failures inside the window? → RateLimitError(429)
+              ├─ users.get_by_email  → None
+              ├─ verify_password(password, _DUMMY_HASH)    ← equal timing
+              ├─ _record_failed_login
+              │    ├─ login_attempts.purge_expired         ← the table tidies itself
+              │    ├─ login_attempts.record_failure        ← INSERT … ON CONFLICT
+              │    └─ session.commit()                     ← the request is about to fail
+              └─ raise AuthenticationError(401)
+           ← never reaches session.commit()
+     ← api_error_handler → {"detail": …, "code": …}   (+ Retry-After on a 429)
+  └─ _log_request  →  {"event":"request","status":401,"duration_ms":412.9, …}
+```
+
+The two things worth following there are the **commit inside the service** —
+without it the count is rolled back by the failure it is counting — and the
+**`Retry-After` header**, which `api_error_handler` derives from
+`extra["retry_after_seconds"]` rather than taking separately, so the header and
+the body cannot disagree.
+
+**How the request log learns who is asking.** The request id travels *down* on a
+`ContextVar`: a worker thread inherits a copy of the context, so every service's
+own `logger.info` joins the request that caused it without knowing requests
+exist. The user id has to travel *up*, from `get_authenticated_user` to the
+middleware, and a `ContextVar.set` inside a worker thread is invisible to its
+caller — so it goes in a plain dict on the ASGI scope, shared by reference.
+Those two directions needing two mechanisms is the single least obvious thing in
+`observability.py`.
+
+**A render error on a screen.**
+
+```
+IncidentDetailPage throws
+  └─ ErrorBoundary (AppShell, key={location.pathname})
+     ├─ getDerivedStateFromError → { error }
+     ├─ componentDidCatch → console.error with the component stack
+     └─ fallback: role="alert", the message, "Try again"
+          ├─ chunk-load error? → "Reload the page" instead
+          └─ navigate away → new key → new boundary instance → fallback gone
+   the sidebar, the app bar and the bottom bar never unmounted
+```
+
+**A keyboard user arriving on a screen.**
+
+```
+Tab 1   → "Skip to main content"   (fixed, off-screen until focused)
+Enter   → focus moves into <main id="main-content" tabIndex={-1}>
+  …or…
+Tab 2…n → brand link, search, account menu   (header landmark, white focus ring)
+        → report button, nav links           (nav "Main", aria-current on one)
+        → the screen's own controls          (3px primary focus ring)
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How many failures, in how long | `app/services/auth_service.py` | `MAX_FAILED_LOGIN_ATTEMPTS`, `LOGIN_LOCKOUT_WINDOW` |
+| Whether this address is locked right now | `app/services/auth_service.py` | `_require_not_locked_out` |
+| That a failure is counted and committed | `app/services/auth_service.py` | `_record_failed_login` |
+| That the count is exact under concurrency | `app/repositories/login_attempts.py` | `record_failure` — one `INSERT … ON CONFLICT DO UPDATE` |
+| That the window is fixed rather than sliding | `app/repositories/login_attempts.py` | `record_failure`'s `window_is_live` |
+| That the table cleans itself | `app/repositories/login_attempts.py` | `purge_expired` |
+| That an address with no account is counted too | `app/models/login_attempt.py` | the absence of a `ForeignKey` — asserted in `tests/integration/test_migration.py` |
+| What a 429 looks like | `app/errors.py` | `RateLimitError`, and `Retry-After` in `api_error_handler` |
+| What a log line contains | `app/observability.py` | `JsonFormatter.format` |
+| Which fields are never printed | `app/observability.py` | `SENSITIVE_KEY_PARTS`, `redact` |
+| Which request id is used | `app/observability.py` | `_resolve_request_id`, `SAFE_REQUEST_ID` |
+| What one request's line says | `app/observability.py` | `_log_request`, `_level_for` |
+| How a path becomes an aggregatable route | `app/observability.py` | `_route_template` |
+| Where logging is turned on | `app/observability.py` | `configure_logging`, called by `app/main.py::create_app` |
+| That a migration does not silence the container | `app/migrations.py` | `upgrade_to_head`; plus `disable_existing_loggers=False` in `alembic/env.py` |
+| Who may clear an escalation (authoritative) | `app/services/incident_service.py` | `may_clear_escalation` |
+| What an unknown client URL does | `frontend/src/App.tsx` | the `path="*"` route → `NotFoundPage` |
+| What a render error shows, and how to recover | `frontend/src/components/ErrorBoundary.tsx` | `ErrorBoundary`, `recovery` |
+| Which render errors need a reload rather than a retry | `frontend/src/components/staleBundle.ts` | `isChunkLoadError` |
+| Where the focus ring is defined | `frontend/src/theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| Which status colours were contrast-checked, and against what | `frontend/src/theme.ts` | `palette.info` / `warning` / `success` / `error`, with both ratios in the comment |
+| What the skip link points at | `frontend/src/layout/AppShell.tsx` | `MAIN_CONTENT_ID` |
+| Which navigation surface is which, to a screen reader | `frontend/src/layout/AppShell.tsx` | the two `<nav>` labels, "Main" and "Quick links" |
+| What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each |
+| What a stepper step says about its state | `features/incidents/WorkflowStepper.tsx` | `describeStepState` |
+| Which accessibility rules the build enforces | `frontend/e2e/accessibility.spec.ts` | `WCAG_AA` |
+
+### 5. How to change it
+
+**To change the lockout threshold or window** — `MAX_FAILED_LOGIN_ATTEMPTS` and
+`LOGIN_LOCKOUT_WINDOW` in `app/services/auth_service.py`. Nothing else knows
+them; `tests/integration/test_login_lockout.py` reads them rather than repeating
+the numbers, so the suite follows the change.
+
+**To add a field to every log line** — add it in `JsonFormatter.format` if it is
+true of every record, or pass it as `extra={...}` at the call site if it is not.
+Anything in `extra` is promoted to a top-level JSON field automatically. Check
+its name does not contain a `SENSITIVE_KEY_PARTS` substring, or it will be
+redacted — which is the point, but it is confusing if unexpected.
+
+**To log something from a service** — `logger.info("what happened", extra={...})`.
+It will carry the request id without doing anything: the context variable is
+already set. Do not put an email address, a token or a password in either.
+
+**To add a screen to the accessibility suite** — one `test` in
+`e2e/accessibility.spec.ts` calling `expectNoViolations(page)`. If the screen has
+a state that only appears after an interaction — a dialog, a drawer, a revealed
+section — scan that state too, and scope the assertion with the `include`
+argument so a failure elsewhere is not reported against it.
+
+**To add a chart** — give it `role="img"` and an `aria-label` from a `summarise`
+function, and a table twin behind the same `ToggleButtonGroup` the other two
+use. A chart without a table twin makes §1's claim about this dashboard false
+again.
+
+**To add a colour to the palette** — compute its contrast against **both**
+`#ffffff` and `background.default` (`#f4f6fa`), because an outlined chip sits on
+both, and record both numbers in the comment. 4.5:1 is the bar for anything
+below 24px.
+
+**To make a list of links or buttons** — wrap each in `<ListItem disablePadding>`.
+A `ListItemButton` renders an `<a>` or a `<button>`, and neither is a legal
+child of the `<ul>` that `List` produces.
+
+### 6. Gotchas
+
+**`logger.log(..., exc_info=False)` stores the literal `False`, not `None`.**
+`formatException(False)` raises inside the handler, `logging` swallows that to
+stderr, and the line is lost entirely. `JsonFormatter` tests truthiness for
+exactly this reason, and there is a regression test named after it.
+
+**Alembic silences the application when it runs in-process.** `alembic/env.py`
+calls `logging.config.fileConfig`, whose default `disable_existing_loggers=True`
+sets `disabled = True` on every logger that already exists — and it replaces the
+root handler with alembic's plain-text one. Both outlive the invocation, so one
+`migrate` ops action would have ended structured logging for the life of a warm
+container. Two countermeasures: `disable_existing_loggers=False` in `env.py`, and
+`upgrade_to_head` reapplying `configure_logging` after alembic has finished.
+`test_logging_survives_a_migration_run_in_the_same_process` is the guard.
+
+**`scope["route"].path` is not the whole path.** This FastAPI version mounts an
+included router as a child rather than flattening its routes, so that attribute
+reads `/auth/login` where the request was `/api/v1/auth/login` — and it would
+silently start reading the full path again if a future version flattened them.
+`_route_template` rebuilds the template by substituting `path_params` back into
+`scope["path"]`, which is correct in both.
+
+**A `ContextVar` set inside a FastAPI endpoint is invisible to the middleware
+above it.** Synchronous endpoints and dependencies run in a worker thread, and a
+thread gets a *copy* of the context. Values set before the call propagate down;
+values set during it do not propagate up. That is why the request id is a
+context variable and the user id is a dict on the scope.
+
+**A service that commits is normally a bug here, and twice it is not.**
+`rotate_session` and `_record_failed_login` both write a security response that
+has to outlive the request that failed. Everything else flushes and lets the
+router commit.
+
+**Material UI's `ButtonBase` sets `outline: 0`, and it beats a bare
+`:focus-visible`.** Same specificity, and Emotion injects component styles after
+`CssBaseline`'s. A focus ring written as `:focus-visible` is present in the
+theme and absent on every control. `body :focus-visible` wins.
+
+**Contrast has to be checked against two backgrounds.** A filled chip is white
+on the colour and an outlined chip is the colour on the surface — and the
+surface is `#ffffff` on a card and `#f4f6fa` on the page. `#0277bd` passes
+against one and fails against the other, which is how the first fix for this
+shipped and had to be fixed again.
+
+**`test.skip` inside a Playwright test still counts as a test.** The suite's
+totals read "N passed, M skipped" where the skips are the phone-only cases the
+desktop project declines, and vice versa. That is deliberate, not a gap.
+
+**Clicking the body does not reset the tab order.** Clicking a non-focusable
+element sets the browser's *sequential focus navigation starting point*, so the
+next Tab resumes from there rather than from the top of the document — which
+skips the skip link and makes a working application look broken. And `goto`
+resolves while the app is still showing "Restoring your session…", which has
+nothing focusable in it at all.
+
+**The 404 page returns HTTP 200.** CloudFront rewrites extension-less paths to
+`/index.html` so deep links survive a reload, so the server cannot know the path
+is not a route. Only the router can, and by then the response has been sent.
+
+### 7. Glossary
+
+**axe-core** — the accessibility rule engine behind most automated checkers. It
+runs inside the page and reports violations of rules it can decide
+mechanically. `@axe-core/playwright` is the adapter that runs it against a
+Playwright page.
+
+**WCAG 2.1 AA** — the Web Content Accessibility Guidelines at their middle
+conformance level: the usual legal and procurement bar. Expressed to axe as the
+tag filters `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`.
+
+**Contrast ratio** — how different two colours are in luminance, from 1:1
+(identical) to 21:1 (black on white). AA wants 4.5:1 for text under 24px and
+3:1 above it.
+
+**Landmark** — an element that names a region of the page for navigation:
+`<header>`, `<nav>`, `<main>`, `<footer>`, or an ARIA `role` equivalent. A
+screen reader can jump between them, which is why two of them must not share a
+name.
+
+**Skip link** — a link, first in the tab order, that jumps past the navigation
+to the content. Visually hidden until focused. Its target needs `tabIndex={-1}`
+or the browser scrolls there without moving focus.
+
+**`:focus-visible`** — the CSS pseudo-class matching focus the browser thinks
+should be shown: keyboard yes, mouse click no. It is what makes a focus ring
+possible without one appearing on every click.
+
+**`aria-current="page"` / `"step"`** — marks the one item in a set that is the
+current one. The only non-visual signal that a navigation item is the page you
+are on, or that a stepper step is where the ticket is.
+
+**Live region** — an element a screen reader watches and announces when its
+contents change, without moving focus. `aria-live="polite"` waits for a pause;
+`role="alert"` interrupts. Loading states are polite; failures are alerts.
+
+**Visually hidden** — off-screen but present in the accessibility tree
+(`@mui/utils`' `visuallyHidden`). Not `display: none`, which removes it from
+both.
+
+**`role="img"` on a chart** — makes the SVG subtree presentational and replaces
+several hundred unlabelled nodes with one `aria-label`.
+
+**Table twin** — this project's name for the text view beside a chart, giving
+the same numbers to a keyboard, a screen reader or a printout.
+
+**Error boundary** — a React class component that catches an error thrown while
+rendering its subtree and renders a fallback instead of unmounting the whole
+tree. There is no hook equivalent. It does not catch errors in event handlers,
+timers or rejected promises.
+
+**Chunk-load error** — the failure of a lazily imported bundle. It happens when
+a tab is left open across a deploy and asks for a filename that no longer
+exists; it is the one render error where retrying is useless, because only a
+reload fetches the new `index.html`.
+
+**Sequential focus navigation starting point** — where the browser resumes Tab
+from after a click. Clicking a non-focusable element sets it, which is why
+clicking the body before a keyboard test does not "reset" anything.
+
+**ASGI middleware (pure)** — a callable wrapping `(scope, receive, send)` and
+awaiting the app below it in the *same* task, so context variables propagate.
+Starlette's `BaseHTTPMiddleware` runs the app in a separate task, which breaks
+that and buffers the response.
+
+**`INSERT … ON CONFLICT DO UPDATE` (upsert)** — PostgreSQL's atomic
+insert-or-update. In the `SET` clause a bare column name means the *existing*
+row's value and `excluded.x` means the row that was being inserted. It takes a
+row lock for the statement, which is what makes the failure count exact when two
+requests race.
+
+**Fixed vs sliding window** — a fixed window expires a set time after it opened;
+a sliding one expires a set time after the last event in it. A sliding lockout
+can be held open indefinitely by an attacker, which is why this one is fixed.
+
+**`Retry-After`** — the standard HTTP response header saying how long to wait
+before retrying. Here it is derived from the body's `retry_after_seconds` so the
+two cannot disagree.
+
+**Structured logging** — writing each log line as one JSON object rather than
+prose, so a log service can index and query the fields. CloudWatch Logs Insights
+can filter on `status` and `duration_ms` only because of this.
+
+**Correlation id / request id** — one value shared by every line written while
+handling one request, so they can be pulled back together afterwards. Ours
+prefers the caller's `x-request-id`, then the Lambda request id — which is also
+what CloudWatch files the invocation under, so the two views join.

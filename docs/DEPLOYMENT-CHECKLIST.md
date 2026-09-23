@@ -1314,6 +1314,185 @@ value label outside the bar.
 ❌ An empty `<svg>` with axes but no `.MuiBarChart-element` inside it is a bundling
 problem, visible only here.
 
+## S6 — Hardening (accessibility, boundaries, 404, lockout, JSON logs)
+
+### 8.1 Run the new migration before anything else
+
+**Why it needs the cloud.** `login_attempts` is created by revision `0004`. Until it
+exists, **every sign-in returns 500** — the lockout check is the first thing
+`authenticate` does. This is the one S6 step that must happen before the application is
+usable at all, and it is a one-line invoke.
+
+```sh
+aws lambda invoke --function-name "$FUNCTION_NAME" \
+  --payload '{"action":"migrate"}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+Expect `{"ok": true, "action": "migrate", "result": {"schema": "upgraded to head", …}}`.
+`migrate` is idempotent, so running it when it has already run is a no-op.
+
+### 8.2 The log lines are JSON in CloudWatch, and queryable
+
+**Why it needs the cloud.** Locally the JSON goes to a terminal, which proves the format
+and nothing about CloudWatch. Two things can only be seen there: that the Lambda
+runtime's own handler is **not** also printing a prose copy of every line (the reason
+`configure_logging` replaces the root handler rather than appending to it), and that
+CloudWatch parses the object into queryable fields rather than storing it as a string.
+
+```sh
+aws logs tail "/aws/lambda/$FUNCTION_NAME" --since 10m --format short | head -20
+```
+
+Each line should be one JSON object and each should appear **once**. Then, in the
+CloudWatch Logs Insights console, over the same log group:
+
+```
+fields @timestamp, request_id, method, route, status, duration_ms, user_id
+| filter event = "request"
+| sort @timestamp desc
+| limit 20
+```
+
+If `status` and `duration_ms` come back as columns, the parse worked. If the whole line
+lands in `@message` and the other fields are empty, it did not — check that nothing is
+prefixing the line before the `{`.
+
+Then the query the whole exercise is for:
+
+```
+fields @timestamp, route, status, duration_ms
+| filter event = "request" and status >= 500
+| sort duration_ms desc
+```
+
+### 8.3 The Lambda request id is what the line is filed under
+
+**Why it needs the cloud.** `_resolve_request_id` prefers a caller-supplied
+`x-request-id`, then `scope["aws.context"].aws_request_id`, then a fresh UUID. Only the
+middle branch needs Lambda — Mangum puts the Lambda context into the ASGI scope, and the
+point of using it is that the application's line and CloudWatch's own `START RequestId:`
+line join on the same value. Locally that branch never runs.
+
+```sh
+curl -si "$CLOUDFRONT_URL/api/v1/health" | grep -i x-request-id
+```
+
+Take the value and find it in the log group; the `START RequestId:` line for the same
+invocation should carry the same id. If instead it is a bare 32-character hex string,
+the Lambda context was not visible in the scope and the branch fell through to the UUID —
+which still works, but loses the join.
+
+Also confirm CloudFront **forwards and returns** the header. If `x-request-id` is absent
+from the response, the distribution is stripping it and a support conversation cannot
+start from something the browser can see.
+
+### 8.4 The lockout works through CloudFront, and the 429 survives it
+
+**Why it needs the cloud.** A 429 with a `Retry-After` header has two things in front of
+it that do not exist locally: CloudFront, which has its own opinions about error
+responses, and the `custom_error_response` mapping that `docs/INFRA-CHANGES.md` item 1
+replaced. A distribution that rewrote a 429 the way the scaffold rewrote 404s would turn
+the lockout into an HTML page.
+
+Use an address that does not exist, so no real account is locked:
+
+```sh
+for i in $(seq 1 11); do
+  curl -s -o /dev/null -w "%{http_code} " -X POST "$CLOUDFRONT_URL/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"deploy.check.nobody@acme.inc","password":"wrong-'"$i"'"}'
+done; echo
+```
+
+Expect ten `401`s then a `429`. Then check the shape survived the CDN:
+
+```sh
+curl -si -X POST "$CLOUDFRONT_URL/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d '{"email":"deploy.check.nobody@acme.inc","password":"x"}' | head -20
+```
+
+`Retry-After` must be present as a header, `retry_after_seconds` in the JSON body, and
+the body must be JSON rather than HTML. Locally verified: ten 401s then a 429 carrying
+`Retry-After: 898`.
+
+The row cleans itself up within fifteen minutes; nothing needs deleting afterwards.
+
+### 8.5 The lockout counter is shared across Lambda containers
+
+**Why it needs the cloud.** This is the *reason* the counter is a table rather than a
+process variable ([D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory)),
+and locally there is one process, so the claim is untested. Concurrency spreads the
+attempts across containers; if the count still trips at ten, the shared state works.
+
+```sh
+seq 1 12 | xargs -P 6 -I{} curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST "$CLOUDFRONT_URL/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d '{"email":"deploy.check.parallel@acme.inc","password":"wrong-{}"}' | sort | uniq -c
+```
+
+Expect roughly ten 401s and the rest 429s. An exact split is not the assertion — the
+requests genuinely race — but *no* 429 would mean each container was counting alone,
+which is the failure this design exists to prevent.
+
+### 8.6 The SPA rewrite sends an unknown deep link to the 404 page
+
+**Why it needs the cloud.** Locally Vite serves `index.html` for anything; in the cloud
+it is the CloudFront Function on the default behaviour. An unknown extension-less path
+must reach the SPA — where `NotFoundPage` explains it — rather than S3's own XML error,
+and it must do so **without** `/api/*` being affected.
+
+```sh
+curl -s -o /dev/null -w "%{http_code}\n" "$CLOUDFRONT_URL/definitely-not-a-route"   # 200, index.html
+curl -s -o /dev/null -w "%{http_code}\n" "$CLOUDFRONT_URL/api/v1/definitely-not"     # 404, from the API
+```
+
+The first is 200 **by design** and the page then says "Page not found" — see
+[D21](DECISION-LOG.md#d21--an-unknown-url-gets-a-page-not-a-redirect). The second must
+stay a real 404: that is the rubric line `docs/INFRA-CHANGES.md` item 1 exists to protect,
+and it is worth re-checking here because it is the one thing that would silently regress.
+
+Then open `$CLOUDFRONT_URL/definitely-not-a-route` in a browser, signed in, and confirm
+the page renders inside the shell with the navigation intact.
+
+### 8.7 The error boundary's stale-bundle path, which only a deploy can produce
+
+**Why it needs the cloud.** `isChunkLoadError` exists for a tab left open across a
+deploy: `index-*.js` is already loaded and asks for an `AdminDashboardPage-*.js` that the
+new deploy has renamed. That cannot be reproduced locally, where Vite serves modules by
+source path and never renames them.
+
+1. Sign in as an admin and load the dashboard, so the chunk is fetched once.
+2. Navigate away to `/tickets` and leave the tab open.
+3. Run `./bin/deploy-frontend.sh` from another terminal — rebuilding changes the hashes
+   and the invalidation removes the old asset.
+4. Back in the open tab, navigate to `/` again.
+
+Expect "This page needs reloading" and a **Reload the page** button, not "Something went
+wrong" with a Try again that cannot work. Press it and the dashboard loads.
+
+If instead the tab shows a blank page, the boundary did not catch it — check that the
+error reached a render rather than an unhandled rejection.
+
+### 8.8 Contrast and focus on the real deployed CSS
+
+**Why it needs the cloud.** The axe run and the focus-ring screenshots were taken against
+the Vite dev server, which serves Emotion's styles from separate injected `<style>` tags
+in development order. The production build extracts and concatenates them, and the focus
+ring depends on **specificity beating injection order** — `body :focus-visible` against
+Material UI's `ButtonBase`. It should be order-independent now, which is the point of the
+fix, but it was order-dependent before it and nothing else in this project has been
+checked against the built CSS.
+
+```sh
+cd frontend && npm run build && npx playwright test accessibility.spec.ts \
+  --project=desktop -- --E2E_BASE_URL="$CLOUDFRONT_URL"
+```
+
+or, more simply, sign in at the CloudFront URL, press Tab twice and **look**: there must
+be a ring. Then tab to a category card on `/report` and look again. That is the check
+that caught the ring being absent in the first place
+([D23](DECISION-LOG.md#d23--what-tabbing-found-that-axe-did-not)).
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
@@ -1339,6 +1518,16 @@ These are out of scope until the phase that introduces them:
   period".** That figure sums `resolved_in_period` per engineer, so work with no assignee
   belongs to nobody. Reachable only by unassigning an IN_PROGRESS ticket and then resolving
   it as an admin. Rare, and recorded rather than handled.
+- **Screen-reader output itself.** Everything in S6 was verified with axe, with a
+  keyboard, and by reading the accessibility tree — none of which is the same as
+  listening to NVDA, JAWS or VoiceOver read the page. The semantics are asserted;
+  how they *sound* is not, and it is the one part of an accessibility pass no
+  automated check substitutes for. Worth half an hour with a real screen reader
+  before anybody calls this done.
+- **The 15-minute lockout window expiring in the cloud.** Locally the expiry is tested
+  with an injected `now`, which is the right way to test it. Watching a real address
+  unlock after fifteen real minutes is a stopwatch exercise; run it once if you want the
+  reassurance, but the injected-clock test is the one that will keep working.
 - Anything depending on a realistic row count in the *deployed* database. `seed_demo`
   now exists but refuses to run there (7.5), so 6.7's timings and 4.7's query plan are
   still measured against whatever has been reported by hand — tens of rows rather than
