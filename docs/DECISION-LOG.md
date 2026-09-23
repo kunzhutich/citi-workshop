@@ -2321,10 +2321,28 @@ about 1290px it wraps to two rows instead of overflowing, which is the honest
 answer — six controls at a usable width do not fit in 900px, and something had
 to give.
 
-**Proven.** The same sweep, after the change: 360 to 1600px, every screen, every
-persona, including the phone's filter drawer opened — no horizontal overflow
-anywhere. `e2e/responsive.spec.ts` gained *"the ticket list does not scroll
-sideways at any width"*, which sweeps fifteen widths rather than sampling two.
+**Proven, and proven both ways.** The same sweep, after the change: 360 to
+1600px, every screen, every persona, including the phone's filter drawer opened
+— no horizontal overflow anywhere. `e2e/responsive.spec.ts` gained *"the ticket
+list does not scroll sideways at any width"*, which sweeps fifteen widths rather
+than sampling two, and it passes.
+
+A test that passes proves nothing about the bug it was written for unless it
+also fails without the fix, so the old template was put back and the new test
+run against it:
+
+```
+✘ layout › the ticket list does not scroll sideways at any width
+  Error: at 900px
+  Expected: <= 1
+  Received:    318
+```
+
+318 rather than the 333 measured in a headed browser, because Playwright's
+headless Chromium has no scrollbar — 900px of layout width instead of 885. The
+fix was then restored and the test passes again. Without that second run, the
+new test would be one more assertion that has never been seen to fail, which is
+the same category of thing as the one it replaces.
 
 ## D45 — Correcting the brief: the filters were never lost on the browser's back button
 

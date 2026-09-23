@@ -8133,6 +8133,11 @@ sideways"* passed for months over four broken screens. Any assertion about a lay
 a threshold in it has to sweep, not sample — which is why the new test lists fifteen
 widths and says so in a comment.
 
+**And a new test has to be seen to fail.** The sweep was run once with
+`IncidentFilterBar`'s old template put back, and it fails at the first width in the band
+— *"at 900px, expected <= 1, received 318"*. A test written after a fix, never run
+against the fault, is indistinguishable from one that asserts nothing.
+
 **Chrome shows this class of fault before Firefox does.** Chrome on Linux draws a classic
 15px scrollbar, which comes off the layout width; Firefox's overlay scrollbars do not.
 Every window width therefore lands 15px further into an overflow band in Chrome. It
