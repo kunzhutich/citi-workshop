@@ -1413,7 +1413,7 @@ libraries the rest of the build needs.
 
 | File | Responsibility |
 | --- | --- |
-| [src/main.tsx](../frontend/src/main.tsx) | Mounts React and wraps the app in the four providers: TanStack Query, MUI theme, `CssBaseline`, React Router. |
+| [src/main.tsx](../frontend/src/main.tsx) | Mounts React and wraps the app in the four providers M1 needed: TanStack Query, MUI theme, `CssBaseline`, React Router. M5 added `AuthProvider` and `SnackbarProvider` — see the M5 section for the current list. |
 | [src/App.tsx](../frontend/src/App.tsx) | The route table. One route today. |
 | [src/theme.ts](../frontend/src/theme.ts) | MUI theme: palette, typography, corner radius. |
 | [src/api/client.ts](../frontend/src/api/client.ts) | The shared axios instance. `baseURL: '/api/v1'`, `withCredentials: true`. |
