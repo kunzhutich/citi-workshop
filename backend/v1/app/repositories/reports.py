@@ -703,11 +703,17 @@ def personal_counts(
     No date filter: these are the numbers on somebody's home screen, and "you
     have one open ticket" must mean all of them, not the ones raised this
     month. See decision D9.
+
+    `escalated` counts *live* escalations only, through the same
+    `_live_escalation_clauses()` the blocked-and-escalated report uses. This is
+    a current-state report, and a flag left standing on a ticket that has since
+    been closed is history rather than something the person can act on. See
+    decisions D10 and D11.
     """
     columns: list[Any] = [
         func.count().label("total"),
         func.count().filter(Incident.status.in_(ACTIVE_INCIDENT_STATUSES)).label("active"),
-        func.count().filter(Incident.is_escalated).label("escalated"),
+        func.count().filter(*_live_escalation_clauses()).label("escalated"),
     ]
     columns.extend(
         func.count().filter(Incident.status == status).label(status_label(status))

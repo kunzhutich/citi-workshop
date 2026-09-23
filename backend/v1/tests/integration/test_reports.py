@@ -1261,6 +1261,58 @@ def test_me_counts_a_ticket_reported_long_before_the_window(
     }
 
 
+def test_me_drops_an_escalation_on_a_ticket_the_reporter_has_had_closed(
+    client: TestClient, db_session: Session, dataset: Dataset
+) -> None:
+    """The regression test for D11: the same stale flag D10 fixed next door.
+
+    `/reports/me` is the other current-state report (D9), so the same rule
+    applies to it: `is_escalated` is lowered only by `clear_escalation`, never
+    by closing the ticket, so an escalation that ended the usual way — an
+    engineer fixed the thing and the ticket closed — leaves the flag standing
+    for ever. Counting it on an employee's home tile tells them they have an
+    escalation outstanding when the work is finished and there is nothing they
+    or anybody else can do about it.
+
+    Eve's live escalation (I2, IN_PROGRESS) must still be counted; the closed
+    one below must not.
+    """
+    day = timedelta(days=1)
+    make_incident(
+        db_session,
+        reporter=dataset.employee_one,
+        category=dataset.hvac,
+        building=dataset.building_a,
+        floor=dataset.floor_a1,
+        status=IncidentStatus.CLOSED,
+        priority=IncidentPriority.HIGH,
+        created_at=dataset.now - 4 * day,
+        resolved_at=dataset.now - 2 * day,
+        closed_at=dataset.now - day,
+        close_reason=CloseReason.CONFIRMED_FIXED,
+        is_escalated=True,
+        escalation_reason="Escalated, then fixed and closed without clearing",
+        escalated_at=dataset.now - 3 * day,
+        title="Escalated and since closed",
+    )
+
+    headers = auth_header(login(client, dataset.employee_one.email))
+    body = get_report(client, "/me", headers, scope_params())
+
+    # Eve's six from the fixture table plus the closed one above. Two of her
+    # tickets now carry the flag; only I2 is still live work.
+    assert body["reported"] == {
+        "total": 7,
+        "active": 4,  # I1 OPEN, I2 IN_PROGRESS, I3 BLOCKED, I10 OPEN
+        "open": 2,  # I1 and I10
+        "in_progress": 1,
+        "blocked": 1,
+        "resolved": 1,  # I4
+        "closed": 2,  # I5 and the one above
+        "escalated": 1,  # I2 only: the closed one is history, not a live flag
+    }
+
+
 # --- Permissions -------------------------------------------------------------
 
 

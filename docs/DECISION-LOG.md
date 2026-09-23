@@ -390,3 +390,73 @@ list rather than out of sight at the end of it. It asserts `escalated_total ==
 unfixed code it fails with `assert 4 == 2`.
 
 **Reversible.** Yes: one function, `_live_escalation_clauses()`.
+
+## D11 — Finishing D10: the same stale flag on the home screen
+
+**Question.** D10 fixed `/reports/blocked-escalated` and deliberately left one
+thing behind: `personal_counts.escalated`, which feeds `/reports/me`, counted
+`is_escalated` with no status term exactly as the escalated list used to. D10
+called it "arguably the same bug" and noted it for the owner rather than fixing
+it, because that change was meant to be surgical. Is it the same bug, and does
+the same answer apply?
+
+**Finding. It is the same bug, on the endpoint where it is read by the person
+least able to diagnose it.** The two facts D10 turns on hold here unchanged:
+
+1. `Incident.is_escalated` is raised by `escalate` and lowered by exactly one
+   thing, `clear_escalation`. Closing or resolving a ticket leaves it standing,
+   on purpose, because the flag is history and `incident_events` keeps it.
+2. `/reports/me` is a current-state report. D9 settled that: its tiles read
+   Open / In Progress / Blocked / Awaiting your confirmation, which are claims
+   about now, which is why it takes no `from`/`to` at all.
+
+So an employee whose ticket was escalated, fixed and closed — the ordinary
+ending, with no admin ever clicking Clear — saw "1 escalated" on their home
+screen for ever afterwards. The count is not capped the way the escalated list
+is by `ESCALATED_TICKET_LIMIT`, so it grows without bound: a long-serving
+employee accumulates a permanent, rising tally of escalations that are all
+finished work. And unlike the admin panel, this number has no list under it to
+contradict it. The reader sees a figure, cannot open it, cannot act on it, and
+has no way to find out it is wrong.
+
+**Chosen.** `personal_counts` now counts the `escalated` column through
+`_live_escalation_clauses()` — the helper D10 introduced — so `is_escalated`
+carries `Incident.status.in_(ACTIVE_INCIDENT_STATUSES)` with it. One line in
+`app/repositories/reports.py`. No new concept, no second definition of "live":
+the point of putting those two terms in a helper was that the next place asking
+the present-tense question would reuse it, and this is that place.
+
+This applies to both capacities the endpoint reports. An engineer's `assigned`
+block runs through the same function with `Incident.assignee_id` in place of
+`Incident.reporter_id`, so their escalated figure is corrected by the same
+line — which is the argument for `personal_counts` taking the column as a
+parameter rather than existing twice.
+
+**Deliberately not changed, again: `summary.escalated_total`.** D10 settled
+this and nothing here reopens it. `/reports/summary` is a *period* report, and
+"how many of the tickets raised this month were escalated" is a question about
+the period. A ticket escalated in that period and since closed genuinely was
+escalated in that period, and removing it would make the number answer a
+different question from the one beside it. The rule is not "always filter on
+status" — it is **the tense of the question decides**, which is D9's rule
+reaching the last place it had not been applied.
+
+**With this, every present-tense read of `is_escalated` goes through one
+helper.** There are now exactly three readers of the flag in the reporting
+layer: `blocked_escalated_totals`, `escalated_tickets` and `personal_counts`,
+all three current-state, all three calling `_live_escalation_clauses()`; plus
+`summary`, the one period reader, which does not and says why. A fourth reader
+has a decision to make and two worked examples to make it from.
+
+**Regression test.**
+`test_me_drops_an_escalation_on_a_ticket_the_reporter_has_had_closed` in
+`tests/integration/test_reports.py`. It gives Eve — who already has one live
+escalation, I2, IN_PROGRESS — a second ticket that is CLOSED with
+`is_escalated` still True, and asserts her whole `reported` block exactly:
+`total` rises to 7 and `closed` to 2, because the ticket is real and belongs in
+those counts, while `escalated` stays at 1. Asserting the entire dictionary
+rather than the one field is deliberate: it proves the fix removed the row from
+one count and from no other. Against the unfixed code it fails with
+`{'escalated': 2} != {'escalated': 1}`.
+
+**Reversible.** Yes: the same one function as D10, `_live_escalation_clauses()`.

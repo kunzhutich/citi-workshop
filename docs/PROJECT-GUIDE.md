@@ -4259,6 +4259,21 @@ changes the state machine to satisfy a report, it destroys a fact the detail scr
 and `GET /incidents?is_escalated=` both read, and it gives the flag a second writer.
 See [decision D10](DECISION-LOG.md).
 
+`/reports/me` had the identical defect and now shares the identical fix
+([decision D11](DECISION-LOG.md)). `personal_counts` counted `is_escalated` with no
+status term, so an employee whose ticket was escalated, fixed and closed carried
+"1 escalated" on their home screen permanently — and that count, unlike the admin
+panel's, is capped by nothing and has no list under it to contradict it. It now
+counts through `_live_escalation_clauses()` too, which corrects both capacities at
+once: an engineer's `assigned` block runs through the same function with
+`Incident.assignee_id` in place of `Incident.reporter_id`.
+
+So every present-tense read of the flag goes through one helper — three of them,
+`blocked_escalated_totals`, `escalated_tickets` and `personal_counts` — and the one
+period reader, `summary.escalated_total`, deliberately does not and says why. The
+rule is not "always filter on status"; it is that **the tense of the question
+decides**, which is D9's rule reaching the last place it had not been applied.
+
 #### Where "blocked since" comes from
 
 There is no `blocked_at` column, deliberately: `incident_service.py` clears
@@ -4344,7 +4359,7 @@ survive the trip.
 | Which reports are admin-only | `app/routers/reports.py` → `dependencies=[ADMIN_ONLY]` per route |
 | Who may be an assignee (hence `/reports/me`'s shape) | `app/services/assignment.py` |
 | When a ticket became blocked | `app/repositories/reports.py` → `_blocked_since` |
-| What counts as an escalation somebody can still act on | `app/repositories/reports.py` → `_live_escalation_clauses` |
+| What counts as an escalation somebody can still act on (all three current-state readers) | `app/repositories/reports.py` → `_live_escalation_clauses` |
 | What counts as live work, application-wide | `app/models/enums.py` → `ACTIVE_INCIDENT_STATUSES` |
 | What counts as "kept informed" | `app/repositories/reports.py` → `_first_public_staff_note` + `communication` |
 | Which roles are staff for that purpose | `app/repositories/reports.py` → `STAFF_ROLES` |
@@ -4416,11 +4431,13 @@ it, so a closed ticket can and often does still carry the flag, its reason and i
 `escalated_at`. That is deliberate — it is history, and the detail screen and
 `GET /incidents?is_escalated=` both read it. The consequence is that **`is_escalated` on
 its own never means "needs attention"**: any present-tense query over it has to add a
-status filter, which is what `_live_escalation_clauses()` exists for. `/reports/summary`'s
+status filter, which is what `_live_escalation_clauses()` exists for, and all three
+current-state readers call it — `blocked_escalated_totals`, `escalated_tickets` and
+`personal_counts` (`/reports/me`, both capacities). `/reports/summary`'s
 `escalated_total` deliberately does not add one, because it is a period report counting
-what happened during the window. If you add a third place that reads the flag, decide
+what happened during the window. If you add a fourth place that reads the flag, decide
 which of those two questions you are asking before you write the `WHERE`. See
-[decision D10](DECISION-LOG.md).
+decisions [D10](DECISION-LOG.md) and [D11](DECISION-LOG.md).
 
 **`CLOSED` keeps `resolved_at`.** Closing a ticket does not erase the fact that it was
 resolved first, so `communication.resolved_total` counts closed tickets too, and
