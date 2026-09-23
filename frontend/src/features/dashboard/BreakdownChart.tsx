@@ -211,14 +211,20 @@ export function BreakdownChart({
             hideLegend
             grid={{ vertical: true }}
             onItemClick={(_event, item) => activate(data[item.dataIndex])}
+            // The class names are the library's own — `MuiBarChart-element`
+            // for a bar and `MuiBarChart-label` for its number. The first
+            // version of this guessed `MuiBarElement-root` and
+            // `MuiBarLabel-root`, which match nothing: the bars never showed a
+            // pointer cursor and the labels never took the ink set here. A
+            // Playwright assertion on a bar being present is what found it.
             sx={(theme) => ({
-              '& .MuiBarElement-root': { cursor: 'pointer' },
+              '& .MuiBarChart-element': { cursor: 'pointer' },
               // A hairline grid, one shade off the surface, so it never
               // competes with the bars.
               '& .MuiChartsGrid-line': { stroke: theme.palette.divider },
               // Axis text wears a text token, never a series colour.
               '& .MuiChartsAxis-tickLabel': { fill: theme.palette.text.secondary },
-              '& .MuiBarLabel-root': { fill: theme.palette.text.secondary, fontSize: 12 },
+              '& .MuiBarChart-label': { fill: theme.palette.text.secondary, fontSize: 12 },
             })}
           />
         )}

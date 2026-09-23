@@ -105,7 +105,9 @@ export function FlowChart({ perDay, isStale = false }: FlowChartProps) {
             ]}
             grid={{ horizontal: true }}
             sx={(theme) => ({
-              '& .MuiLineElement-root': { strokeWidth: 2 },
+              // `MuiLineChart-line`, the library's own class. See the note in
+              // BreakdownChart.tsx: the guessed name matched nothing.
+              '& .MuiLineChart-line': { strokeWidth: 2 },
               '& .MuiChartsGrid-line': { stroke: theme.palette.divider },
               '& .MuiChartsAxis-tickLabel': { fill: theme.palette.text.secondary },
             })}
