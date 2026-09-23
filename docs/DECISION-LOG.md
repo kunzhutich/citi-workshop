@@ -2468,3 +2468,178 @@ verified by a suite that cannot start.
 it was written and stopped being true when the picker landed, and nothing
 noticed, because nobody ran the suite again. A test suite reports on the code
 only as often as it is run.
+
+## D48 — The new palette, and the three colours that had to be re-derived to get it
+
+**The brief's section 2.** Page background white → cream beige `#f0eada`; primary
+navy `#1f3a93` → coco brown `#73362a`; a third colour to be proposed. It also
+warns that two things validated against the old palette will break *quietly*:
+S6's four pinned chip contrasts, and M7's chart palette.
+
+Both warnings were correct. One of them was worse than the brief expected.
+
+### The page background alone broke three of the four chip colours
+
+`#f4f6fa` has relative luminance 0.920. `#f0eada` has 0.824. Every outlined chip
+— and `PriorityChip` is outlined, on every row of every list — sits on that
+surface, so the whole status palette moved closer to its background:
+
+|  | vs `#ffffff` | vs `#f4f6fa` (old) | vs `#f0eada` (new) |
+| --- | --- | --- | --- |
+| info `#026da8` | 5.59 | 5.17 | **4.66** pass |
+| warning `#b45309` | 5.02 | 4.64 | **4.18** FAIL |
+| success `#2e7d32` | 5.13 | 4.74 | **4.27** FAIL |
+| error `#d32f2f` | 4.98 | 4.60 | **4.15** FAIL |
+
+**Re-derived, not re-picked.** Each failing colour was walked down its own hue at
+constant saturation until it cleared 4.6 against the new page — 4.5 plus enough
+headroom that a rounding cannot decide it. Hue drift is 0.2° at worst, so
+`#a94e08`, `#2c7730` and `#c72a2a` are the same three colours a step darker
+rather than three new ones. Clearing the cream clears white automatically, the
+cream being the harder surface.
+
+**And it is a test now.** `src/theme.test.ts` reads both surfaces off the theme
+and asserts every slot against each. Put the old three back and it fails three
+times with the three real ratios. S6 wrote eight numbers into a comment and
+nothing checked them; that is precisely how they came to be wrong.
+
+### The third colour: ochre, and why not the other two
+
+The brief suggests a warm ochre `#a9743a` and offers a muted olive `#6f7548` or a
+deeper clay `#8c4a32`. The third colour has two jobs — an accent beside the
+brown, and the hue the charts are drawn from — and only one candidate does both
+with the same colour:
+
+| candidate | OKLCH hue | from primary (32.5°) | chroma as given | as a chart step |
+| --- | --- | --- | --- | --- |
+| ochre `#a9743a` | 66.3° | 33.7° | 0.100 | `#b46d00` |
+| clay `#8c4a32` | 40.4° | 7.9° | 0.097 | `#d74c00` |
+| olive `#6f7548` | 114.8° | 82.3° | 0.065 | `#7f8900` |
+
+A chart mark needs chroma ≥ 0.10 or it reads as grey at bar size. Ochre is
+already there, so its chart step is the same colour one shade stronger. Clay has
+to travel to a vivid orange-red that is no longer brown and collides with the
+error chip — and as an accent it is eight degrees from the primary, close enough
+to read as the app bar slightly faded. Olive gives the most separation of the
+three and is the furthest from its own chart step: a muted sage in the interface
+and a chartreuse in the charts, which is two colours wearing one name.
+
+**Shipped as two steps, not one.** `secondary.main` in this application is always
+a *surface with white text on it* — the avatar initials in `UserMenu` and
+`DrawerAccountSection`, the note dot on the activity timeline. White on `#a9743a`
+is 4.00:1 and fails AA for 15px initials. So `main` is the ochre snapped until
+white text clears the bar (`#8b5f30`, 5.56:1) and `light` keeps the brief's
+literal `#a9743a` for the places nothing sits on top.
+
+### `background.paper` stays pure white, deliberately
+
+The brief changes the *page*. Cards a shade lighter than the page is what makes
+them read as cards, and it has a second benefit: `chartPalette.ts` is validated
+against the surface its marks are painted on, which is `background.paper`.
+Holding that colour still means the chart numbers moved only because we chose to
+change the hues, never because the surface moved underneath them. A warm
+off-white would be a defensible taste call and would invalidate every figure in
+that file.
+
+### The chart palette, re-derived rather than recoloured
+
+The old pair `#2a78d6,#eb6834` **still passes every check** — the card surface did
+not move, so nothing forced this. It changed because a blue-and-orange chart
+inside a cream-and-brown application looks imported from somewhere else.
+
+New values, all validated against `#ffffff`:
+
+- `SERIES_PRIMARY` `#b46d00`, `SERIES_SECONDARY` `#007ca5` — worst CVD ΔE 18.9
+  (protan), normal-vision 24.6, both clear of the 8 and 15 floors.
+- `PRIORITY_RAMP` `#ff9e0d → #d48100 → #aa6600 → #814d00` — monotone, gaps above
+  0.06, light end 2.07:1, hue spread 1°.
+
+Three things the derivation settled that guesswork would not have:
+
+1. **The primary brown cannot be a chart colour.** `#73362a` is OKLCH L 0.411,
+   below the 0.43 band, and chroma 0.089, below the floor — it reads as grey at
+   bar size. Pushed to a passing chroma at its own hue it becomes `#ce2700`, a
+   vivid red-orange that is no longer brown and collides with the error red. The
+   brand's darkest colour is a good app bar and a bad bar chart.
+2. **The second slot has to be cool.** Two warm hues carrying a two-series chart
+   is the arrangement that fails protanopia; warm against cool is what survives.
+3. **The ramp's light end is a floor, not a preference.** The first attempt
+   started at L 0.82 (`#ffb15c`) and failed at 1.80:1 — "Low" would have
+   dissolved into the white card. L 0.78 is the lightest step that clears 2:1.
+
+## D49 — What the new palette cost: Blocked and In progress are now the same brown
+
+**Found by looking at the screen**, which is the thing this project's own notes
+keep saying to do, and then measured.
+
+`statusChipColor` maps IN_PROGRESS to `primary` and BLOCKED to `warning`. Under
+the old palette those were navy and orange — about as far apart as two colours
+get. Under the new one they are `#73362a` and `#a94e08`: OKLab ΔE 13.4, below the
+15 floor at which two marks are considered tellable apart by a full-colour
+reader. For scale, In progress against Open is 23.0 and Blocked against Resolved
+is 19.9.
+
+**It cannot be fixed by moving the warning colour.** A colour that clears 4.5:1
+on a cream page has to be dark, and dark warm hues cluster. Walking the hue from
+40° to 100° and taking the darkest passing step at each, separation from the
+brown never reaches 15 — and every degree it gains from the brown it loses to
+the green:
+
+```
+ 40°  #b93f00   vs cream 4.63   ΔE brown 14.8   ΔE green 23.7
+ 70°  #915b00   vs cream 4.73   ΔE brown 12.8   ΔE green 14.7
+100°  #766800   vs cream 4.66   ΔE brown 15.1   ΔE green  9.2
+```
+
+There is no warm step that clears both. The collision is a property of choosing a
+cream page and a brown primary, not a bad pick within that choice.
+
+**Chosen: accept it, and say so.** Two reasons. A chip is not a chart mark — it
+carries its own word, which is exactly the argument M7 recorded when it refused
+to colour the status chart by status ("the chips are unaffected: they carry a
+word, so their colour never has to stand alone"). And the real fix is not in the
+palette at all: the collision exists only because IN_PROGRESS borrows `primary`,
+so giving it a cool slot of its own is one line in
+`src/display/statusColor.ts` — a change to a **shared component**, which is
+section 3 of the brief, where the chips are being reworked anyway.
+
+**Recorded rather than silently absorbed**, because the owner's acceptance of
+this theme was explicitly conditional on the chips still looking fine, and this
+is the one place where the honest answer is "one pair is worse than it was".
+
+## D50 — The colour the new contrast test could not have caught
+
+`e2e/accessibility.spec.ts` failed on the notification inbox, on both viewports:
+
+```
+[serious] color-contrast: .MuiToggleButtonGroup-lastButton
+  insufficient color contrast of 4.38 (foreground #6e6c64, background #f0eada,
+  font size 9.8pt (13px)). Expected 4.5:1
+```
+
+An unselected `ToggleButton` — the inbox's All/Unread filter, and the
+chart/table switch on every dashboard panel. Material UI colours it
+`rgba(0, 0, 0, 0.54)` (`action.active`), which lands at `#6e6c64` on the cream
+page. It was 4.61 on the old near-white background and failed the moment the
+page warmed up.
+
+**The point worth keeping.** [D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)
+added a unit test asserting every palette slot against both surfaces, and that
+test passes here — because this colour is not a palette slot. It is a library
+default this application never named, and a test over "the colours we chose"
+cannot see it. The axe run scans what is actually on the screen and does not
+care where a colour came from. Two checks, different ground, and the brief said
+as much: *"`npx playwright test e2e/accessibility.spec.ts` … will catch failures,
+but only for what it scans — check the numbers as well as the scan."* This is
+the converse, and both halves of the sentence earned their place.
+
+**The fix** is one override: an unselected toggle takes `text.secondary`
+(5.40:1 on the page, 5.74:1 on a card) instead of `action.active`. That is the
+token the label should have worn regardless — it is text, and the data-viz rule
+this project already follows says text wears text tokens. The selected state is
+untouched.
+
+**What it suggests for next time.** Any *other* Material UI default built on
+`action.*` alpha is in the same position and only a scan will find it. The
+accessibility suite covers fourteen screens and three open dialogs; a surface
+change should be taken as a reason to run all of it, not the unit tests alone.

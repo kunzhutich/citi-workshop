@@ -8178,3 +8178,146 @@ not an in-app absolute path.
 | **`:has()`** | The CSS relational pseudo-class: `.field:has(:focus-visible)` matches the field *containing* a focus-visible element. It is what lets a ring be drawn around a composed control when the focusable part of it is buried inside. |
 | **`:focus-visible` on a text input** | Browsers always treat a focused text input as focus-visible, including after a mouse click, because a caret that is not obviously placed is a usability problem. That is why §1.3's white box appeared on click and not only on Tab. |
 | **Strict mode (Playwright)** | Playwright refuses a locator that matches more than one element, rather than silently taking the first. It is the behaviour that turned one new button into 95 failing tests — and the reason those tests failed loudly rather than quietly testing the wrong control. |
+
+---
+
+## Phase R2 — The redesign brief, section 2: the theme
+
+*Section 2 of [`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
+brown primary, and a third colour to be proposed. It is one palette and no layout, and
+it lands before the per-screen work because it touches every screen. The brief's own
+warning — that two things validated against the old palette will break quietly — turned
+out to be the most useful sentence in it.*
+
+### 1. What was built
+
+| File | What changed |
+| --- | --- |
+| `theme.ts` | The whole `palette` block: cream `background.default`, brown `primary`, a two-step ochre `secondary`, three re-derived status colours — and one `MuiToggleButton` override, which axe found and the unit test could not (D50). |
+| `theme.test.ts` | **New block.** Every palette slot asserted against both surfaces a chip is drawn on, plus the focus ring against the page. The guard S6 never had. |
+| `features/dashboard/chartPalette.ts` | Both categorical slots and all four ramp steps, re-derived on the new third colour's hue. |
+| `playwright.config.ts`, `e2e/fixtures/api.ts` | Unrelated to the palette: the e2e admin credentials, committed so a bare `npx playwright test` works. |
+
+Decisions: [D48](DECISION-LOG.md#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it),
+[D49](DECISION-LOG.md#d49--what-the-new-palette-cost-blocked-and-in-progress-are-now-the-same-brown),
+[D50](DECISION-LOG.md#d50--the-colour-the-new-contrast-test-could-not-have-caught).
+
+### 2. Why it is shaped this way
+
+**The page background is not a cosmetic token.** `#f4f6fa` has relative luminance
+0.920; `#f0eada` has 0.824. An outlined chip is drawn *on that surface* — and
+`PriorityChip` is outlined, on every row of every list — so changing it moved the whole
+status palette closer to its own background. Three of S6's four pinned colours dropped
+below 4.5:1 and nothing said a word. They were re-derived by walking each one down its
+own hue at constant saturation until it cleared 4.6 against the cream; hue drift is 0.2°
+at worst, so they are the same colours a step darker, not new ones.
+
+**`background.paper` stays `#ffffff`.** Two reasons, and the second is the load-bearing
+one: cards a shade lighter than the page is what makes them read as cards, and
+`chartPalette.ts` is validated against the surface its marks are painted on. Holding
+that one colour still means the chart figures moved only because the hues were chosen to
+move, never because the ground shifted underneath them.
+
+**The third colour is ochre, in two steps.** `secondary.main` in this application is
+never text — it is always a *surface carrying white text*: the avatar initials, the note
+dot on the timeline. White on the brief's `#a9743a` is 4.00:1, which fails for 15px
+initials. So `main` is the ochre snapped until white clears the bar, and `light` keeps
+the literal value for washes and hovers where nothing sits on top. The choice between
+ochre, clay and olive was decided on two measurements rather than taste — see D48's
+table.
+
+**The charts were re-derived, not recoloured.** The old blue/orange pair still passes
+every check; the card surface did not move. They changed for coherence, and the
+re-derivation is what caught three things a hand-tune would not have: the primary brown
+is below both the lightness band and the chroma floor and reads grey at bar size; two
+warm hues cannot carry a two-series chart through protanopia; and the ramp's lightest
+step is a 2:1 floor, not a preference — the first attempt failed at 1.80:1.
+
+### 3. How the pieces connect
+
+One colour, from the token to the pixel, and the two surfaces that decide it:
+
+```
+theme.ts  palette.warning.main = '#a94e08'
+  │
+  ├─ StatusChip  variant="filled"     → white label ON #a94e08     → 5.56:1  (needs 4.5)
+  │    statusChipColor(BLOCKED) = 'warning'          display/statusColor.ts
+  │
+  └─ PriorityChip variant="outlined"  → #a94e08 label ON a surface
+       PRIORITY_COLORS.HIGH = 'warning'              components/PriorityChip.tsx
+         ├─ inside a Card   → on background.paper   #ffffff → 5.56:1
+         └─ on a list page  → on background.default #f0eada → 4.63:1   ← the one that broke
+```
+
+The chart palette is a separate path that never touches the theme:
+
+```
+features/dashboard/chartPalette.ts   SERIES_PRIMARY = '#b46d00'
+  └─ BreakdownChart / FlowChart  → drawn on a Card → background.paper #ffffff
+       validated with the data-viz validator against that exact surface
+```
+
+Those two paths are deliberately not connected. A chip is a token beside its own word; a
+chart mark is a block of colour a reader may have to tell from the block next to it. M7
+established the split and this phase kept it.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Every brand colour | `theme.ts` | `palette` |
+| Which surfaces a chip is drawn on, and the ratios | `theme.ts` | the `background` and status comments |
+| That those ratios are true | `theme.test.ts` | "the status palette against the surfaces it is drawn on" |
+| Every chart colour and the checks behind them | `features/dashboard/chartPalette.ts` | `SERIES_PRIMARY`, `SERIES_SECONDARY`, `PRIORITY_RAMP` |
+| That the ramp stays a ramp | `features/dashboard/chartPalette.test.ts` | — |
+| Which status is which colour | `display/statusColor.ts` | `statusChipColor` |
+
+### 5. How to change it
+
+**To change a brand colour:** edit `theme.ts`, then run `npx vitest run src/theme.test.ts`.
+It will tell you which surface you broke and by how much. If a colour fails, do not pick
+a new one — walk the same hue darker until it clears, so the palette keeps its identity.
+
+**To change the page background:** the same, and then re-read `chartPalette.ts`, because
+its figures are quoted against `background.paper`. If you move *that*, every number in
+that file has to be re-run through the validator.
+
+**To add a chart series:** the ramp and the two categorical slots are the whole palette.
+A third categorical slot is not a new hex — run the validator on the candidate set first,
+because adjacent-pair separation is a property of the set, not of the colour.
+
+### 6. Gotchas
+
+**A palette comment is not a test.** S6 wrote eight contrast figures into `theme.ts` and
+they were right on the day. Nothing recomputed them, so a single background change made
+three of them false and the suite stayed green. The numbers are asserted now, read off
+the theme rather than written down twice.
+
+**Blocked and In progress are closer than they were.** `#73362a` against `#a94e08` is
+OKLab ΔE 13.4, under the 15 floor; the old navy-against-orange was not close to it. It is
+not fixable by moving the warning colour — a colour that clears 4.5:1 on cream must be
+dark, dark warm hues cluster, and every degree of hue gained from the brown is lost to
+the green. The real fix is to stop IN_PROGRESS borrowing `primary`, which is one line in
+`display/statusColor.ts` and belongs with the chip work in section 3. See D49.
+
+**A unit test over "the colours we chose" cannot see a library default.** The axe run
+caught an unselected `ToggleButton` at 4.38:1 on the cream page — Material UI's
+`action.active`, a colour this application never named, so `theme.test.ts` passed while
+the screen failed. Any other default built on `action.*` alpha is in the same position.
+Treat a background change as a reason to run the whole accessibility suite, not the unit
+tests alone. See D50.
+
+**Earth tones read as grey in a chart.** OKLCH chroma below 0.10 is the threshold, and
+most of a tasteful brown palette is under it. This is why the chart hues are more
+saturated than anything in the interface: a bar has no label leaning against it.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **OKLCH / OKLab** | A perceptual colour space: `L` lightness, `C` chroma (colourfulness), `H` hue angle. Distances in it correspond roughly to how different two colours *look*, which RGB distances do not — which is why every measurement in this phase is taken there and not in hex. |
+| **Chroma floor** | The chroma below which a hue stops reading as a colour and reads as grey. 0.10 for a chart mark. Most muted earth tones sit under it. |
+| **ΔE (Delta E)** | Distance between two colours in OKLab, ×100. The data-viz gates are ≥8 under simulated colour-blindness and ≥15 under normal vision, for marks that carry meaning by colour alone. |
+| **Relative luminance** | The 0–1 brightness figure WCAG contrast is built from. Not the same as OKLCH `L`; the contrast ratio is `(lighter + 0.05) / (darker + 0.05)` of these. |
+| **Snapping a colour** | Holding hue and saturation and moving lightness until a threshold is met, rather than choosing a new colour. What keeps a re-derived palette recognisably the same palette. |
+| **Ordinal ramp** | One hue, several steps, light to dark, for categories that genuinely have an order — priority here. Distinct from a *sequential* ramp (continuous magnitude), whose lightest step may fade into the surface; an ordinal one's may not, because every step is a mark someone has to see. |
