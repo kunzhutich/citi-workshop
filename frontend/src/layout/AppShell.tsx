@@ -1,8 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
 import MenuIcon from '@mui/icons-material/Menu';
 import AppBar from '@mui/material/AppBar';
-import BottomNavigation from '@mui/material/BottomNavigation';
-import BottomNavigationAction from '@mui/material/BottomNavigationAction';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Divider from '@mui/material/Divider';
@@ -14,7 +12,6 @@ import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
-import Paper from '@mui/material/Paper';
 import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import { useState } from 'react';
@@ -35,9 +32,6 @@ import { UserMenu } from './UserMenu';
 /** Width of the permanent desktop drawer, in pixels. */
 const DRAWER_WIDTH = 248;
 
-/** Height reserved under the content for the mobile bottom bar, in pixels. */
-const BOTTOM_NAV_HEIGHT = 56;
-
 /**
  * The id the skip link jumps to, and the `<main>` landmark's own id.
  *
@@ -51,21 +45,26 @@ export const MAIN_CONTENT_ID = 'main-content';
  * The application frame every signed-in screen renders inside.
  *
  * One component serves both layouts rather than two that drift apart. What
- * changes at 900 px is the navigation *surface* — a permanent left drawer on
- * desktop, a bottom bar plus a temporary drawer on mobile — while the app bar,
- * the account menu and the content slot stay the same.
+ * changes at 900 px is the navigation *surface* — a permanent drawer on the
+ * left on desktop, a temporary one from the right on a phone — while the app
+ * bar, the account menu and the content slot stay the same.
  *
- * The bottom bar holds the three or four items `navigation.ts` marks for it.
- * The menu button opens the full list, so an admin's Categories and Users
- * pages are one tap away on a phone instead of unreachable.
+ * **There is one mobile navigation surface, not two.** A bottom bar used to
+ * carry three or four of these items as well, and the redesign brief removed
+ * it: the drawer covers the same ground and then some, and the bar spent 56px
+ * of a phone's height repeating a subset of what the menu button already
+ * opened. Deleted rather than hidden, so nothing has to reserve room for it.
  *
- * **Landmarks.** `AppBar` is a `<header>`, the navigation surfaces are real
- * `<nav>` elements, and the content slot is `<main>`. Each `<nav>` carries its
- * own label, because on a phone two of them can be on screen at once and "two
- * navigations" is not a thing a screen-reader user can choose between. The
- * skip link is the first focusable element on the page, which is what makes
- * the sidebar's six links skippable rather than six presses of Tab on every
- * single screen.
+ * **The phone's drawer opens from the right.** M5 put the menu button in the
+ * right corner for thumb reach and left the panel opening from the left, so
+ * the tap and the thing it produced were at opposite edges. The desktop drawer
+ * stays on the left: it is permanent, it is never "opened", and reach is not a
+ * constraint with a mouse.
+ *
+ * **Landmarks.** `AppBar` is a `<header>`, the navigation surface is a real
+ * `<nav>`, and the content slot is `<main>`. The `<nav>` keeps its "Main"
+ * label even now that it is the only one, because a page snapshot that says
+ * which surface it is costs one attribute.
  */
 export function AppShell() {
   const { user } = useAuth();
@@ -81,7 +80,6 @@ export function AppShell() {
 
   const items = navItemsFor(user);
   const activePath = activeNavPath(location.pathname, [...items, reportNavItem]);
-  const bottomItems = items.filter((item) => item.inBottomNav);
 
   const workNavigation = (label: string) => (
     <Box component="nav" aria-label={label} sx={{ px: 1.5, py: 2 }}>
@@ -196,6 +194,7 @@ export function AppShell() {
 
       {isMobile ? (
         <Drawer
+          anchor="right"
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           slotProps={{ paper: { sx: { width: DRAWER_WIDTH } } }}
@@ -239,8 +238,7 @@ export function AppShell() {
           minWidth: 0,
           px: { xs: 2, md: 3 },
           py: { xs: 2, md: 3 },
-          // Clear the fixed bottom bar so the last row is never under it.
-          pb: isMobile ? `${BOTTOM_NAV_HEIGHT + 24}px` : 3,
+          pb: 3,
           // It is a focus target rather than a control, so the ring it would
           // otherwise draw around the whole page is noise.
           outline: 'none',
@@ -261,54 +259,20 @@ export function AppShell() {
         </ErrorBoundary>
       </Box>
 
-      {isMobile ? (
-        <>
-          {/* Not on the report page itself, where it links to where you
-              already are and covers a card while doing it. */}
-          {user.role === 'EMPLOYEE' && location.pathname !== reportNavItem.path ? (
-            <Fab
-              color="primary"
-              aria-label={reportNavItem.label}
-              component={RouterLink}
-              to={reportNavItem.path}
-              sx={{ position: 'fixed', right: 16, bottom: BOTTOM_NAV_HEIGHT + 16 }}
-            >
-              <AddIcon />
-            </Fab>
-          ) : null}
-
-          <Paper
-            component="nav"
-            // A different name from the drawer's "Main", because on a phone
-            // both can be on screen at once and "navigation, navigation" is
-            // not a choice anybody can make. This one is the four-item subset
-            // `navigation.ts` marks with `inBottomNav`; the drawer is all of
-            // them.
-            aria-label="Quick links"
-            elevation={3}
-            sx={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1200 }}
-          >
-            <BottomNavigation value={activePath} showLabels>
-              {bottomItems.map((item) => (
-                <BottomNavigationAction
-                  key={item.path}
-                  label={item.label}
-                  value={item.path}
-                  icon={<item.icon />}
-                  // Real anchors rather than buttons driven by `onChange`.
-                  // These go somewhere, so they should be links: a screen
-                  // reader announces "link", the browser offers open-in-new-
-                  // tab and middle-click, and the status bar shows where the
-                  // tap will land. The previous version navigated
-                  // imperatively, which worked and told the user nothing.
-                  component={RouterLink}
-                  to={item.path}
-                  aria-current={item.path === activePath ? 'page' : undefined}
-                />
-              ))}
-            </BottomNavigation>
-          </Paper>
-        </>
+      {/* Not on the report page itself, where it links to where you already
+          are and covers a card while doing it. It sits at the bottom corner
+          the navigation bar used to occupy — with the bar gone there is
+          nothing under it to clear. */}
+      {isMobile && user.role === 'EMPLOYEE' && location.pathname !== reportNavItem.path ? (
+        <Fab
+          color="primary"
+          aria-label={reportNavItem.label}
+          component={RouterLink}
+          to={reportNavItem.path}
+          sx={{ position: 'fixed', right: 16, bottom: 16 }}
+        >
+          <AddIcon />
+        </Fab>
       ) : null}
     </Box>
   );

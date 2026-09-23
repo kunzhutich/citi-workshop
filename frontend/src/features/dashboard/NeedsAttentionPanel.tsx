@@ -15,8 +15,10 @@ import { EmptyState, QueryState } from '../../components/QueryState';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { RowActions } from '../../components/RowActions';
 import { AssignButton } from '../incidents/AssignButton';
 import { ACTIVE_STATUSES, currentListLink } from './listLinks';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
 import { useTicketLinkState } from '../incidents/backTarget';
 
@@ -280,13 +282,15 @@ function AttentionRow({
             </Typography>
           ) : null}
         </Box>
-        <Typography variant="body2">{title}</Typography>
+        <TicketTitle density="row">{title}</TicketTitle>
         <Box sx={{ display: 'flex', gap: 1, mt: 0.75, flexWrap: 'wrap' }}>{chips}</Box>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           {detail}
         </Typography>
       </Box>
-      <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
+      <RowActions>
+        <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
+      </RowActions>
     </Box>
   );
 }

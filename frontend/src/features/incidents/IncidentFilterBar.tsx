@@ -24,6 +24,7 @@ import {
 } from '../../display/labels';
 import { useCategoryTree } from '../categories/hooks';
 import { useFacilityTree } from '../facilities/hooks';
+import { FilterRow } from '../../components/FilterRow';
 import { AppliedFilterChips } from './AppliedFilterChips';
 import type { IncidentFilterControls } from './useIncidentFilters';
 
@@ -68,8 +69,20 @@ export function IncidentFilterBar({ controls }: IncidentFilterBarProps) {
   return (
     <Box sx={{ mb: 2 }}>
       <AppliedFilterChips controls={controls} />
-      <Badge badgeContent={controls.activeCount} color="primary">
-        <Button variant="outlined" startIcon={<FilterListIcon />} onClick={() => setDrawerOpen(true)}>
+      {/* Full width, per §4.4. The badge has to stretch too, or a full-width
+          button inside a shrink-wrapped badge leaves the count floating in the
+          middle of the row rather than on the button's corner. */}
+      <Badge
+        badgeContent={controls.activeCount}
+        color="primary"
+        sx={{ display: 'block', '& .MuiBadge-badge': { right: 8, top: 8 } }}
+      >
+        <Button
+          fullWidth
+          variant="outlined"
+          startIcon={<FilterListIcon />}
+          onClick={() => setDrawerOpen(true)}
+        >
           Search and filter
         </Button>
       </Badge>
@@ -120,36 +133,12 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
   }, [search, filters.q, setFilters]);
 
   return (
-    /*
-     * The column count follows the width of *this box*, not the width of the
-     * window.
-     *
-     * It used to be a six-column template behind Material UI's `md`
-     * breakpoint, and `md` is a media query: it asks how wide the viewport is.
-     * This bar does not live in the viewport. It lives inside `<main>`, which
-     * on a desktop is 248px of permanent drawer and 48px of padding narrower
-     * than the window — so between roughly 900px and 1300px the six columns
-     * switched on while their own minimums (200 + 4x140 + the switch + five
-     * gaps, about 950px) did not fit in the 620-900px actually available. Grid
-     * tracks cannot shrink below a `minmax()` minimum, so the bar pushed out
-     * of `<main>` and the whole document scrolled sideways. Chrome showed it
-     * sooner than Firefox because its classic scrollbar takes another 15px of
-     * layout width.
-     *
-     * `auto-fit` with a `minmax()` floor asks the question the right way
-     * round: fit as many 160px columns as the available width holds, and share
-     * the remainder between them. There is no breakpoint to get wrong, and
-     * `min(100%, 160px)` is the part that matters on a phone — without it a
-     * container narrower than 160px would still be overflowed by one column.
-     */
-    <Box
-      sx={{
-        display: 'grid',
-        gap: 2,
-        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))',
-        alignItems: 'start',
-      }}
-    >
+    // Six controls, so a narrower column than `FilterRow`'s default — at
+    // 200px six columns would want 1,300px of content box, which a 1440px
+    // window does not have once the drawer and the padding are taken out.
+    // Everything else about the reflow, and why it is not a breakpoint, is in
+    // `FilterRow` and in D44.
+    <FilterRow minColumn={160}>
       <TextField
         label="Search"
         value={search}
@@ -269,7 +258,7 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
           </Button>
         ) : null}
       </Box>
-    </Box>
+    </FilterRow>
   );
 }
 

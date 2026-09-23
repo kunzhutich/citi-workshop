@@ -16,6 +16,7 @@ import { EscalatedFlag } from '../../components/EscalatedFlag';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
 import { useTicketLinkState } from './backTarget';
 
@@ -156,9 +157,9 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                     one thing with no fixed position. */}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
                   {incident.is_escalated ? <EscalatedFlag /> : null}
-                  <Typography variant="body2" noWrap title={incident.title}>
+                  <TicketTitle density="row" noWrap title={incident.title}>
                     {incident.title}
-                  </Typography>
+                  </TicketTitle>
                 </Box>
               </TableCell>
               <TableCell>

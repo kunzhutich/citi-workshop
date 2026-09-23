@@ -8454,3 +8454,139 @@ back; the rest is the price of the alignment. It is most visible on
 | **Transient prop** | A prop a `styled()` component consumes to decide its own CSS and must not pass down to the DOM element. Emotion and Material UI filter them with `shouldForwardProp`. |
 | **`minWidth` vs `width`** | `minWidth` lets a chip grow if its label is somehow longer than expected; a fixed `width` would clip it. Since the pinned value *is* the longest label, every chip lands on exactly that width, and an unexpected one degrades by being wide rather than by being unreadable. |
 | **Filled vs outlined chip** | Material UI's two chip variants: a block of colour with white text, or a coloured border and label on the surface behind it. The distinction is a channel independent of hue, which is why CRITICAL uses it. |
+
+---
+
+## Phase R4 — The redesign brief, section 4: layout and mobile
+
+*Seven requests about where things sit, most of them on a phone. Two are the owner
+overruling decisions this project made earlier and wrote down at the time, which is the
+most useful kind of feedback and the kind that leaves the most stale prose behind.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `layout/AppShell.tsx` | The bottom navigation bar is deleted; the phone's drawer opens from the right; the FAB and `<main>` stop reserving 56px for a bar that is gone. |
+| `layout/navigation.ts` | `NavItem.inBottomNav` removed — no consumer left. |
+| `theme.ts` | The drawer's border follows its anchor. |
+| `components/ResponsiveDialog.tsx` | No longer full screen on a phone: 16px of page on every side and a `maxHeight`. |
+| `components/RowActions.tsx` | **New.** The buttons acting on one row, full width and stacked on a phone. |
+| `components/FilterRow.tsx` | **New.** A filter row that reflows to the width it has. Used by the ticket lists, the engineer roster and the users page. |
+| `components/TicketTitle.tsx` | **New.** One treatment per surface, and the written-down rule. |
+| `features/facilities/FacilitiesPage.tsx` | The floor name moves inside the seat card so both columns start on one line; `Collapse` on the panel; a phone scrolls it into view. |
+| `e2e/responsive.spec.ts` | The bottom-bar assertions are gone; the drawer's side and the dialog's margins are asserted instead. |
+| `layout/AppShell.test.tsx`, `layout/navigation.test.ts` | Bottom-bar cases removed, surviving halves kept. |
+
+Decision: [D54](DECISION-LOG.md#d54--section-4-the-phone-loses-a-navigation-bar-and-gains-its-screen-back).
+
+### 2. Why it is shaped this way
+
+**Three new components, and all three exist for the same reason.** Each is a rule that
+was about to be written at four call sites: "a row's buttons go full width on a phone",
+"a filter row reflows", "a ticket title is ink at this size". Written once, the fifth
+call site cannot forget it — and the buttons, fields and titles themselves stay ignorant
+of the viewport, which is what keeps `AssignButton` usable anywhere.
+
+**`FilterRow` is D44's fix promoted to a rule.** The sideways-scroll bug was a
+viewport breakpoint deciding a layout inside a box narrower than the viewport. That was
+fixed on the ticket list in R1 and left as one screen's special case; the engineers and
+users pages had the same shape in a flex row with hardcoded widths. They now share one
+container-driven grid, and the widths those pages were setting to work around it are
+gone.
+
+**`RowActions` deliberately uses a viewport media query**, built from `MOBILE_MAX_WIDTH`
+so it cannot drift from `useBreakpoint`. By D44's lesson a container query would be more
+honest; it is not used because "is this a phone" is a viewport question everywhere else
+in this application, and one component answering it differently would be a worse fault
+than the one it fixed.
+
+**Deleting the bottom bar deleted an accessibility problem too.** Two navigation
+landmarks could be on screen at once, so each needed a distinct name — "Main" and "Quick
+links" — for a screen-reader user not to be offered "navigation, navigation". There is
+one now. The name stays because a page snapshot that says which surface it is costs one
+attribute.
+
+### 3. How the pieces connect
+
+What a phone screen is made of, after this phase:
+
+```
+AppShell
+ ├─ AppBar (fixed)         bell · menu button, in the right corner
+ ├─ Drawer anchor="right"  ← the whole of the phone's navigation now
+ │    └─ theme.ts gives it a left border, because that is the edge it has
+ ├─ <main>  pb: 3          ← was 80px, to clear a bar that no longer exists
+ │    └─ the screen
+ │         ├─ FilterRow          one column at 343px, several at 1089px
+ │         ├─ TicketTitle        ink, sized by how much screen the ticket owns
+ │         └─ RowActions         100% wide below 900px, natural above
+ └─ Fab  bottom: 16        ← was 72
+```
+
+And the facilities page, which is the one screen whose two columns had to be taught to
+start together:
+
+```
+Box (grid, 1fr at xs)
+ ├─ Paper  buildings          top: 225
+ └─ Box ref={seatPaneRef}     top: 225   ← measured, not assumed
+      └─ Collapse in={floor selected}
+           └─ Paper
+                ├─ toolbar: floor name + four buttons   ← used to sit above the Paper
+                └─ TableContainer
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which navigation surface a width gets | `layout/AppShell.tsx` | the `isMobile` branches |
+| Which side the phone's drawer comes from | `layout/AppShell.tsx` | `anchor="right"` on the temporary `Drawer` |
+| How big a dialog is | `components/ResponsiveDialog.tsx` | the `slotProps.paper` branch |
+| That a row's buttons go full width on a phone | `components/RowActions.tsx` | the media query, built from `MOBILE_MAX_WIDTH` |
+| How a row of filters reflows | `components/FilterRow.tsx` | `minColumn`, and the `auto-fit` template |
+| **What a ticket title looks like** | `components/TicketTitle.tsx` | `TitleDensity` — and the table in its docstring |
+| Where the phone/desktop line is | `hooks/useBreakpoint.ts` | `MOBILE_MAX_WIDTH` — imported by `RowActions`, never repeated |
+
+### 5. How to change it
+
+**To add a control to a filter row:** drop it in. Do not give it a width — the grid cell
+is its width, and a `minWidth` inside one is how the engineers page ended up opting out
+of the theme.
+
+**To add a button to a row:** put it inside the existing `RowActions`. It needs no
+`fullWidth` and no viewport prop.
+
+**To render a ticket title anywhere new:** use `TicketTitle` and pick the density from
+the table in its docstring. If none of the three fits, the honest move is a fourth
+density with a reason, not an `sx` override at the call site — that is how six
+treatments happened.
+
+**To move the phone/desktop line:** `MOBILE_MAX_WIDTH`, and nothing else.
+
+### 6. Gotchas
+
+**`scrollIntoView({ behavior: 'smooth' })` ignores the stylesheet.** `theme.ts` sets
+`scroll-behavior: auto !important` under `prefers-reduced-motion`, which covers CSS-driven
+scrolling and not a scroll asked for in JavaScript. The facilities page checks
+`matchMedia` itself. Any future scripted scroll has to do the same.
+
+**Deleting a surface means deleting what asserted it — carefully.** Two `AppShell` tests
+covered the bottom bar *and* something that still exists. Deleting them whole would have
+quietly dropped coverage of the sidebar's absence at phone width and of the drawer being
+out of the DOM until opened. Each kept its surviving half.
+
+**A full-width button inside a `Badge` needs the badge stretched too.** `Badge` shrink-wraps
+its child, so a `fullWidth` button inside one leaves the count floating in the middle of the
+row instead of on the button's corner. The filter button sets `display: block` on the badge
+and repositions the dot.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Transient prop** | A prop a `styled()` component uses to pick its own CSS and must not forward to the DOM. `FilterRow`'s `minColumn` is one. |
+| **`Collapse`** | Material UI's height transition. `unmountOnExit` takes the content out of the DOM when closed, which is what keeps a collapsed panel out of the accessibility tree rather than merely invisible. |
+| **Landmark** | An element a screen reader can jump between — `<header>`, `<nav>`, `<main>`. Two of the same kind on one page need distinct accessible names to be choosable, which is why the phone once had "Main" and "Quick links". |
+| **`auto-fit` vs a breakpoint** | `auto-fit` divides the width the element actually has; a breakpoint asks how wide the window is. Inside an application shell those are different numbers, and D44 is the bug that difference caused. |

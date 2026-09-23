@@ -10,6 +10,7 @@ import { EscalatedFlag } from '../../components/EscalatedFlag';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
 import { useTicketLinkState } from './backTarget';
 
@@ -62,9 +63,7 @@ export function IncidentCardList({ incidents }: IncidentCardListProps) {
                   on every card rather than at the end of a sentence. */}
               <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
                 {incident.is_escalated ? <EscalatedFlag /> : null}
-                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                  {incident.title}
-                </Typography>
+                <TicketTitle density="card">{incident.title}</TicketTitle>
               </Box>
 
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1 }}>

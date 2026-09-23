@@ -329,7 +329,16 @@ export const theme = createTheme({
       styleOverrides: {
         paper: ({ theme: current }) => ({
           backgroundColor: current.palette.background.paper,
-          borderRight: `1px solid ${current.palette.divider}`,
+          // The edge the border sits on follows the anchor. The desktop
+          // drawer is on the left and the phone's opens from the right, and a
+          // border down the far side of a right-hand panel is a line in the
+          // middle of nothing.
+          '&.MuiDrawer-paperAnchorLeft': {
+            borderRight: `1px solid ${current.palette.divider}`,
+          },
+          '&.MuiDrawer-paperAnchorRight': {
+            borderLeft: `1px solid ${current.palette.divider}`,
+          },
         }),
       },
     },

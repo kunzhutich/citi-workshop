@@ -34,24 +34,34 @@ test.describe('layout', () => {
     await employeePage.goto('/tickets');
 
     if (isMobile(employeePage)) {
-      // Asserted on the landmarks rather than on individual links, because
-      // both surfaces hold some of the same labels: "Quick links" is the
-      // four-item bottom bar, "Main" is the full list in the drawer. The
-      // drawer's absence is meaningful rather than a visibility check — MUI
-      // keeps a temporary Drawer out of the DOM entirely while it is closed.
-      await expect(employeePage.getByRole('navigation', { name: 'Quick links' })).toBeVisible();
-      await expect(employeePage.getByRole('navigation', { name: 'Main' })).toHaveCount(0);
+      // One navigation surface on a phone, and it is behind the button. There
+      // were two until R4 removed the bottom bar; the assertions about it are
+      // gone with it rather than rewritten, because there is no longer a
+      // second surface to distinguish from this one.
+      //
+      // The drawer's absence while closed is meaningful rather than a
+      // visibility check — Material UI keeps a temporary Drawer out of the DOM
+      // entirely until it opens.
+      await expect(employeePage.getByRole('navigation')).toHaveCount(0);
       await expect(employeePage.getByRole('button', { name: 'Open navigation' })).toBeVisible();
       await expect(employeePage.getByRole('search')).toHaveCount(0);
 
-      // Everything the drawer holds is one tap away, not hidden.
+      // Everything the drawer holds is one tap away, not hidden — which
+      // matters more now that the tap is the only way to any of it.
       await employeePage.getByRole('button', { name: 'Open navigation' }).click();
       const drawer = employeePage.getByRole('navigation', { name: 'Main' });
       await expect(drawer.getByRole('link', { name: 'My tickets' })).toBeVisible();
+      await expect(drawer.getByRole('link', { name: 'All tickets' })).toBeVisible();
+
+      // It comes in from the right, where the button that opened it is.
+      const panel = await drawer.boundingBox();
+      const viewport = employeePage.viewportSize();
+      expect(panel).not.toBeNull();
+      expect(viewport).not.toBeNull();
+      expect(panel!.x + panel!.width).toBeGreaterThanOrEqual(viewport!.width - 1);
     } else {
       await expect(employeePage.getByRole('navigation', { name: 'Main' })).toBeVisible();
       await expect(employeePage.getByRole('link', { name: 'All tickets' })).toBeVisible();
-      await expect(employeePage.getByRole('navigation', { name: 'Quick links' })).toHaveCount(0);
       await expect(employeePage.getByRole('button', { name: 'Open navigation' })).toHaveCount(0);
       await expect(employeePage.getByRole('search')).toBeVisible();
     }
@@ -192,7 +202,7 @@ test.describe('layout', () => {
     }
   });
 
-  test('a dialog fills a phone and is a panel on a desktop', async ({ employeePage }) => {
+  test('a dialog is a panel at both widths, never the whole phone', async ({ employeePage }) => {
     await reportIssue(employeePage, {
       group: 'Network & Access',
       subcategory: 'Wi-Fi',
@@ -211,10 +221,21 @@ test.describe('layout', () => {
     expect(viewport).not.toBeNull();
 
     if (isMobile(employeePage)) {
-      // Full screen, because a centred dialog with a text field in it is
-      // unusable once the on-screen keyboard takes half the viewport.
-      expect(box!.width).toBeGreaterThanOrEqual(viewport!.width - 1);
-      expect(box!.height).toBeGreaterThanOrEqual(viewport!.height - 1);
+      // It used to be full screen, and R4 changed that: a dialog that fills a
+      // phone reads as a page, and a page that arrived without the address bar
+      // changing loses the cue that closing it puts you back where you were.
+      //
+      // Asserted as a gap on every side rather than as "not full screen",
+      // because "smaller than the viewport" would pass on a dialog one pixel
+      // short of filling it. 16px of page has to be visible around it.
+      expect(box!.x).toBeGreaterThanOrEqual(15);
+      expect(box!.y).toBeGreaterThanOrEqual(15);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width - 15);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height - 15);
+
+      // And still wide enough to be worth having: the failure this replaces
+      // would be a dialog shrink-wrapped to its title.
+      expect(box!.width).toBeGreaterThan(viewport!.width * 0.8);
     } else {
       expect(box!.width).toBeLessThan(viewport!.width);
     }
@@ -241,17 +262,17 @@ test.describe('layout', () => {
     await employeePage.mouse.wheel(0, 4000);
     await expect(action).toBeInViewport();
 
-    // And it sits above the bottom navigation rather than over it. The bar's
-    // items are anchors as of S6 — they go somewhere, so they are links, and
-    // a screen reader now says so.
+    // It used to have to sit above the bottom navigation as well. R4 deleted
+    // that bar, so the assertion about clearing it went with it — there is
+    // nothing under the action bar now, which is the whole of what the phone
+    // gained. What is still worth holding is that the bar reaches the bottom
+    // of the viewport rather than floating above a gap that no longer has
+    // anything in it.
     const actionBox = await action.boundingBox();
-    const navBox = await employeePage
-      .getByRole('navigation', { name: 'Quick links' })
-      .getByRole('link', { name: 'Home' })
-      .first()
-      .boundingBox();
+    const viewport = employeePage.viewportSize();
     expect(actionBox).not.toBeNull();
-    expect(navBox).not.toBeNull();
-    expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
+    expect(viewport).not.toBeNull();
+    expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(viewport!.height);
+    expect(actionBox!.y + actionBox!.height).toBeGreaterThan(viewport!.height - 120);
   });
 });

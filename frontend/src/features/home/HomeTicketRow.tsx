@@ -11,6 +11,8 @@ import { EscalatedFlag } from '../../components/EscalatedFlag';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { RowActions } from '../../components/RowActions';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
 import { useTicketLinkState } from '../incidents/backTarget';
 
@@ -71,7 +73,7 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
               cards instead of after however long this ticket's title is. */}
           <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mt: 0.25 }}>
             {incident.is_escalated ? <EscalatedFlag /> : null}
-            <Typography variant="body1">
+            <TicketTitle density="card">
               <Link
                 component={RouterLink}
                 to={incidentPath(incident.id)}
@@ -81,7 +83,7 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
               >
                 {incident.title}
               </Link>
-            </Typography>
+            </TicketTitle>
           </Box>
 
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
@@ -99,7 +101,7 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
           ) : null}
         </Box>
 
-        {actions ? <Box sx={{ flex: '0 0 auto' }}>{actions}</Box> : null}
+        {actions ? <RowActions>{actions}</RowActions> : null}
       </CardContent>
     </Card>
   );

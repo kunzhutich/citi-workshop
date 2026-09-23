@@ -12,6 +12,8 @@ import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
 import { useTicketLinkState } from '../incidents/backTarget';
+import { RowActions } from '../../components/RowActions';
+import { TicketTitle } from '../../components/TicketTitle';
 import { AssignButton } from '../incidents/AssignButton';
 import { useIncidents } from '../incidents/hooks';
 import { useCategoryTree } from '../categories/hooks';
@@ -94,15 +96,23 @@ export function TeamPage() {
                   }}
                 >
                   <Box sx={{ flexGrow: 1, minWidth: 220 }}>
+                    {/* The reference is the link and the title is ink. They
+                        used to be one coloured `subtitle2`, which made this the
+                        only screen where a ticket's title was not the same
+                        colour as every other ticket's title. See TicketTitle.
+                        §5.7 of the brief folds this card into the home screens'
+                        row, which will take the treatment with it. */}
                     <Link
                       component={RouterLink}
                       to={incidentPath(incident.id)}
                       state={ticketLinkState}
                       variant="subtitle2"
                       underline="hover"
+                      sx={{ fontWeight: 600 }}
                     >
-                      {incident.reference} · {incident.title}
+                      {incident.reference}
                     </Link>
+                    <TicketTitle density="card">{incident.title}</TicketTitle>
                     <Typography variant="caption" color="text.secondary" component="p">
                       {incident.category.group_name} › {incident.category.name} ·{' '}
                       {incident.location.path} · reported {relativeTime(incident.created_at)}
@@ -110,12 +120,14 @@ export function TeamPage() {
                   </Box>
                   <StatusChip status={incident.status} />
                   <PriorityChip priority={incident.priority} />
-                  <AssignButton
-                    incidentId={incident.id}
-                    reference={incident.reference}
-                    groupId={incident.category.group_id}
-                    currentAssigneeId={incident.assignee?.id ?? null}
-                  />
+                  <RowActions>
+                    <AssignButton
+                      incidentId={incident.id}
+                      reference={incident.reference}
+                      groupId={incident.category.group_id}
+                      currentAssigneeId={incident.assignee?.id ?? null}
+                    />
+                  </RowActions>
                 </CardContent>
               </Card>
             ))}

@@ -20,6 +20,7 @@ import { useState } from 'react';
 import { describeError } from '../../api/errors';
 import type { User, UserRole } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
+import { FilterRow } from '../../components/FilterRow';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
@@ -66,14 +67,13 @@ export function UsersPage() {
     <Box>
       <PageHeader title="Users" description="Every account, its role, and whether it can sign in." />
 
-      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center', mb: 3 }}>
+      <FilterRow sx={{ mb: 3 }}>
         <TextField
           label="Search"
           size="small"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Name or email"
-          sx={{ maxWidth: 320 }}
           slotProps={{
             input: {
               startAdornment: (
@@ -93,7 +93,7 @@ export function UsersPage() {
           }
           label="Show deactivated accounts"
         />
-      </Box>
+      </FilterRow>
 
       <QueryState
         isPending={users.isPending}

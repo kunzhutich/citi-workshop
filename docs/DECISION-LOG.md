@@ -2815,3 +2815,113 @@ it is accepted.
 heading, and the brief's reason — "so rows line up" — has nothing to align
 there. Putting a chip inline before an `<h1>` would cost the heading to buy
 nothing.
+
+## D54 — Section 4: the phone loses a navigation bar and gains its screen back
+
+**Seven requests, and two of them are the owner overruling an earlier decision
+of ours.** Recorded together because the reasoning in both cases is the same
+shape: something was built for a good reason, and the reason stopped being the
+whole story once the thing was used.
+
+### The bottom navigation bar is deleted, not hidden
+
+It carried three or four of the drawer's items and cost 56px of a phone's
+height permanently, plus the padding every screen reserved to clear it. The
+drawer covers the same ground and more.
+
+Deleted rather than hidden, per the brief, so nothing has to reserve room for
+it: `BOTTOM_NAV_HEIGHT` is gone, `<main>`'s phone padding is the ordinary one,
+the report FAB sits at `bottom: 16` instead of `bottom: 72`, and `NavItem` no
+longer carries `inBottomNav` — a flag with no consumer is a question the next
+reader has to answer for nothing.
+
+**The tests that asserted the bar are gone with it**, on the owner's
+instruction. Two were rewritten rather than deleted outright, and the
+distinction matters: `AppShell.test.tsx`'s two cases each asserted the bar
+*and* something that still exists — that the sidebar is absent at phone width,
+and that Material UI keeps a temporary `Drawer` out of the DOM until it opens.
+Deleting them whole would have removed coverage of behaviour we still ship, so
+each keeps its surviving half. `navigation.test.ts`'s "at most four items in
+the bottom bar" is deleted outright; there is no bar to bound.
+
+### The phone's drawer opens from the right
+
+M5 moved the menu *button* to the right corner for thumb reach and left the
+panel coming in from the left, so the tap and the thing it produced were at
+opposite edges of the screen. The desktop drawer stays on the left: it is
+permanent, never "opened", and reach is not a constraint with a mouse.
+
+`theme.ts`'s drawer border had to learn about the anchor — a right-hand panel
+with a border down its right edge is a line drawn in the margin of nothing.
+
+### Dialogs are no longer full screen on a phone
+
+BUILD-PLAN §10 asked for full screen because a text field in a centred dialog
+is unusable once the keyboard takes half the viewport. The owner overrides it,
+and the reason is worth keeping: **a dialog that fills the screen looks like a
+page**, and a page that arrived without the address bar changing loses the cue
+that closing it puts you back where you were.
+
+The keyboard problem is real and is answered with margins instead: 16px of page
+on every side — the gutter the rest of the application uses — and a `maxHeight`
+that keeps the dialog inside the viewport so it scrolls rather than the page
+behind it. The e2e assertion is a **gap on every side**, not "smaller than the
+viewport", which would pass on a dialog one pixel short of filling it.
+
+### Full-width controls: the container decides, not the control
+
+Two new pieces, both so the rule lives in one place:
+
+- **`components/RowActions.tsx`** — the buttons acting on one row. Full width
+  and stacked below 900px. The alternative was `fullWidth={isMobile}` on each
+  button, which is the same rule at four call sites and forgotten at the fifth,
+  and it makes every button that might appear in a row take a viewport prop it
+  has no other use for. `AssignButton` and `PickUpButton` know nothing about
+  this. Measured after: 309px of a 343px card on a phone, 64px on a desktop.
+- **`components/FilterRow.tsx`** — a filter row that reflows to the width it
+  has, `repeat(auto-fit, minmax(min(100%, N), 1fr))`. The ticket lists, the
+  engineer roster and the users page all use it, which also folds in
+  [D44](#d44--the-sideways-scroll-a-viewport-breakpoint-deciding-a-layout-inside-a-narrower-box)'s
+  fix rather than leaving it as one screen's special case. Controls inside stop
+  setting their own widths — the engineers page was opting out of the theme's
+  full-width text fields with `fullWidth={false}` and a `minWidth` precisely to
+  work around the flex row this replaces.
+
+`RowActions` uses a viewport media query, built from `MOBILE_MAX_WIDTH` so it
+cannot drift from `useBreakpoint`. A container query would be more honest by
+D44's lesson, and is deliberately not used: "is this a phone" is a viewport
+question everywhere else in this application, and one component answering it
+differently would be a worse fault than the one it fixed.
+
+### The ticket title rule
+
+Six surfaces rendered a ticket title and no two agreed — `body2`, `subtitle1`
+at 600, `body1`, `subtitle2`, `h1`. The team page's sat *inside* the link with
+the reference, so it wore the link colour while every other title was ink, and
+that is the half that actually misleads: a coloured title says "click this" on
+a card where the whole card is already the target.
+
+**The rule, in `components/TicketTitle.tsx`:** a title is always ink, never a
+link colour — what is clickable is the reference or the row, and colour is how
+a reader tells those apart. Size follows how much of the screen the ticket
+owns: `row` (`body2`) in table and panel rows, `card` (`subtitle1`/600) on
+cards and home rows, `page` (`h1`) on the detail page. `page` is the deliberate
+exception the brief allows: there the title is not one item among many, it is
+what the page is about, and the heading level is a fact for a screen reader as
+much as a size for everyone else.
+
+### Facilities: the columns start on the same line
+
+The floor's name sat above the seat panel on the page background, so the
+buildings panel's top edge and the seat table's were a heading apart and the
+right column read as having slipped down. The name and its four buttons move
+*inside* the seat card as its toolbar: both panels now start at y=225,
+measured.
+
+`Collapse` replaces the bare conditional, so choosing a floor opens the panel
+rather than teleporting it. On a phone the two columns are stacked, so a tap on
+"Level 3" filled a panel a screenful below the fold and looked like it had done
+nothing — the page now scrolls it into view. `prefers-reduced-motion` is
+honoured by hand there: `theme.ts` sets `scroll-behavior: auto` for that case,
+but `behavior: 'smooth'` passed to `scrollIntoView` overrides the stylesheet
+rather than obeying it.

@@ -64,7 +64,6 @@ const EXTRA_ORIGINS: NavItem[] = [
     path: paths.notifications,
     // Never rendered: this list is only ever read for its labels and paths.
     icon: () => null,
-    inBottomNav: false,
   },
 ];
 

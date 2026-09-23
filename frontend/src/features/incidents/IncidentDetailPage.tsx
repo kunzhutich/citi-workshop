@@ -16,6 +16,7 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
 import { StatusChip } from '../../components/StatusChip';
+import { TicketTitle } from '../../components/TicketTitle';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { hasAnyAction } from './actionAvailability';
 import { useBackTarget } from './backTarget';
@@ -115,9 +116,7 @@ export function IncidentDetailPage() {
               <Typography variant="overline" color="text.secondary">
                 {ticket.reference}
               </Typography>
-              <Typography variant="h1" component="h1" sx={{ overflowWrap: 'anywhere' }}>
-                {ticket.title}
-              </Typography>
+              <TicketTitle density="page">{ticket.title}</TicketTitle>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
                 {/*
                   The one test id in the application. "In progress" appears
