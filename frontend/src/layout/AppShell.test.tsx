@@ -9,7 +9,7 @@ import { makeAdmin, makeEngineer, makeUser } from '../test/factories';
 import { renderWithAuth } from '../test/renderWithProviders';
 import { setViewportWidth } from '../test/viewport';
 import { MOBILE_MAX_WIDTH } from '../hooks/useBreakpoint';
-import { AppShell } from './AppShell';
+import { AppShell, MAIN_CONTENT_ID } from './AppShell';
 
 /**
  * The shell's one real decision: which navigation surface to render at which
@@ -62,8 +62,12 @@ describe('mobile layout', () => {
     renderShell(makeUser());
 
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Quick links' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open navigation' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'My tickets' })).toBeInTheDocument();
+    // A link, not a button. The bottom bar used to navigate imperatively
+    // through `BottomNavigation`'s `onChange`; its items go somewhere, so
+    // they are anchors now and announce themselves as such.
+    expect(screen.getByRole('link', { name: 'My tickets' })).toBeInTheDocument();
   });
 
   it('treats a tablet at 768 px as mobile', () => {
@@ -102,6 +106,17 @@ describe('mobile layout', () => {
     renderShell(makeUser());
 
     expect(screen.getByRole('link', { name: 'Report an issue' })).toBeInTheDocument();
+  });
+
+  it('drops the floating button on the report page itself', () => {
+    // It would link to the page you are already on, and cover a card while
+    // doing it — at 375px the FAB sits over the subcategory grid.
+    setViewportWidth(375);
+
+    renderShell(makeUser(), paths.report);
+
+    expect(screen.queryByRole('link', { name: 'Report an issue' })).not.toBeInTheDocument();
+    expect(screen.getByText('report content')).toBeInTheDocument();
   });
 
   it('keeps the items that do not fit the bottom bar reachable in the drawer', async () => {
@@ -221,6 +236,63 @@ describe('account menu', () => {
 });
 
 /** Render the shell around a couple of routed pages. */
+describe('accessibility scaffolding', () => {
+  it('puts a skip link before the navigation, pointing at the main landmark', async () => {
+    renderShell(makeUser());
+
+    const skip = screen.getByRole('link', { name: 'Skip to main content' });
+    expect(skip).toHaveAttribute('href', `#${MAIN_CONTENT_ID}`);
+
+    // It has to be the *first* stop, or it saves nobody anything.
+    await userEvent.tab();
+    expect(skip).toHaveFocus();
+
+    // And the thing it points at must be able to take focus. Without
+    // `tabIndex={-1}` the browser scrolls there and leaves focus on the link,
+    // so the next Tab goes straight back into the navigation.
+    const main = document.getElementById(MAIN_CONTENT_ID);
+    expect(main).not.toBeNull();
+    expect(main).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('marks the current page rather than only colouring it', () => {
+    renderShell(makeUser(), paths.myTickets);
+
+    expect(screen.getByRole('link', { name: 'My tickets' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(screen.getByRole('link', { name: 'All tickets' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('names the phone surfaces distinctly, and the open drawer hides the one behind it', async () => {
+    setViewportWidth(375);
+
+    renderShell(makeUser());
+
+    // Closed: the bottom bar is the navigation, and the drawer is not in the
+    // DOM at all — MUI keeps a temporary Drawer unrendered until it opens.
+    expect(screen.getByRole('navigation', { name: 'Quick links' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    // Open: the drawer is modal, so everything behind it leaves the
+    // accessibility tree. Exactly one navigation is ever exposed, which is
+    // why the two names never have to be told apart in practice — and why
+    // they are still different, so that a page snapshot of either one says
+    // which surface it is.
+    expect(screen.getByRole('navigation', { name: 'Main' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Quick links' })).not.toBeInTheDocument();
+  });
+
+  it('renders exactly one main landmark', () => {
+    renderShell(makeUser());
+
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+  });
+});
+
 function renderShell(user: CurrentUser, route: string = paths.home, signOut = vi.fn()) {
   return renderWithAuth(
     <Routes>
@@ -228,6 +300,7 @@ function renderShell(user: CurrentUser, route: string = paths.home, signOut = vi
         <Route path={paths.home} element={<span>home content</span>} />
         <Route path={paths.myTickets} element={<span>my tickets content</span>} />
         <Route path={paths.categories} element={<span>categories content</span>} />
+        <Route path={paths.report} element={<span>report content</span>} />
       </Route>
     </Routes>,
     { user, route, signOut },

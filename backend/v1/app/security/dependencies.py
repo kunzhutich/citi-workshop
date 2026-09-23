@@ -20,7 +20,6 @@ from the token, so an admin's change to a role or level applies on the very
 next request instead of whenever the current access token happens to expire.
 """
 
-import uuid
 from collections.abc import Callable
 from typing import Annotated
 
@@ -31,6 +30,7 @@ from app.db import get_db
 from app.errors import AuthenticationError, AuthorizationError
 from app.models.enums import EngineerLevel, UserRole
 from app.models.user import User
+from app.observability import bind_user_id
 from app.repositories import users as user_repository
 from app.security.tokens import InvalidTokenError, decode_access_token
 
@@ -77,6 +77,10 @@ def get_authenticated_user(
     if user is None or not user.is_active:
         raise AuthenticationError("Your account is no longer active.", code="INACTIVE_ACCOUNT")
 
+    # The first moment the answer is both known and verified, so it is where
+    # the request log learns whose request this is. It records; it decides
+    # nothing, and a failure above this line simply logs no user id.
+    bind_user_id(request.scope, user.id)
     return user
 
 
@@ -169,11 +173,6 @@ def get_include_inactive(
 def get_refresh_token_from_cookie(request: Request) -> str | None:
     """Return the raw refresh token from the request cookie, if present."""
     return request.cookies.get(REFRESH_COOKIE_NAME)
-
-
-def current_user_id(user: User) -> uuid.UUID:
-    """Return a user's id. A named helper so routes read declaratively."""
-    return user.id
 
 
 #: Convenience aliases so routes read as `user: CurrentUser` rather than

@@ -20,16 +20,20 @@ from app.models.enums import (
     BlockedReasonType,
     CloseReason,
     EngineerLevel,
+    EventType,
     IncidentPriority,
     IncidentStatus,
     LocationDetail,
     NoteVisibility,
+    NotificationType,
     SeatType,
     UserRole,
 )
+from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.security.passwords import hash_password
@@ -194,6 +198,9 @@ def make_incident(
     description: str = "It stopped working this morning and has not recovered.",
     is_escalated: bool = False,
     escalation_reason: str | None = None,
+    escalated_at: datetime | None = None,
+    blocked_reason_type: BlockedReasonType | None = None,
+    created_at: datetime | None = None,
     assigned_at: datetime | None = None,
     acknowledged_at: datetime | None = None,
     resolved_at: datetime | None = None,
@@ -211,6 +218,11 @@ def make_incident(
     constraint requires one, and a test about workload counts should not have
     to know that. An escalated one is given a reason and a timestamp for the
     same reason — the columns are meant to travel together.
+
+    `created_at` and `escalated_at` are settable because the M7 reports measure
+    *durations*: a test that states "the median time to resolve is 10.5 hours"
+    has to be able to place a ticket at a known instant rather than at whatever
+    time the suite happens to run.
     """
     incident = Incident(
         title=title,
@@ -223,14 +235,13 @@ def make_incident(
         assignee_id=assignee.id if assignee is not None else None,
         status=status,
         priority=priority,
-        blocked_reason_type=(
-            BlockedReasonType.WAITING_ON_PARTS if status == IncidentStatus.BLOCKED else None
-        ),
+        blocked_reason_type=blocked_reason_type
+        or (BlockedReasonType.WAITING_ON_PARTS if status == IncidentStatus.BLOCKED else None),
         is_escalated=is_escalated,
         escalation_reason=(
             escalation_reason or ("Nobody has looked at this" if is_escalated else None)
         ),
-        escalated_at=utc_now() if is_escalated else None,
+        escalated_at=escalated_at or (utc_now() if is_escalated else None),
         escalated_by=reporter.id if is_escalated else None,
         assigned_at=assigned_at or (utc_now() if assignee is not None else None),
         acknowledged_at=acknowledged_at,
@@ -239,10 +250,45 @@ def make_incident(
         close_reason=close_reason,
         reopen_count=reopen_count,
     )
+    if created_at is not None:
+        incident.created_at = created_at
     session.add(incident)
     session.flush()
     session.refresh(incident)
     return incident
+
+
+def make_event(
+    session: Session,
+    *,
+    incident: Incident,
+    actor: User | None = None,
+    event_type: EventType = EventType.STATUS_CHANGED,
+    from_value: str | None = None,
+    to_value: str | None = None,
+    reason: str | None = None,
+    created_at: datetime | None = None,
+) -> IncidentEvent:
+    """Insert one audit-log row.
+
+    `created_at` is settable so the blocked-age report can be tested: it reads
+    the moment a ticket entered BLOCKED out of this table, there being no
+    column that records it.
+    """
+    event = IncidentEvent(
+        incident_id=incident.id,
+        actor_id=actor.id if actor is not None else None,
+        event_type=event_type,
+        from_value=from_value,
+        to_value=to_value,
+        reason=reason,
+    )
+    if created_at is not None:
+        event.created_at = created_at
+    session.add(event)
+    session.flush()
+    session.refresh(event)
+    return event
 
 
 def make_note(
@@ -267,6 +313,37 @@ def make_note(
     session.flush()
     session.refresh(note)
     return note
+
+
+def make_notification(
+    session: Session,
+    *,
+    user: User,
+    incident: Incident,
+    notification_type: NotificationType = NotificationType.STATUS_CHANGED,
+    message: str = "Your ticket is now Resolved.",
+    created_at: datetime | None = None,
+    read_at: datetime | None = None,
+) -> Notification:
+    """Insert a notification directly.
+
+    Bypasses `app/notifications.py` on purpose: the rules decide *whether* a
+    row exists, and a test of the report needs rows with chosen timestamps —
+    including ones outside the window and ones read long after they arrived.
+    """
+    notification = Notification(
+        user_id=user.id,
+        incident_id=incident.id,
+        type=notification_type,
+        message=message,
+        read_at=read_at,
+    )
+    if created_at is not None:
+        notification.created_at = created_at
+    session.add(notification)
+    session.flush()
+    session.refresh(notification)
+    return notification
 
 
 def login(client: TestClient, email: str, password: str = DEFAULT_PASSWORD) -> str:

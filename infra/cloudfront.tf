@@ -89,6 +89,10 @@ resource "aws_cloudfront_distribution" "this" {
       allowed_methods        = ["GET", "HEAD", "OPTIONS", "DELETE", "PATCH", "POST", "PUT"]
       cached_methods         = ["GET", "HEAD"]
       viewer_protocol_policy = "redirect-to-https"
+      # CloudFront defaults compression off. JSON responses gzip well and
+      # the API is the chattiest thing here. Approved by the workshop
+      # organisers alongside the three edits in docs/INFRA-CHANGES.md.
+      compress = true
 
       # Use managed cache policy for no caching (ID: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad)
       cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
@@ -132,6 +136,9 @@ resource "aws_cloudfront_distribution" "this" {
 
     target_origin_id       = local.origin_id
     viewer_protocol_policy = "redirect-to-https"
+    # The React bundle is 976 kB raw and 301 kB gzipped, paid on every
+    # cold visit. This one line is the difference.
+    compress = true
 
     forwarded_values {
       query_string = false

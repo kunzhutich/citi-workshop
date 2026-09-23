@@ -41,6 +41,7 @@ from app.models.enums import (
     EventType,
     IncidentStatus,
     LocationDetail,
+    NotificationType,
     UserRole,
 )
 from app.models.event import IncidentEvent
@@ -62,6 +63,7 @@ from app.schemas.incident import (
     TransitionRequest,
 )
 from app.services import notes as note_service
+from app.services import notification_service
 from app.services.visibility import apply_incident_visibility
 from app.workflow import Transition
 
@@ -202,6 +204,56 @@ def load_activity(
     return timeline
 
 
+#: Events whose `from_value` and `to_value` hold a user id rather than a word.
+_USER_VALUED_EVENTS = frozenset({EventType.ASSIGNED, EventType.UNASSIGNED})
+
+
+def resolve_event_labels(
+    session: Session,
+    timeline: Sequence[IncidentEvent | IncidentNote],
+) -> dict[str, str]:
+    """Return ``{user id: full name}`` for every id an event refers to.
+
+    ASSIGNED and UNASSIGNED record *who*, as an id. That is the right thing to
+    store, because a name can change and an id cannot, and the wrong thing to
+    show, so the router renders these alongside the raw values rather than
+    instead of them.
+
+    One query for the whole timeline, not one per event: a ticket reassigned
+    six times refers to at most a handful of people, usually the same two.
+    """
+    ids: set[uuid.UUID] = set()
+    for entry in timeline:
+        if not isinstance(entry, IncidentEvent) or entry.event_type not in _USER_VALUED_EVENTS:
+            continue
+        for value in (entry.from_value, entry.to_value):
+            parsed = _parse_user_id(value)
+            if parsed is not None:
+                ids.add(parsed)
+
+    if not ids:
+        return {}
+
+    rows = session.scalars(select(User).where(User.id.in_(ids))).all()
+    return {str(row.id): row.full_name for row in rows}
+
+
+def _parse_user_id(value: str | None) -> uuid.UUID | None:
+    """Return a recorded event value as a UUID, or None when it is not one.
+
+    Named apart from `_as_uuid` below, which narrows a value the schema has
+    already guaranteed and raises when it is not an id. This one is the
+    opposite: it is asked about strings that are usually *not* ids — every
+    status change stores a word — and answers with None rather than an error.
+    """
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 # --- Permissions -------------------------------------------------------------
 
 
@@ -245,9 +297,14 @@ def can_escalate(incident: Incident, user: User) -> bool:
     return not incident.is_escalated and may_escalate(incident, user)
 
 
+def may_clear_escalation(user: User) -> bool:
+    """Return whether this user could clear an escalation if there were one."""
+    return user.role == UserRole.FACILITY_ADMIN
+
+
 def can_clear_escalation(incident: Incident, user: User) -> bool:
-    """Return whether this user may clear the current escalation."""
-    return incident.is_escalated and user.role == UserRole.FACILITY_ADMIN
+    """Return whether this user may clear the current escalation right now."""
+    return incident.is_escalated and may_clear_escalation(user)
 
 
 # --- Creation ----------------------------------------------------------------
@@ -636,6 +693,16 @@ def perform_transition(
             reason=f"Duplicate of {duplicate_of.reference}.",
         )
 
+    # Who hears about this is decided in `app/notifications.py`, not here.
+    # The incident already carries its new status, so the rule reads the move
+    # off the row rather than being handed it.
+    notification_service.record(
+        session,
+        NotificationType.STATUS_CHANGED,
+        incident=incident,
+        actor=user,
+    )
+
     return repository.reload(session, incident)
 
 
@@ -830,7 +897,19 @@ def clear_escalation(
     admin who does not says so in the note. Either way the reporter sees an
     answer rather than a flag that quietly disappeared.
     """
-    if not can_clear_escalation(incident, admin):
+    # Two separate refusals rather than one, because they are two different
+    # answers: the wrong caller is a 403 and a ticket with nothing to clear is
+    # a 409. Asking `can_clear_escalation` alone would answer both with "this
+    # ticket is not escalated", which is only ever seen as correct because the
+    # route requires `AdminUser` and makes the other branch unreachable. This
+    # mirrors `escalate` above, which splits `may_escalate` from the
+    # already-escalated conflict for the same reason.
+    if not may_clear_escalation(admin):
+        raise AuthorizationError(
+            "Only a facility admin can clear an escalation.",
+            code="CLEAR_ESCALATION_NOT_PERMITTED",
+        )
+    if not incident.is_escalated:
         raise ConflictError(
             "This ticket is not escalated.",
             code="NOT_ESCALATED",
@@ -861,5 +940,16 @@ def clear_escalation(
             to_value=payload.priority.value,
             reason=payload.note,
         )
+
+    # One notification for the whole decision, not one per event: the
+    # re-prioritisation is part of the same answer and is visible on the
+    # ticket. A priority change on its own, through `update_incident`,
+    # notifies nobody — see `app/notifications.py`.
+    notification_service.record(
+        session,
+        NotificationType.ESCALATION_CLEARED,
+        incident=incident,
+        actor=admin,
+    )
 
     return repository.reload(session, incident)

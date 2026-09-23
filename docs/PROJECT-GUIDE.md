@@ -10,11 +10,1584 @@ phase where it first appears.
 architecture summary, how to run the tests. This guide is the *why* — the
 decisions, the alternatives that were rejected, and the things that will bite you.
 
-**How it is written.** One section per build phase, appended while the reasoning
-was still fresh. [docs/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
+**How it is written.** In two parts.
+
+**[Part I](#part-i--the-system-as-a-whole) describes the system as it stands** — how the
+pieces fit together, the data model as a narrative, every business rule and the one file
+that owns it, a single request followed through every file it touches, where to start
+reading, and one merged glossary. It was written last and checked against the code. **If
+you are reading this guide for the first time, read Part I and stop there.**
+
+**[Part II](#part-ii--the-build-phase-by-phase) is the build log** — one section per
+phase, appended while the reasoning was still fresh, each covering what was built, why it
+is shaped that way, what was rejected, and what bit us. It is a chronology, so an early
+section describes code that later phases changed; Part I is the current account, and wins
+where the two disagree.
+
+[docs/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
+[docs/DECISION-LOG.md](DECISION-LOG.md) records the calls made without the owner present;
 [CLAUDE.md](../CLAUDE.md) holds the scaffold constraints that are not negotiable.
 Where a decision was *forced* by the scaffold or the AWS IAM boundary rather than
-freely chosen, this guide says so explicitly.
+freely chosen, this guide says so explicitly — that distinction is invisible in finished
+code and is the one thing a reader cannot reconstruct.
+
+---
+
+# Part I — The system as a whole
+
+*This part was first written in M8 and has been kept current through S6 and S1, the two
+stretch phases that shipped after it. It reads the codebase as it finally stands. The
+phase sections in [Part II](#part-ii--the-build-phase-by-phase) are a chronology: they
+record what was built when, and what was being argued about at the time. This part is a
+description: it assumes you have never seen any of it and owes you no history.*
+
+*Every file path, function name and route below was checked against the code — not only
+that the identifier exists somewhere, but that it is **defined in the file named beside
+it**, which is the stricter question and the one that catches an imported name posing as
+a local one. Where this part and a phase section disagree, this part is right: a phase
+section is a snapshot of a morning, and the oldest of them are six phases back.*
+
+*The build is finished. **M1**–**M8** are the MVP; **S6** (hardening) and **S1** (in-app
+notifications) are the two stretch phases that followed. Nothing further is planned, and
+the [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built.*
+
+**The system in numbers, as it finally stands:** 12 tables over 5 Alembic revisions ·
+45 paths / 65 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
+transitions · 4 notification rules · 1,219 passing tests (825 pytest, 312 vitest,
+82 Playwright, plus 10 deliberate viewport skips).
+
+---
+
+## 1. System overview
+
+### 1.1 The whole thing in one paragraph
+
+ACME Facility Incident Management is a ticketing system for workplace problems. An
+employee reports that their monitor flickers; an engineer picks the ticket up, works it,
+and resolves it; the employee confirms the fix or says it is still broken; a facility
+admin watches the whole estate on a dashboard and moves work around. It is **one
+database, one backend process and one browser application**. There is no queue, no
+worker, no cache, no second service and no external integration. Everything the system
+knows is in PostgreSQL, and everything it does happens inside a single HTTP request.
+
+That flatness is worth stating up front, because the interesting structure is not in the
+topology — there is barely any — but in **where each rule is allowed to live**.
+
+### 1.2 The four moving parts
+
+**1. The React application** (`frontend/`) is a single-page app: React 19, TypeScript,
+Vite, Material UI, TanStack Query, React Router. It is a static bundle. It holds no
+business rules. Its job is to ask the API what the current user may do and render the
+answer — a discipline pursued far enough that the workflow buttons on the ticket page
+are drawn from an API response listing them, rather than from any table in the
+TypeScript.
+
+**2. The FastAPI application** (`backend/v1/app/`) is where every rule lives. It is
+organised **layer-first**: `routers/` (HTTP), `services/` (rules), `repositories/`
+(SQL), `models/` (tables), `schemas/` (wire shapes), `security/` (identity), each with
+one module per domain. A router validates and delegates; it decides nothing. A service
+decides everything and commits nothing. A router commits.
+
+> The backend is layer-first and the frontend is feature-first — the two halves are
+> organised on different axes because they have different reasons to change. The full
+> directory tree is in [the README's Code layout section](../README.md#code-layout) and
+> is not repeated here; what follows is why the layers exist rather than what is in them.
+
+**3. PostgreSQL** holds twelve tables and is not merely a store. Constraints that can be
+expressed in the schema are expressed there (a `BLOCKED` ticket cannot exist without a
+blocked reason), the full-text search document is a generated column the application
+cannot desynchronise, and every number on the admin dashboard is computed by an
+aggregate query rather than a Python loop.
+
+**4. The Lambda wrapper** (`backend/v1/function.py`) is thirty-six lines. It adapts the
+ASGI application to Lambda's event shape with Mangum, and routes any event carrying an
+`action` key to `app/services/ops.py` instead — which is how migrations and seeding run
+against a database no laptop can reach.
+
+### 1.3 Why it is split that way
+
+The split follows one rule, applied consistently: **a thing that can be decided in only
+one place is put in exactly one place, and every other place asks.**
+
+- *What may happen to a ticket* is decided in `app/workflow.py`, as a tuple of eleven
+  `Transition` rows. The service that performs a transition reads that table; the
+  endpoint that tells the frontend which buttons to draw reads that table; the unit test
+  suite parametrises over that table, so a row added without a test is not possible.
+  Nothing restates it — not the routers, not the React code.
+- *Who may see which rows* is decided in `app/services/visibility.py`, as two functions
+  that take a SQLAlchemy `Select` and return a narrower one. They are applied to the
+  **query**, never to the serialised result, and the repository functions that need them
+  take the already-narrowed statement as an argument rather than building their own —
+  so there is no `select(IncidentNote)` at the point of use to forget to filter.
+- *Who is told about what happened to a ticket* is decided in
+  `app/notifications.py`, as four `NotificationRule` rows. It is the sibling of
+  `workflow.py` and exists for the same reason: four services create notifications, and
+  without the table each of them would carry its own copy of "and also tell the
+  reporter, unless they did it". The module touches no database at all, which is what
+  makes every *refusal* — your own action, an internal note, a stranger — testable
+  without a session.
+- *What time it is* is decided in `app/clock.py`, one function, and every rule that
+  depends on the clock takes `now` as a parameter defaulting to it. That is why the
+  seven-day reopen window and the fifteen-minute note-edit window are testable without
+  sleeping or freezing time globally.
+- *Which fields a dialog must collect* is decided by the same workflow row that decides
+  the transition, travels to the browser as `required_fields`, and is rendered by
+  `TransitionDialog` with no local mapping from "Resolve" to "resolution summary".
+
+The layering is the mechanism that keeps those single places honest. A rule can only be
+duplicated if two layers both know about it, so the layers are kept ignorant of one
+another: repositories do not know who is asking (`services/incident_service.py`
+`resolve_filters` turns "my tickets" into a concrete `reporter_id` before the repository
+sees it), and routers do not know what the rules are.
+
+### 1.4 What was forced on us, and by what
+
+Four fifths of the unusual-looking decisions in this codebase are not preferences. They
+come from the workshop scaffold — the pre-built `infra/` Terraform and `bin/` scripts we
+were told to deploy with — and from the narrow AWS IAM boundary the participant role
+runs under. In finished code these are invisible, so they are collected here.
+
+| Constraint | Imposed by | What it forces |
+| --- | --- | --- |
+| **Exactly one backend service** | `infra/locals.tf` globs `backend/*/requirements.txt` one level deep and turns *every* match into its own Lambda — each with a public, unauthenticated Function URL | One service directory, `backend/v1/`. Creating `backend/anything-else/requirements.txt` silently provisions a second, open endpoint. |
+| **The handler must be `function.handler`, the runtime python3.13** | hardcoded in `infra/locals.tf` (`local.backend_names_python`); `infra/lambda.tf` only reads `each.value.handler` / `each.value.runtime` back out of that map | `function.py` sits at the service root and exposes a module-level `handler`. It cannot be moved into the package. |
+| **Every route starts with `/api/v1`** | `infra/cloudfront.tf` builds `path_pattern = "/api/<service-dir-name>*"` and forwards the **full, unmodified** path | The application owns the whole prefix (`API_PREFIX` in `app/config.py`), including the OpenAPI docs. The service directory is named `v1`, so the API version is a directory name. |
+| **No API Gateway, no VPC, no state bucket** | `infra/policy.tftpl` grants no `apigateway:*`, `ec2:CreateVpc`, `ec2:CreateSubnet`, `eks:*` or `docdb:*` | Deployment is a Lambda Function URL behind CloudFront. The VPC and security group are pre-provisioned and adopted by `infra/data.tf`. |
+| **Migrations cannot run from a laptop** | Aurora is `publicly_accessible = false` | `function.py` dispatches on a non-HTTP event shape to `app/services/ops.py`. Direct invoke is IAM-protected and is not routed by CloudFront, so `migrate`, `seed_admin` and `seed_demo` exist without a public maintenance endpoint or a second Lambda. |
+| **A cold request can take ~15 seconds** | Aurora Serverless v2 runs at `min_capacity = 0.0` and sleeps when idle | `postgres_connect_timeout` defaults to 30 s, the engine uses `pool_pre_ping=True`, and the browser's query client retries once. A hung first request after a quiet period is usually this, not a bug. |
+| **Connection details arrive as env vars** | `infra/locals.tf` injects `IS_LOCAL`, `POSTGRES_*` and `JWT_SECRET` | There is no `DATABASE_URL` and no `docker-compose.yml`. `app/config.py` builds the SQLAlchemy URL from the parts and appends `sslmode=require` when not local. |
+| **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `docs/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
+| **No memory is shared between requests** *(found in S6)* | a Lambda container handles one invocation and the next request may land on a different container | The failed-login counter cannot be an in-process dict, which is how such a thing is usually written. It is the `login_attempts` table — a database row per email address, self-cleaning on the failure path because a sweeper would have nowhere to run against an Aurora that sleeps at `min_capacity = 0`. See §2.10 and D19. |
+| **The server cannot push** *(found in S1)* | a Lambda Function URL cannot hold a connection open, so there is no websocket and no SSE | The unread badge **polls**: one integer every 30 seconds, stopping while the tab is unfocused. This was never a websocket-versus-polling argument — there was nothing to argue with. What it forces instead is that the polled route must be *cheap*, which is why `unread-count` is an index-only scan answered from `ix_notifications_user_id_read_at` with `Heap Fetches: 0`. See D30. |
+
+Two consequences of that list are worth internalising, because they explain choices that
+otherwise look arbitrary:
+
+**Same-origin in both environments.** CloudFront fronts the S3 bundle and the Lambda
+from one distribution; locally, Vite's dev proxy forwards `/api` to uvicorn *without
+rewriting the path*. So the browser is same-origin with the API everywhere. That is what
+makes a `SameSite=Strict; HttpOnly` refresh cookie work with no CORS configuration and
+no environment-specific special case — and it is why `bin/proxy-server.js`, which strips
+the `/api/<name>` prefix, is deliberately unused.
+
+**One request at a time, per process.** A Lambda container handles one invocation at a
+time. That is why `app/db.py` creates one engine per process with `pool_size=1`, and why
+the ORM is used synchronously rather than with async sessions: there is no concurrency
+inside the process for async to overlap.
+
+### 1.5 What was chosen freely
+
+For contrast, these were arguments we had with ourselves, not constraints:
+
+- **Layer-first, not feature-first.** With eight domains and one team, `services/` next
+  to `services/` makes the rule layer readable as a unit.
+- **The workflow as data.** See §4 and `app/workflow.py`'s own docstring.
+- **`allowed-transitions` as the UI's only source of workflow truth**, at the cost of an
+  extra request per ticket view.
+- **bcrypt used directly rather than through passlib**, with an explicit SHA-256 +
+  base64 pre-hash so a long password does not hit bcrypt's 72-byte limit.
+- **Two authenticated-user dependencies** (`get_authenticated_user` and
+  `get_current_user`), which is how the forced-password-change gate is enforced in one
+  place without a URL-matching middleware.
+- **The access token in memory only**, with an `HttpOnly` cookie as the thing that
+  survives a reload.
+- **Period reports and current-state reports as two different shapes** — the decision
+  that took three passes to get right (D5 → D9 → D10 → D11).
+- **Exactly one middleware, and it decides nothing.** `RequestLogMiddleware` writes one
+  JSON line per request. The standing argument against middleware in this codebase is
+  about middleware that *enforces* something by pattern-matching URLs; observability is
+  the case that argument does not cover, and it needs to wrap the requests that fail
+  before any dependency runs (D20).
+- **Standard-library JSON logging rather than a logging library**, because
+  `requirements.txt` is what Terraform installs into the Lambda package.
+- **Who is notified as a data table, not four `if`s** (S1, D26). `app/notifications.py`
+  is deliberately the sibling of `app/workflow.py`: four `NotificationRule` rows, each
+  carrying its audience *and* that audience's wording in one mapping, so an audience
+  without a sentence cannot be declared. Four services create notifications and each
+  contains one line naming a `NotificationType` and never a person. The module touches
+  no database at all, which is what lets every refusal be unit-tested with no session.
+  The alternative — each service deciding its own recipients — puts four copies of "and
+  also tell the reporter, unless they did it" in the codebase, and the fifth trigger
+  added later is the one that forgets.
+- **A notification stores its sentence rather than re-rendering it** (S1, D27). A row
+  records what was true when it was written; the ticket's *current* status is read live
+  beside it. Those are two different facts and the inbox shows both.
+
+---
+
+## 2. The data model as a narrative
+
+Twelve tables. Read them in this order — it is neither alphabetical nor the order they
+were created in, but the order in which each one becomes necessary. Two of them stand
+apart from the rest: `refresh_tokens` and `login_attempts` are about *sessions* rather
+than about the estate, and neither has a foreign key into the domain. `notifications`,
+added last by S1, is the only table that is purely *derived* — every row in it could be
+reconstructed from `incident_events` and `incident_notes`, and it exists because an
+inbox needs a read flag, which history does not carry.
+
+Everything below is defined in `backend/v1/app/models/`, one module per table, and
+created by `backend/v1/alembic/versions/0001_initial_schema.py`. Two conventions are
+declared once in `models/base.py` and then inherited, and **the exceptions to each are
+the interesting part**:
+
+- `UUIDPrimaryKeyMixin` gives a table `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`.
+  Ten of the twelve use it. The two exceptions are `engineer_profiles`, whose primary
+  key *is* `user_id` — it is an extension of a user, not an identity of its own (§2.2) —
+  and `login_attempts`, keyed on the email address the attempts were against (§2.10).
+- `TimestampMixin` gives a table `created_at` and `updated_at` as UTC `timestamptz`.
+  Eight of the twelve use it. The exceptions are `incident_events` and `refresh_tokens`,
+  which are written once and never modified and say so by declaring `created_at`
+  themselves while omitting `updated_at` (§2.7, §2.9); `login_attempts`, whose two
+  timestamps are the same two facts said in domain words (§2.10); and `notifications`,
+  where `read_at` is the only thing that ever changes and an `updated_at` beside it
+  would be a second copy of the same fact.
+
+So the mixins a model does *not* inherit tell you what kind of row it is before you read
+a single column.
+
+### 2.1 `users` — everyone, one role each
+
+Start here because every other table eventually points at it. An account has an `email`
+(`CITEXT`, so uniqueness and lookup are case-insensitive **in the database** rather than
+depending on every caller remembering to lowercase first), a bcrypt `password_hash`, a
+`full_name`, and exactly one `role` of `EMPLOYEE | ENGINEER | FACILITY_ADMIN`. There is
+no role table and no many-to-many: the brief has three personas and a person is one of
+them.
+
+Three columns are worth noticing:
+
+- `is_active` — accounts are deactivated, never deleted. A deleted user would take their
+  name off every ticket they reported or worked.
+- `must_change_password` — set on accounts whose password was generated by somebody
+  else. While it is true, every endpoint except `/auth/*` returns 403 with
+  `code: "PASSWORD_CHANGE_REQUIRED"`.
+- `last_building_id` / `last_floor_id` / `last_seat_id` — nullable FKs, `ON DELETE SET
+  NULL`, used to pre-fill the report form. Stored as three plain columns rather than
+  derived from the user's most recent incident, so the pre-fill survives that ticket
+  being closed or moved out of view.
+
+`User.is_staff` is a property, not a column: `role in (ENGINEER, FACILITY_ADMIN)`.
+
+### 2.2 `engineer_profiles` — the 1:1 extension, and why it is a table
+
+Engineers carry five facts employees do not: a `level`, the category groups they cover,
+a home building, a phone number, an availability state and a ticket ceiling. Those could
+have been nullable columns on `users`. They are a separate table because that way they
+are genuinely `NOT NULL` — `level` defaults to `JUNIOR` and is never null — and the
+employee case stays uncluttered.
+
+The primary key **is** `user_id`. There is no separate identity here; the row is an
+extension of a user, `ON DELETE CASCADE`.
+
+`specialty_group_ids` is a `UUID[]` rather than a join table. That is a deliberate
+exception to normalising, and it is defensible for a specific reason: the array is only
+ever read and written *whole* (an admin sets an engineer's specialties in one dialog;
+the incident list filters with `category_id IN (SELECT id FROM categories WHERE
+parent_id = ANY(...))`). It is never queried by membership alone, which is the thing an
+array is bad at.
+
+`max_active_tickets` carries a `CHECK (max_active_tickets > 0)`. "Active" is not defined
+here — it is `ACTIVE_INCIDENT_STATUSES` in `models/enums.py`, so that an engineer's
+`active_ticket_count`, the capacity warnings in `services/assignment.py`, and the live
+escalation filters in the reports all mean the same thing.
+
+### 2.3 `buildings` → `floors` → `seats` — where a problem is
+
+A strict three-level hierarchy, one table per level, each child `ON DELETE CASCADE` from
+its parent.
+
+- `buildings` — `name` and `code` both unique. Codes are uppercased on the way in
+  (`services/facilities.py::_normalise_code`) so `sfo-1` and `SFO-1` cannot both exist.
+- `floors` — `UNIQUE(building_id, level_number)`, and `name` for display ("Level 3").
+- `seats` — `UNIQUE(floor_id, code)`, with a `seat_type` of
+  `DESK | MEETING_ROOM | COMMON_AREA | OTHER`.
+
+**Meeting rooms are seats, not a fourth table.** They occupy exactly the same position in
+the hierarchy and an incident can be reported against either, so a discriminator column
+is the whole difference. The questionnaire relabels the field "Room" and filters to
+`seat_type = MEETING_ROOM` when the category group calls for it — presentation, in
+`display/labels.ts::seatFieldLabel`, not structure.
+
+All three carry `is_active`. **Deactivation does not cascade**, deliberately: a floor of
+a deactivated building keeps `is_active = true` in its own row, and the tree query simply
+never reaches it. Reactivating the building therefore restores exactly what was there
+before, rather than a flattened version of it.
+
+### 2.4 `categories` — what kind of problem, in exactly two levels
+
+One self-referencing table. `parent_id IS NULL` means a **group**; a non-null `parent_id`
+means a **subcategory**. Seeded with five groups and 32 subcategories
+(`app/seed/categories.py`), admin-editable thereafter.
+
+**Why two levels rather than a flat list.** The report questionnaire asks two questions
+and only two: "What kind of problem is it?" (five cards) and then "Which one?" (the
+chosen group's children). A flat list of 32 makes the first question unanswerable and the
+second a scroll. The two levels are not an arbitrary depth — they are the two questions,
+made durable.
+
+**Why two levels rather than arbitrary nesting.** Unbounded nesting turns the
+questionnaire into a drill-down of unknown length, and makes the category report
+(`/reports/categories`, which nests subcategory counts inside group totals) a recursive
+structure that no chart can render. Two levels is the depth at which the data is still a
+table.
+
+**Why one table rather than `category_groups` + `categories`.** Both would carry the same
+columns, every read would union or join them, and the admin screen edits both with one
+dialog. The self-reference costs one nullable FK.
+
+Depth is enforced by the **service layer, not the schema**:
+`services/categories.py::_resolve_parent` refuses a `parent_id` that names a subcategory
+(`CATEGORY_TOO_DEEP`, 422), and `CategoryUpdate` has no `parent_id` field at all — so
+there is no re-parenting endpoint through which a third level could appear later.
+
+Three columns belong to the group and are inherited by its children:
+`location_detail` (`BUILDING | FLOOR | SEAT` — how precise a location this kind of
+problem needs), `hint` (the line under the card) and `icon` (a Material UI icon name
+rendered by `categoryIcons.ts`). Setting any of them on a subcategory is a 422
+(`GROUP_ONLY_FIELDS`), and changing a group's `location_detail` rewrites its children in
+the same transaction (`repositories/categories.py::set_children_location_detail`) so the
+two cannot drift.
+
+The unique constraint is `UNIQUE(parent_id, name)` **`NULLS NOT DISTINCT`** (PostgreSQL
+15+). Without that modifier the constraint would silently never apply to groups at all,
+because their `parent_id` is NULL and NULLs never collide — two groups called "Hardware"
+would be legal.
+
+### 2.5 `incidents` — the ticket everything else is about
+
+The widest table, and the one that pulls the previous four together. Grouped by what each
+part is for:
+
+**Identity.** `ticket_number BIGINT UNIQUE` defaulting to `nextval('incident_ticket_seq')`
+— a dedicated sequence, not a count and not the UUID, so numbers are stable and never
+reused. Displayed as `INC-000123` by `format_reference()`, which exists as a module-level
+function as well as an `Incident.reference` property because the reports read ticket
+numbers out of aggregate rows rather than mapped objects, and the zero-padding must not
+be written down twice.
+
+**Content.** `title`, `description`. Their length bounds (5–120, 10–5000) live in
+`schemas/incident.py`, not the schema.
+
+**Classification.** `category_id` → `categories`, `ON DELETE RESTRICT`. It must be a
+**subcategory**; the check is in `services/incident_service.py::_require_reportable_subcategory`
+because the rule needs a lookup the schema cannot do.
+
+**Location.** `building_id` `NOT NULL`, `floor_id` and `seat_id` nullable, all
+`ON DELETE RESTRICT`. How many are required depends on the category group's
+`location_detail` (`REQUIRED_LOCATION_FIELDS`), and consistency — floor in building, seat
+on floor — is checked in the service, because a location path rendered on every screen
+must not be a lie.
+
+**Workflow.** `status`, `priority`, both indexed enums. `priority` sorts on the
+PostgreSQL enum, whose declared order is `LOW < MEDIUM < HIGH < CRITICAL`, which is why
+`-priority` really is "most urgent first" with no `CASE` expression.
+
+**People.** `reporter_id` (`RESTRICT` — you cannot delete someone's history) and
+`assignee_id` (`SET NULL`). Three foreign keys point at `users` from this table, which is
+why each relationship names its FK explicitly, and why the escalation relationship is
+called `escalator` while the column is `escalated_by`.
+
+**Escalation.** `is_escalated`, `escalation_reason`, `escalated_at`, `escalated_by`. The
+flag is raised by `escalate()` and lowered by exactly one thing, `clear_escalation()` —
+closing a ticket does **not** lower it, on purpose, because "this was escalated before it
+was fixed" is a fact worth keeping. That choice is why three reporting queries have to
+say `status IN (OPEN, IN_PROGRESS, BLOCKED)` alongside `is_escalated`; see D10 and D11.
+
+**Blocking.** `blocked_reason_type`, `blocked_reason`, and a table-level
+`CHECK (status <> 'BLOCKED' OR blocked_reason_type IS NOT NULL)` — enforced by the
+database so that no code path can produce a blocked ticket with no reason. The columns are
+cleared when the ticket leaves `BLOCKED`; the history stays in the event log.
+
+**Resolution.** `resolution_summary`, `close_reason`, `duplicate_of_id` (a self-reference,
+`SET NULL`), `reopen_count`.
+
+**Lifecycle timestamps.** `assigned_at`, `acknowledged_at`, `resolved_at`, `closed_at` —
+all `timestamptz`. `assigned_at` and `acknowledged_at` are set once and never overwritten
+(they answer "how long did this wait?", which a reassignment does not change);
+`resolved_at` and `closed_at` are cleared on reopen. Revision `0002` exists solely to make
+these timezone-aware: they were declared as bare `Mapped[datetime]` in `0001`, which
+SQLAlchemy renders as `TIMESTAMP WITHOUT TIME ZONE`, and the reopen window's
+`now - closed_at` is a `TypeError` against a naive column.
+
+**Search.** `search_vector` — see §2.6.
+
+### 2.6 `search_vector`, and why it is a generated column
+
+```
+setweight(to_tsvector('english', coalesce(title, '')),       'A') ||
+setweight(to_tsvector('english', coalesce(description, '')), 'B')
+```
+
+A `tsvector` is PostgreSQL's parsed form of a document: each word reduced to its stem
+(so "flickering" and "flickers" both become `flicker`) with its positions. `@@` asks
+whether a `tsvector` matches a `tsquery`. The `ix_incidents_search_vector` **GIN** index
+makes that match fast by storing a posting list per stem, the way a book index stores a
+page list per word.
+
+`setweight` tags each half with a label — `'A'` for the title, `'B'` for the description
+— which `ts_rank` then scores differently, so a ticket with the search term in its title
+outranks one that merely mentions it in the body.
+
+The important part is `GENERATED ALWAYS AS (...) STORED`, expressed in SQLAlchemy as
+`Computed(SEARCH_VECTOR_EXPRESSION, persisted=True)`. PostgreSQL computes and stores the
+value on every insert and update of `title` or `description`. Nothing in the application
+writes it, so:
+
+- it **cannot drift** from the columns it summarises, which an application-maintained
+  column or a trigger eventually does;
+- editing a ticket's title reindexes it with no code path to remember;
+- there is no backfill to run and no "rebuild the search index" maintenance action.
+
+The cost is that the expression is part of the schema, so changing the weights or adding
+a field to the document is a migration rather than a deploy.
+
+### 2.7 `incident_events` — the append-only audit log
+
+One row per thing that happened: `incident_id`, `actor_id` (nullable, so a
+system-generated event is representable), `event_type`, `from_value`, `to_value`, `reason`,
+`created_at`. Indexed on `(incident_id, created_at)`. **No `updated_at`**, because rows are
+written and never modified — the class declares `created_at` itself rather than inheriting
+`TimestampMixin`, and that omission is the type signature of "append-only".
+
+`from_value` and `to_value` are `TEXT`, not enums, because one column carries statuses,
+priorities *and* user ids depending on `event_type`. That is deliberate: storing the id of
+the person a ticket was assigned to is right for an audit row (a name can change; an id
+cannot) and unreadable on a screen, so `incident_service.resolve_event_labels()` resolves
+every id in a timeline in one query and the router renders `from_label`/`to_label`
+*alongside* the raw values rather than instead of them.
+
+Events carry machine-readable from/to rather than a rendered message because they are read
+by two very different consumers: the activity timeline a human reads, and the timing
+metrics the reports compute. `repositories/reports.py::_blocked_since()` answers "how long
+has this been blocked?" with `MAX(created_at)` over the `STATUS_CHANGED` events whose
+`to_value` is `'BLOCKED'` — which is why there is no `blocked_at` column. The audit log
+already holds that fact, exactly, and a column would be a second copy with its own write
+path to keep in step (D6).
+
+### 2.8 `incident_notes` — the conversation, and why it is not the same table
+
+A note has an `incident_id`, an `author_id`, a `body`, a `visibility` of `PUBLIC` or
+`INTERNAL`, an `edited_at` and a `deleted_at`.
+
+**Why this is not `incident_events` with a `NOTE_ADDED` body.** The two tables look
+adjacent — both are per-incident, chronological, actor-stamped — and they are genuinely
+different kinds of thing:
+
+| | `incident_events` | `incident_notes` |
+| --- | --- | --- |
+| Written by | every service that changes state | a person |
+| Content | `from_value` / `to_value` / `reason`, machine-readable | prose |
+| Mutable | never | `body` editable for 15 minutes; soft-deletable |
+| Visible to | everyone who can see the ticket | filtered: employees never receive `INTERNAL` |
+| Also read by | the reporting queries, as measurements | nothing but the timeline |
+
+Merging them would mean one table with two disjoint sets of nullable columns, an audit
+trail whose rows can be edited, a visibility filter that has to be careful not to hide
+events, and reporting queries scanning prose to find status changes. There is deliberately
+**no `NOTE_ADDED` event**: the note *is* the record, and writing both would put the same
+fact in two places and double the timeline.
+
+They are merged only at read time, in Python, by
+`incident_service.load_activity()` — `[*events, *notes]` sorted by `created_at`. A SQL
+`UNION` would require padding both sides with nulls to make the shapes match, and the
+result is one ticket's history: tens of rows, not thousands.
+
+That merge is the reason both tables override `created_at` to default to
+`clock_timestamp()` rather than `now()` (revision `0003`). PostgreSQL's `now()` is the
+**transaction** start time, so every row written by one request would share a timestamp
+and the timeline's `ORDER BY created_at` would fall back to comparing random UUIDs — which
+is precisely what happened to a request that writes two events, such as clearing an
+escalation *and* changing the priority.
+
+Deletion is soft. An audit trail does not get holes punched in it, and
+`apply_note_visibility()` excludes `deleted_at IS NOT NULL` for every role — so "deleted"
+and "internal" are two exclusions kept in one function, where no query can remember one
+and forget the other.
+
+### 2.9 `refresh_tokens` — the session, off to one side
+
+`user_id`, `token_hash UNIQUE`, `expires_at`, `revoked_at`, `created_at`. No
+`updated_at`: a row is written once and then, at most, has `revoked_at` set.
+
+Only the **SHA-256 hash** of the token is stored, so a database leak does not hand out
+usable sessions, exactly as with passwords. Plain SHA-256 rather than bcrypt is correct
+here and not a shortcut: the token is 32 bytes of cryptographic randomness, so there is
+nothing for a slow hash to defend against, and lookup has to be an indexed equality match,
+which a salted hash cannot do.
+
+This table is the only stateful part of authentication. Access tokens are stateless JWTs
+and are never stored.
+
+### 2.10 `login_attempts` — the counter that must not leak
+
+`email CITEXT PRIMARY KEY`, `failure_count`, `first_failure_at`,
+`last_failure_at`. One row per address, holding the current run of consecutive
+failed sign-ins; ten of them inside fifteen minutes and the address is refused with
+a 429 until the window expires (`app/services/auth_service.py`).
+
+**The primary key is the email**, like `engineer_profiles` keying on `user_id`: there
+is no identity here beyond the address the attempts were against, and a surrogate key
+would make two counters for one address possible. `CITEXT` so that varying the
+capitalisation cannot buy a second allowance.
+
+**There is deliberately no foreign key to `users`, and that absence is the design.**
+Attempts against an address nobody holds are counted exactly like attempts against a
+real colleague's, and the lockout check runs before the user lookup — so the 429 says
+nothing about whether anybody holds that address. A foreign key would make those rows
+impossible to write, and the endpoint would go back to answering "does this person
+have an account here?". `tests/integration/test_migration.py` asserts the absence.
+
+No `TimestampMixin`: `first_failure_at` and `last_failure_at` *are* this row's created
+and updated times, and saying so in domain words is better than two generic columns
+meaning the same thing. The expiry is measured from `first_failure_at`, which is what
+makes the window **fixed** rather than sliding — a sliding window could be held open
+for ever by one failure every fourteen minutes.
+
+The table cleans itself: every failed login deletes the windows that have expired, and
+the failure path is the only path that inserts. Aurora sleeps at `min_capacity = 0`, so
+there is nowhere for a scheduled sweeper to run. See [D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory).
+
+### 2.11 `notifications` — the derived table, and the only one
+
+One row per thing one person was told: `user_id`, `incident_id`, `type`, `message`,
+`read_at` and `created_at`. Added by S1 and by revision `0005`.
+
+**Every column but one is a copy of something.** Which ticket, what kind of event and
+when are all reconstructible from `incident_events` and `incident_notes`. `read_at` is
+not — nothing else in the schema knows whether a person has looked at something — and
+that one column is the table's reason to exist. It is nullable rather than a boolean
+because *when* it was read is what `/reports/communication` needs to answer "are people
+reading these?", and a boolean throws that away.
+
+**`message` stores the sentence, rendered.** Not fields to render later: "Your ticket
+INC-000123 is now Resolved" was true when it was sent, and re-rendering it from the
+ticket's current state would make an inbox that silently rewrites its own history. The
+one thing a message never contains is the body of a note — a note can be edited for
+fifteen minutes and deleted by an admin for ever, and this table is not behind any
+visibility filter. See [D27](DECISION-LOG.md#d27--a-notification-stores-its-sentence-and-never-quotes-a-note).
+
+**Two indexes, because there are two readers with opposite needs.**
+`ix_notifications_user_id_read_at` answers the unread badge — the busiest query in the
+application, polled every thirty seconds by every open tab — as an index-only scan, in
+three or four shared buffers. `ix_notifications_user_id_created_at` answers the inbox
+page, which the first index cannot: its second column is `read_at`, so one user's rows
+come out of it grouped by read state and would have to be sorted afterwards.
+
+**No `updated_at`**, per §2's rule about what a missing mixin tells you: `read_at` is
+the only mutation, and an `updated_at` beside it would say the same thing twice.
+`created_at` defaults to `clock_timestamp()` rather than `now()`, for the reason §2.7
+gives about `incident_events` — one request can write several of these.
+
+### 2.12 Where a new field goes
+
+The point of the above is to make this predictable. The questions, in order:
+
+1. **Is it a fact about a ticket, or a thing that happened to one?** A fact is a column on
+   `incidents`. A thing that happened is a row in `incident_events` — and if you find
+   yourself wanting both, you almost certainly want the event, plus a column only if a
+   query needs to filter on the current value cheaply. `is_escalated` is exactly that pair,
+   and D10 is the write-up of what it costs.
+2. **Does it need a new status, or a new move between statuses?** That is a row in
+   `TRANSITIONS` in `app/workflow.py` and a test. Nothing else — not the routers, not the
+   React code.
+3. **Is it presentation for a category group?** It joins `hint`, `icon` and
+   `location_detail` on `categories`, goes into `GROUP_ONLY_FIELDS`, and is inherited by
+   subcategories.
+4. **Is it a fact about an engineer rather than a user?** `engineer_profiles`. If an
+   employee could ever have it, it belongs on `users`.
+5. **Is it a place?** The hierarchy is fixed at three levels. A new *kind* of place is a
+   `seat_type`, not a table.
+
+And the mechanical part, for a new column on `incidents`: a revision in
+`alembic/versions/`, the column on `models/incident.py`, the field on the relevant
+`schemas/incident.py` models (`IncidentCreate` / `IncidentUpdate` / `IncidentRead`), any
+rule about it in `services/incident_service.py` (and a name in `CONTENT_FIELDS` or
+`CLASSIFICATION_FIELDS` if it is permission-checked as content), then the TypeScript type
+in `frontend/src/api/types.ts` and whatever renders it. Five files plus the migration, in
+that order.
+---
+
+## 3. The complete rule-to-file map
+
+Every business rule in the system and the single file that owns it. This merges the
+**eleven** partial maps in Part II — one per build pass, M1 through S1 — removes the
+duplicates, and was re-checked against the code: every path exists and every symbol named
+is **defined** in the file beside it, not merely imported there. (M8's own §4 map is a
+twelfth `Where the rules live` section, but it maps *documents* rather than rules and is
+not merged here.)
+
+**How to use it.** Find the behaviour in the left column; the middle column is the file to
+open; the right column is what to search for inside it. Backend paths are relative to
+`backend/v1/`, frontend paths to `frontend/src/`.
+
+**The one rule about this table.** If a behaviour appears twice, that is a bug in the
+code, not in the table. Where two layers both touch a rule, the row says which one is
+*authoritative* and what the other one is doing.
+
+### 3.1 Identity, sessions and access
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Who may self-register (the `@acme.inc` rule) | `app/services/auth_service.py` | `normalise_email`, `ALLOWED_EMAIL_DOMAIN` |
+| Why `x@acme.inc@evil.com` and `x@sub.acme.inc` are rejected | `app/services/auth_service.py` | `normalise_email` — split on the **last** `@`, then exact domain equality |
+| New accounts are always EMPLOYEE | `app/services/auth_service.py` | `register_employee` hardcodes the role; and `RegisterRequest` (in `app/schemas/auth.py`) has no `role` field to ignore |
+| Password length policy | `app/security/passwords.py` | `MIN_PASSWORD_LENGTH`, `MAX_PASSWORD_LENGTH` — mirrored (not decided) by `app/schemas/auth.py` |
+| Password hashing, and the pre-hash that must never be removed | `app/security/passwords.py` | `BCRYPT_ROUNDS`, `hash_password`, `_prehash` |
+| A failed login costs the same time whether the account exists | `app/services/auth_service.py` | `authenticate`, `_DUMMY_HASH` |
+| How many failed sign-ins an address gets, and in how long | `app/services/auth_service.py` | `MAX_FAILED_LOGIN_ATTEMPTS` (10), `LOGIN_LOCKOUT_WINDOW` (15 min) |
+| Whether an address is locked right now, checked before the lookup | `app/services/auth_service.py` | `_require_not_locked_out` |
+| That a failure is counted **and committed**, since the request then fails | `app/services/auth_service.py` | `_record_failed_login` |
+| That the count is exact when two attempts race | `app/repositories/login_attempts.py` | `record_failure` — one `INSERT … ON CONFLICT DO UPDATE` |
+| That the window is fixed, so hammering cannot extend it | `app/repositories/login_attempts.py` | `record_failure`, `window_is_live` |
+| That the counter table cleans itself without a sweeper | `app/repositories/login_attempts.py` | `purge_expired` |
+| That an address with no account is counted identically | `app/models/login_attempt.py` | the absence of a `ForeignKey`; asserted in `tests/integration/test_migration.py` |
+| Token lifetimes | `app/security/tokens.py` | `ACCESS_TOKEN_TTL` (15 min), `REFRESH_TOKEN_TTL` (7 days) |
+| What is in an access token, and what is not trusted from it | `app/security/tokens.py` | `create_access_token`, `AccessTokenClaims` — role is re-read from the DB every request |
+| Refresh-token rotation, and what a replayed token does | `app/services/auth_service.py` | `rotate_session` — a revoked token revokes **every** session for that user |
+| Refresh tokens are stored hashed | `app/security/tokens.py` | `generate_refresh_token`, `hash_refresh_token` |
+| Cookie name, path and flags | `app/security/dependencies.py` + `app/routers/auth.py` | `REFRESH_COOKIE_NAME`, `REFRESH_COOKIE_PATH`, `_set_refresh_cookie` |
+| Whether the cookie is `Secure` | `app/config.py` | `Settings.cookie_secure` — false locally, true deployed |
+| The forced-password-change gate | `app/security/dependencies.py` | `get_current_user` vs `get_authenticated_user`; `PASSWORD_CHANGE_REQUIRED` |
+| Role permissions at the endpoint | `app/security/dependencies.py` | `require_roles`, and the `ADMIN_ONLY` / `STAFF_ONLY` / `SIGNED_IN` aliases |
+| Engineer-level permissions at the endpoint | `app/security/dependencies.py` | `require_engineer_levels` — admins pass every level check |
+| Who may see deactivated rows | `app/security/dependencies.py` | `get_include_inactive` — refuses the flag rather than ignoring it |
+| Changing your own password ends every session | `app/services/auth_service.py` | `change_password`, which calls `revoke_all_refresh_tokens` in `app/repositories/users.py` |
+| The first admin account | `app/services/auth_service.py` | `seed_first_admin`, reachable only via the `seed_admin` ops action |
+
+### 3.2 The incident workflow
+
+Everything in this block is in **one file**, `app/workflow.py`, and that is the point.
+
+| Rule | Symbol in `app/workflow.py` |
+| --- | --- |
+| Which status changes exist at all | `TRANSITIONS` — eleven `Transition` rows |
+| Who may make each one | `Transition.allowed_actors` |
+| What a dialog must collect | `Transition.required_fields` |
+| What the button says | `Transition.action_label` |
+| Which close reason is recorded | `Transition.close_reasons`, `fixed_close_reason`, `caller_picks_close_reason` |
+| Whether a move counts as a reopen | `Transition.is_reopen`, `Transition.event_type` |
+| Who counts as REPORTER / ASSIGNEE / FACILITY_ADMIN on *this* ticket | `resolve_actors` — and a LEAD engineer is ASSIGNEE on any ticket |
+| Which row wins when a caller holds two actor roles | `ACTOR_PRECEDENCE`, `_highest_precedence` |
+| A ticket needs an assignee before work can start | `_requires_an_assignee` |
+| Seven days to reopen, after which CLOSED is terminal | `REOPEN_WINDOW`, `_within_the_reopen_window` |
+| Which moves are offered right now | `available_transitions`, `_reachable_statuses` |
+| Which move an explicit request resolves to | `select_transition` |
+
+And the part a table cannot express, in `app/services/incident_service.py`:
+
+| Rule | Symbol |
+| --- | --- |
+| Executing a move, and refusing one with a 409 that lists the legal ones | `perform_transition`, `_describe` |
+| The timestamps and fields entering a status implies | `_apply_transition_effects` — keyed on the status being **entered**, not on the transition |
+| Required fields are actually present | `_require_transition_fields` |
+| Validating a caller-chosen close reason | `_resolve_close_reason` |
+| A duplicate must be a real, different ticket | `_resolve_duplicate_target` |
+| Which moves to offer the frontend | `allowed_transitions` |
+
+### 3.3 Incidents — creation, editing, permissions
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| A ticket is filed against a subcategory, never a group | `app/services/incident_service.py` | `_require_reportable_subcategory` |
+| How precise a location the category group demands | `app/services/incident_service.py` | `REQUIRED_LOCATION_FIELDS`, `_require_location_precision` |
+| Floor must be in the building; seat must be on the floor | `app/services/incident_service.py` | `_require_floor_in_building`, `_require_seat_on_floor` |
+| Which location message the form shows | `app/services/incident_service.py` | `_missing_location_message` |
+| Who may edit a ticket's content and location | `app/services/incident_service.py` | `can_edit_content`, `CONTENT_FIELDS` |
+| When the questionnaire rules are re-checked on an edit | `app/services/incident_service.py` | `CLASSIFICATION_FIELDS`, `_revalidate_classification` |
+| Who may change priority, and for how long | `app/services/incident_service.py` | `can_change_priority` |
+| Who may escalate, and in which statuses | `app/services/incident_service.py` | `may_escalate`, `can_escalate`, `ESCALATABLE_STATUSES` |
+| Who may clear an escalation, and what clearing does | `app/services/incident_service.py` | `can_clear_escalation`, `clear_escalation` |
+| Where the next report form is pre-filled from | `app/services/incident_service.py` | `_remember_location` |
+| What `mine=` and `specialty=` mean for *this* caller | `app/services/incident_service.py` | `resolve_filters`, `_resolve_specialties` |
+| Merging events and notes into one timeline | `app/services/incident_service.py` | `load_activity` |
+| Turning recorded user ids into names | `app/services/incident_service.py` | `resolve_event_labels`, `_USER_VALUED_EVENTS` |
+| Title and description bounds (authoritative) | `app/schemas/incident.py` | `IncidentTitle`, `IncidentDescription` |
+| What `?assignee_id=unassigned` means | `app/schemas/incident.py` | `UNASSIGNED`, `AssigneeFilter` |
+| How the location path is rendered | `app/routers/incidents.py` | `_location_summary` — using `LOCATION_SEPARATOR`, which is defined in `app/schemas/incident.py` |
+| Which `can_*` flags the detail response carries | `app/routers/incidents.py` | `_to_read` |
+
+### 3.4 Assignment
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Who may change an assignee at all (drives the button) | `app/services/assignment.py` | `can_assign` |
+| Who may make *this* assignment (enforces it) | `app/services/assignment.py` | `_require_permission`, `_require_self_pick_up` |
+| A senior may pick up only free, open tickets | `app/services/assignment.py` | `_is_free_to_pick_up` |
+| Who may receive work | `app/services/assignment.py` | `_require_assignable_engineer` — 422, because the id came from a body as a value |
+| Capacity and availability warn but never refuse | `app/services/assignment.py` | `_capacity_warnings`, `UNAVAILABLE_STATES` |
+| `assigned_at` is set once and never overwritten | `app/services/assignment.py` | `assign` |
+| Unassigning goes through the same path | `app/services/assignment.py` | `_unassign` |
+| What counts as an active ticket, application-wide | `app/models/enums.py` | `ACTIVE_INCIDENT_STATUSES` |
+
+### 3.5 Notes and visibility
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Who may write a note | `app/services/notes.py` | `can_add_note` |
+| Who may write an INTERNAL note | `app/services/notes.py` | `can_add_internal_note`, `_require_internal_note_permission` |
+| The fifteen-minute edit window | `app/services/notes.py` | `EDIT_WINDOW`, `can_modify_note`, `_require_modify_permission` |
+| Deletion is soft | `app/services/notes.py` | `delete_note` |
+| A note the caller may not see is a 404, not a 403 | `app/services/notes.py` | `get_note` |
+| **Who sees INTERNAL notes** (and deleted ones) | `app/services/visibility.py` | `apply_note_visibility` — applied to the query |
+| **Which incidents a user may read** | `app/services/visibility.py` | `apply_incident_visibility` — today a no-op, and the seam where per-building scoping would go |
+| The base statements those filters narrow | `app/repositories/incidents.py` | `notes_query`, and `visible` as a parameter of `list_incidents` |
+
+### 3.5a Notifications
+
+Everything about *who hears what* is in **one file**, `app/notifications.py`, for the
+same reason the workflow is in one file. The four services that create notifications
+each contain one line, and that line names a `NotificationType` and never a person.
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which events produce a notification at all | `app/models/enums.py` | `NotificationType` — four members, deliberately fewer than `EventType` |
+| **Who hears about each, and in what words** | `app/notifications.py` | `RULES` — four `NotificationRule` rows; `messages` is the audience list *and* the wording |
+| Nobody is notified about their own action | `app/notifications.py` | `plan()` — one line, applied to every rule |
+| One person who holds two capacities gets one notification | `app/notifications.py` | `plan()`, `AUDIENCE_PRECEDENCE` — the reporter's wording wins |
+| **An INTERNAL note notifies nobody** | `app/notifications.py` | `_is_a_public_staff_note`, the `applies` precondition on the NOTE_ADDED row |
+| Which capacity a user holds on a ticket | `app/notifications.py` | `user_in_capacity` — **not** `workflow.resolve_actors`, which makes a LEAD an ASSIGNEE everywhere |
+| There is no admin audience | `app/notifications.py` | `Audience` — two members, not three; `tests/unit/test_notifications.py` asserts no rule reaches past them |
+| How a status is worded inside a stored message | `app/notifications.py` | `STATUS_WORDING` — the only place the backend renders a domain value into English |
+| That a notification is written in the same transaction as its event | `app/services/notification_service.py` | `record` — "the caller commits", like every other service |
+| One inbox is unreachable from another session | `app/repositories/notifications.py` | every statement takes `user_id` as an argument; there is no query that could express otherwise |
+| Somebody else's notification is 404, not 403 | `app/services/notification_service.py` | `mark_read` |
+| Marking read twice keeps the first timestamp | `app/services/notification_service.py` | `mark_read` — the `read_at is None` guard |
+| What makes the unread count cheap | `app/repositories/notifications.py` | `unread_count` + `ix_notifications_user_id_read_at` |
+| How often the badge asks | `frontend/src/features/notifications/hooks.ts` | `UNREAD_POLL_INTERVAL_MS` (30 s), and `refetchIntervalInBackground` left false |
+
+### 3.6 Search, filtering, sorting and paging
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| What a ticket-number search looks like | `app/repositories/incidents.py` | `TICKET_NUMBER_PATTERN`, `parse_ticket_number` |
+| Full-text search language and parser | `app/repositories/incidents.py` | `SEARCH_CONFIG`, `_tsquery` (`websearch_to_tsquery`) |
+| Which of the two modes a query string picks | `app/repositories/incidents.py` | `_apply_search` |
+| Sort orders, and relevance as the default while searching | `app/repositories/incidents.py` | `_SORT_TERMS`, `_order_by` |
+| Every list filter | `app/repositories/incidents.py` | `_apply_filters` |
+| Filtering by group without joining `categories` | `app/repositories/incidents.py` | `_subcategory_ids`, `_subcategory_ids_in` |
+| Which relationships a list and a detail eager-load | `app/repositories/incidents.py` | `_list_loaders`, `_detail_loaders` |
+| Re-reading a written row so its relationships are fresh | `app/repositories/incidents.py` | `reload` — `populate_existing=True` |
+| Page size default and hard maximum | `app/schemas/common.py` | `DEFAULT_PAGE_SIZE` (25), `MAX_PAGE_SIZE` (100) |
+| The list response envelope | `app/schemas/common.py` | `Page`, `build_page`, `Paging` |
+| What a DELETE actually did | `app/schemas/common.py` | `DeleteResult` |
+| Search wildcards are escaped | `app/repositories/users.py` | `_escape_like` |
+
+### 3.7 Facilities
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Building name and code uniqueness | `app/services/facilities.py` | `_require_free_building_name`, `_require_free_building_code` |
+| Building codes are uppercased | `app/services/facilities.py` | `_normalise_code` |
+| One floor per level number per building | `app/services/facilities.py` | `_require_free_floor_level` |
+| One seat per code per floor | `app/services/facilities.py` | `_require_free_seat_code` |
+| A referenced facility cannot be deleted (409) | `app/services/facilities.py` | `delete_building`, `delete_floor`, `delete_seat` |
+| What "referenced" means | `app/repositories/facilities.py` | `count_incidents_in_building`, `count_incidents_on_floor`, `count_incidents_at_seat` |
+| Bulk seat creation: dedupe within the payload, skip what exists | `app/services/facilities.py` | `bulk_create_seats`, `_deduplicate` |
+| Deactivation does not cascade | `app/repositories/facilities.py` | `load_tree` — the tree simply never reaches an inactive parent's children |
+
+### 3.8 Categories
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| The tree is exactly two levels | `app/services/categories.py` | `_resolve_parent` |
+| Fields that belong to a group only | `app/services/categories.py` | `GROUP_ONLY_FIELDS`, `_reject_group_only_fields`, `_reject_group_only_changes` |
+| Subcategories inherit `location_detail` | `app/services/categories.py` | `update_category` → `repositories/categories.py::set_children_location_detail` |
+| Siblings may not share a name | `app/services/categories.py` | `_require_free_name` |
+| A referenced category is **deactivated**, not deleted | `app/services/categories.py` | `delete_category`, `_deactivate` |
+| Default location detail for a group that does not say | `app/services/categories.py` | `DEFAULT_LOCATION_DETAIL` |
+| The seeded tree's contents | `app/seed/categories.py` | `CATEGORY_GROUPS` — 5 groups, 32 subcategories |
+
+### 3.9 Engineers and users
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Engineer account and profile are created together | `app/services/engineers.py` | `create_engineer` |
+| The temporary password is generated and shown once | `app/services/engineers.py` | `create_engineer`, `TEMPORARY_PASSWORD_BYTES` |
+| Specialties must be top-level groups | `app/services/engineers.py` | `_require_group_ids` |
+| A home building must exist | `app/services/engineers.py` | `_require_building` |
+| What an engineer may change about themselves | `app/schemas/engineer.py` | `EngineerSelfUpdate` |
+| Engineers are deactivated, never deleted | `app/services/engineers.py` | `deactivate_engineer` |
+| How `active_ticket_count` is computed | `app/repositories/engineers.py` | `_active_ticket_count_column`, `count_active_tickets` |
+| An admin cannot change their own role or deactivate themselves | `app/services/users.py` | `_reject_self_change` |
+| Promotion to ENGINEER creates a profile; demotion keeps it | `app/services/users.py` | `_apply_role_change` |
+| Deactivating a user ends their sessions | `app/services/users.py`, `app/services/engineers.py` | both call `revoke_all_refresh_tokens`, which is defined in `app/repositories/users.py` |
+| Email and password are not admin-editable | `app/schemas/user.py` | `UserUpdate` has neither field |
+
+### 3.10 Reports
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| **Which reports cover a period and which describe the present** | `app/routers/reports.py` | `ReportPeriod` vs `ReportScopeDep` — two dependencies, so it cannot be got wrong by forgetting |
+| What `from`/`to` filter on a period report | `app/repositories/reports.py` | `_window_clauses` — `created_at`, both ends inclusive |
+| What a current-state report filters — the building, and nothing else | `app/repositories/reports.py` | `_scope_clauses` |
+| Default period, UTC coercion, `from <= to` | `app/services/reporting.py` | `build_window`, `_as_utc` — the default length itself is `DEFAULT_WINDOW_DAYS` in `app/schemas/report.py` |
+| The instant a current-state snapshot describes | `app/services/reporting.py` | `build_scope` → `ReportScope.as_of` |
+| Which reports are admin-only | `app/routers/reports.py` | `dependencies=[ADMIN_ONLY]` on seven of the eight |
+| Why `/reports/me` needs no role | `app/routers/reports.py` | `get_my_report` — the caller *is* the subject; there is no `?user_id=` |
+| What `/reports/me` returns to whom | `app/services/reporting.py` | `my_report` — `reported` always, `assigned` only for engineers |
+| When a ticket became blocked | `app/repositories/reports.py` | `_blocked_since` — read from the event log, not a column |
+| What counts as an escalation somebody can still act on | `app/repositories/reports.py` | `_live_escalation_clauses` — used by all three current-state readers |
+| What counts as "kept informed" | `app/repositories/reports.py` | `_first_public_staff_note`, `communication` |
+| Which roles are staff for that purpose | `app/repositories/reports.py` | `STAFF_ROLES` |
+| What the notification read rate counts, and whose inbox | `app/repositories/reports.py` | `notification_read_rate` — reporters only, via `Notification.user_id == Incident.reporter_id` |
+| Which `created_at` that half of the report windows on | `app/repositories/reports.py` | `notification_read_rate` — `Notification.created_at`, because a notification is the row being counted (D5's rule, D29's application) |
+| Hours, rounding, percentages, `NULL` at a zero denominator | `app/repositories/reports.py` | `_hours`, `_rounded`, `_percentage`, `SECONDS_PER_HOUR`, `MEDIAN` |
+| Median rather than mean | `app/repositories/reports.py` | `_median_hours_since_created` — `percentile_cont(0.5)` |
+| Every day appears in the daily series, zeroes included | `app/repositories/reports.py` | `summary_per_day`, `_counted_on_day` — `generate_series` supplies the calendar |
+| Zeroes appear for unused statuses and priorities | `app/services/reporting.py` | `summary` iterates the enum, not the result rows |
+| Top-N limits | `app/schemas/report.py` | `TOP_LOCATION_LIMIT` (10), `ESCALATED_TICKET_LIMIT` (50) |
+| Ticket reference formatting in aggregate rows | `app/models/incident.py` | `format_reference` |
+
+### 3.11 Ops, demo data and migrations
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| HTTP request versus ops action | `function.py` | presence of an `action` key on the event |
+| Which ops actions exist | `app/services/ops.py` | `ACTIONS`, `run_ops` |
+| `migrate` also seeds the categories | `app/services/ops.py` | `_op_migrate` — a migrated but unseeded database cannot render the report form |
+| Running Alembic without a working directory | `app/migrations.py` | `SERVICE_ROOT`, `build_alembic_config`, `upgrade_to_head` |
+| Extensions, enum types and the ticket sequence exist before any table | `alembic/versions/0001_initial_schema.py` | `_create_enum_types`, `TICKET_SEQUENCE` |
+| Which enum types exist at all | `app/models/enums.py` | `ENUM_TYPES` — the migration creates exactly these |
+| Lifecycle timestamps are timezone-aware | `alembic/versions/0002_timestamptz_lifecycle_columns.py` | — |
+| The timeline is stamped per row, not per transaction | `alembic/versions/0003_event_clock_timestamp.py` | `clock_timestamp()` on `incident_events` and `incident_notes` |
+| `seed_demo` refuses to run outside local development | `app/services/ops.py` | `_op_seed_demo`, gated on `settings.is_local` |
+| Which spec fields an invoke payload may override | `app/services/ops.py` | `SEED_DEMO_OVERRIDES`, `_seed_demo_overrides` |
+| How much of everything the demo world contains | `app/seed/demo.py` | `DemoSpec`, `DEFAULT_SPEC` |
+| Whether a second seed run does anything | `app/seed/demo.py` | `_existing_demo_building` |
+| What a demo ticket's life can look like, and how far along it is | `app/seed/demo.py` | `PATH_WEIGHTS`, `_plan_steps`, `_walk`, `_enter` |
+| How long each hop takes, and when tickets are reported | `app/seed/demo.py` | `RESPONSE_MEDIANS`, `_draw_hours`, `_draw_created_at`, `WORKING_HOURS` |
+| Who gets assigned what | `app/seed/demo.py` | `_draw_assignee`, `ENGINEER_LOAD_WEIGHTS`, `ENGINEER_SEEDS` |
+| Recurring problems at one seat | `app/seed/demo.py` | `_choose_hotspots` |
+| The demo password | `app/seed/demo.py` | `DEMO_PASSWORD` |
+
+### 3.12 Environment, errors and plumbing
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Every route starts with `/api/v1` | `app/config.py` | `API_PREFIX`, applied in `app/main.py` |
+| Which settings exist and what they default to | `app/config.py` | `Settings` |
+| A deployed environment refuses to start with the development signing key | `app/config.py` | `_reject_a_weak_deployed_secret`, `MIN_JWT_SECRET_BYTES` |
+| How the database URL is built, and when TLS is required | `app/config.py` | `Settings.database_url` |
+| Engine lifetime, pool size, pre-ping | `app/db.py` | `get_engine`, `get_session_factory` |
+| The session time zone is pinned to UTC | `app/db.py` | `SESSION_TIME_ZONE`, `build_connect_args` |
+| A session per request, always closed | `app/db.py` | `get_db` |
+| What time it is | `app/clock.py` | `utc_now` |
+| The error response shape | `app/errors.py` | `api_error_handler`, registered in `app/main.py` |
+| Which exception means which status | `app/errors.py` | `ValidationError` 422, `AuthenticationError` 401, `AuthorizationError` 403, `NotFoundError` 404, `ConflictError` 409, `RateLimitError` 429 |
+| How a 429 says when to come back | `app/errors.py` | `RateLimitError`, and `Retry-After` in `api_error_handler` — derived from the body, never passed separately |
+| What a log line contains, and what is never in one | `app/observability.py` | `JsonFormatter`, `SENSITIVE_KEY_PARTS`, `redact` |
+| Which id a request is logged under | `app/observability.py` | `_resolve_request_id`, `SAFE_REQUEST_ID`, `REQUEST_ID_HEADER` |
+| What one request's line says | `app/observability.py` | `RequestLogMiddleware`, `_log_request`, `_level_for` |
+| How a concrete path becomes an aggregatable route | `app/observability.py` | `_route_template` |
+| Where logging is switched on, for every environment | `app/observability.py` | `configure_logging`, called by `app/main.py::create_app` |
+| That a migration does not silence the container that ran it | `app/migrations.py` | `upgrade_to_head`; with `disable_existing_loggers=False` in `alembic/env.py` |
+| How a refused transition returns the legal ones | `app/errors.py` | `ConflictError.extra`, merged into the body |
+| What "healthy" means | `app/services/health.py` | `build_health_report`, `check_database`, `API_VERSION` |
+| Which routers are mounted | `app/main.py` | `create_app` |
+| SPA deep links survive without touching `/api/*` | `infra/cloudfront.tf` | `aws_cloudfront_function.spa_router` |
+| Lambda environment variables | `infra/locals.tf` | `local.env_vars` |
+| Local `/api` proxying, path unchanged | `frontend/vite.config.ts` | `server.proxy` |
+
+### 3.13 Frontend — the session
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Where the access token is kept | `api/client.ts` | a module variable; never `localStorage`, never a readable cookie |
+| Which requests carry the bearer token | `api/client.ts` | the request interceptor |
+| When a 401 is retried, and how often | `api/client.ts` | `shouldRetry`, `NO_RETRY_PATHS`, `retriedAfterRefresh` |
+| That only one refresh ever runs at a time | `api/client.ts` | `refreshInFlight`, `refreshSession` |
+| That the refresh call itself bypasses the interceptor | `api/client.ts` | `requestRefresh` |
+| That repeated query parameters serialise the way FastAPI reads them | `api/client.ts` | `paramsSerializer: { indexes: null }` |
+| How a session is restored on page load | `auth/AuthProvider.tsx` | the mount effect → `refreshSession()` then `fetchMe()` |
+| How a session lost in the background is noticed | `auth/AuthProvider.tsx` + `api/client.ts` | `setSessionEndedHandler` |
+| Who may open a route at all | `auth/RequireAuth.tsx` | — |
+| That a pending password change blocks everything else | `auth/RequireAuth.tsx` | `skipPasswordGate`; **authoritatively** enforced by `app/security/dependencies.py::get_current_user` |
+| Who may open a route given their role or level | `auth/RequireRole.tsx` | `isPermitted` — `levels` applies only to engineers |
+| What the API's error bodies mean | `api/errors.ts` | `describeError`, `errorCode` |
+| Which API failure lands on which form input | `features/auth/formErrors.ts` | `applyApiErrors` |
+| Password length and the `@acme.inc` rule, client side | `features/auth/schemas.ts` | mirrors, never decides |
+
+### 3.14 Frontend — rendering the rules rather than restating them
+
+| Rule | File | Note |
+| --- | --- | --- |
+| **Which workflow buttons a user sees** | `features/incidents/IncidentActions.tsx` | `WorkflowButtons` maps over the `allowed-transitions` response. Nothing else. |
+| **What a workflow dialog collects** | `features/incidents/TransitionDialog.tsx` | built from `transition.required_fields`; the one extra input, the duplicate ticket, is revealed by `close_reason === 'DUPLICATE'` |
+| Which non-workflow actions a user sees | `features/incidents/IncidentActions.tsx` | `ContextualButtons`, from the `can_*` flags |
+| Whether there is anything to show at all | `features/incidents/actionAvailability.ts` | `hasContextualActions`, `hasAnyAction` |
+| Which spelling of assign — "Pick up" or "Assign…" | `features/incidents/IncidentActions.tsx` | presentation only; `can_assign` is still the gate |
+| Which workflow buttons a **list row** shows | `features/incidents/InlineTransitionButtons.tsx` | asks the same endpoint; `only` filters what is drawn and can never add to it |
+| Whether a ticket is blocked, and why | `features/incidents/WorkflowStepper.tsx` | renders it; `app/workflow.py` decides it |
+| Which location fields the questionnaire asks for | `features/incidents/LocationPicker.tsx` | from the group's `location_detail`; **valid** is decided by the 422 from `app/services/incident_service.py` |
+| Whether a seat is called "Desk" or "Room" | `display/labels.ts` | `seatFieldLabel` |
+| Title and description bounds, client side | `features/incidents/reportSchema.ts` | mirrors `app/schemas/incident.py` |
+| What an audit event *reads as* | `features/incidents/ActivityTimeline.tsx` | prefers `from_label`/`to_label`, which `app/services/incident_service.py::resolve_event_labels` fills |
+| Who may read an INTERNAL note | `app/services/visibility.py` | in the query. The timeline only *styles* them |
+| Which icons a category may use | `features/incidents/categoryIcons.ts` | `CATEGORY_ICON_NAMES` |
+
+### 3.15 Frontend — lists, dashboards and presentation
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Every URL in the app | `routes.ts` | `paths`, `incidentPath` |
+| Which route is guarded by what | `App.tsx` | the route table |
+| What a list screen is *for* | `App.tsx` | the `preset` prop on `IncidentsPage` |
+| What a list is filtered by | `features/incidents/useIncidentFilters.ts` | the URL query string; `toQuery`, `PAGE_SIZE` |
+| Which filters are shown as removable chips | `features/incidents/AppliedFilterChips.tsx` | — |
+| Which cache entries a mutation invalidates | `features/incidents/hooks.ts` | `invalidateIncidents` — the `['incidents']` and `['reports']` prefixes |
+| Every query cache key | `api/queryKeys.ts` | `queryKeys` |
+| Which reports may be given a date range | `api/reports.ts` | `ReportPeriodParams` vs `ReportScopeParams` — a type, so a wrong call will not compile |
+| Which dashboard section a widget belongs in | `features/dashboard/AdminDashboardPage.tsx` | between the two scope headings |
+| What a period heading says, and where its dates come from | `features/dashboard/ScopeHeading.tsx` | `PeriodScopeHeading` reads the **response's** `window`, not the picker |
+| Whether a dashboard link carries dates | `features/dashboard/listLinks.ts` | `periodListLink` vs `currentListLink` |
+| How long a ticket may go unowned before it needs attention | `features/dashboard/NeedsAttentionPanel.tsx` | `UNASSIGNED_HOURS` (24) |
+| How many rows the attention panel shows | `features/dashboard/NeedsAttentionPanel.tsx` | `ROW_CAP` |
+| Every chart colour, and the contrast checks behind them | `features/dashboard/chartPalette.ts` | `SERIES_PRIMARY`, `PRIORITY_RAMP` |
+| Chart form: horizontal bars, one colour, labels outside | `features/dashboard/BreakdownChart.tsx` | — |
+| Whether a JUNIOR sees the unassigned queue | `features/home/EngineerHomePage.tsx` | `mayPickUp`; the API enforces it in `services/assignment.py` |
+| Whether "Needs your attention" renders | `features/home/EmployeeHomePage.tsx` | shown only when non-empty |
+| "Priority then age" ordering on the engineer's home list | `features/home/sortTickets.ts` | `sortByPriorityThenAge` — client-side, over a fixed top-N |
+| How engineers are ordered in the assign dialog | `features/engineers/hooks.ts` | `sortForAssignment`; the API decides who may actually be assigned |
+| Who sees which navigation item | `layout/navigation.ts` | `navItemsFor`, `reportNavItem` |
+| Which navigation item is highlighted | `layout/navigation.ts` | `activeNavPath` — longest matching prefix |
+| Which items reach the mobile bottom bar | `layout/navigation.ts` | the `inBottomNav` flag |
+| Where the desktop/mobile switch happens | `hooks/useBreakpoint.ts` | `MOBILE_MAX_WIDTH` = 899, aligned with MUI's `md` |
+| Where a dialog is full screen | `components/ResponsiveDialog.tsx` | one place, so no screen forgets |
+| Where confirmations appear | `components/SnackbarProvider.tsx` | top on a phone, bottom on desktop |
+| What a status is called, and what colour it is | `display/labels.ts`, `display/statusColor.ts` | `statusLabel`, `statusChipColor` |
+| What colour a workflow button is | `display/statusColor.ts` | `transitionButtonColor` |
+| How a duration in hours is worded | `display/time.ts` | `formatHours` |
+| How a bare `YYYY-MM-DD` is read without losing a day | `display/time.ts` | `parseCalendarDay` |
+| How a role or level is worded for humans | `layout/roleLabels.ts` | `roleLabel`, `levelLabel`, `describeRole` |
+| What an unknown client URL does | `App.tsx` | the `path="*"` route → `features/placeholder/NotFoundPage.tsx` |
+| What a render error shows, and how to recover from it | `components/ErrorBoundary.tsx` | `ErrorBoundary`; mounted twice — in `layout/AppShell.tsx` and `main.tsx` |
+| Which render errors need a reload rather than a retry | `components/staleBundle.ts` | `isChunkLoadError` |
+| Where the keyboard's way past the navigation is | `components/SkipLink.tsx` + `layout/AppShell.tsx` | `SkipLink`, `MAIN_CONTENT_ID` |
+| Which navigation surface is which, to a screen reader | `layout/AppShell.tsx` | the two `<nav>` labels: "Main" and "Quick links" |
+| How the current page is signalled other than by colour | `layout/AppShell.tsx` | `aria-current="page"` |
+| What a stepper step says about its own state | `features/incidents/WorkflowStepper.tsx` | `describeStepState`, `aria-current="step"` |
+| What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each; `role="img"` |
+| How an async state change is announced | `components/QueryState.tsx`, `components/FullPageProgress.tsx` | `role="status"` + `aria-live="polite"` |
+| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| Which status colours were contrast-checked, and against which surfaces | `theme.ts` | `palette.info` / `warning` / `success` / `error` — both ratios are in the comment |
+| Which accessibility rules the build enforces | `e2e/accessibility.spec.ts` | `WCAG_AA` |
+| Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
+| Which typeface is actually loaded | `fonts.ts` | side-effect imports; `theme.ts` only *asks* for it |
+| What "the screen has finished loading" means to an end-to-end test | `frontend/e2e/fixtures/test.ts` | `expectNothingLoading` — one definition, so a test cannot quietly settle for a heading that rendered before any query resolved (D24, D25) |
+
+### 3.16 One thing in the code that owns no rule
+
+Recorded because a reader who finds it will look for the rule it enforces, and there is
+not one.
+
+- **`features/placeholder/ComingSoonPage.tsx`** is a complete component that no route
+  renders; the only occurrences of its name in the repository are its own `interface`
+  and `function`. It is a leftover from M5, when the persona screens were placeholders.
+  Deleting it should break nothing; confirm with a grep before doing so. It was left
+  alone in S6 because S6's remit named the two loose ends below and not this one, and
+  widening a cleanup on your own initiative is how unrelated changes end up in a diff.
+
+Two others were here until S6 and are now gone: `current_user_id` in
+`app/security/dependencies.py`, which was defined and never called, and an empty
+`if TYPE_CHECKING: pass` in `app/models/category.py`. M8 found both and recorded them
+rather than changing them, because M8 was a documentation pass; S6 removed them.
+---
+
+## 4. One request, end to end
+
+The richest path in the system: **an engineer resolves a ticket.** It touches identity,
+the workflow table, a guard, side effects, the audit log, response assembly and cache
+invalidation — every layer, in order. Every function named below exists; follow along with
+the files open.
+
+The setup: incident `INC-000482` is `IN_PROGRESS`, assigned to Nina, a SENIOR engineer.
+Nina is looking at `/tickets/6f3a…` and clicks **Resolve**.
+
+### Hop 1 — the button exists because the API said so
+
+`features/incidents/IncidentDetailPage.tsx` has three queries running:
+
+```ts
+const incident    = useIncident(incidentId);              // ['incidents','detail',id]
+const transitions = useAllowedTransitions(incidentId);    // …,'allowed-transitions'  staleTime: 0
+const activity    = useActivity(incidentId);              // …,'activity'
+const performTransition = useTransition(incidentId);
+```
+
+`useAllowedTransitions` has already fetched `GET /api/v1/incidents/{id}/allowed-transitions`.
+For Nina, on an `IN_PROGRESS` ticket she is assigned to, the response is two entries — one
+of them:
+
+```json
+{ "to_status": "RESOLVED", "action_label": "Resolve",
+  "required_fields": ["resolution_summary"], "close_reason_choices": [] }
+```
+
+`IncidentActions.tsx`'s `WorkflowButtons` maps over that array and renders one `<Button>`
+per entry, labelled with `action_label` and coloured by
+`display/statusColor.ts::transitionButtonColor`. **There is no list of workflow buttons in
+the TypeScript.** `staleTime: 0` on that query is deliberate: a cached list of moves is a
+list of buttons that 409 when pressed.
+
+### Hop 2 — the dialog is built from `required_fields`
+
+The click calls `onTransition(transition)`, which sets the page's dialog state and renders
+`TransitionDialog`. The dialog reads:
+
+```ts
+const requires = (field: string) => transition.required_fields.includes(field);
+```
+
+so it draws exactly one input — the `resolution_summary` textarea — and nothing else. There
+is no mapping here from "Resolve" to "resolution summary"; that mapping is a field of a row
+in `app/workflow.py`. Adding a required field to a transition changes this dialog without
+anyone editing it.
+
+On submit it assembles the payload onto `{ to_status: transition.to_status }`, adding only
+the keys `required_fields` named, and calls `onSubmit` → `performTransition.mutateAsync`.
+
+### Hop 3 — out of the browser
+
+`features/incidents/hooks.ts::useTransition` → `api/incidents.ts::performTransition(id, payload)` →
+
+```ts
+apiClient.post<Incident>(`/incidents/${id}/transitions`, payload)
+```
+
+`apiClient`'s **request interceptor** (`api/client.ts`) attaches
+`Authorization: Bearer <accessToken>` from the module-level `accessToken` variable — the
+token lives in memory and nowhere else. `baseURL` is the constant `'/api/v1'`, so the
+browser issues a relative, same-origin request to `/api/v1/incidents/{id}/transitions`.
+
+### Hop 4 — across the network
+
+**Locally:** Vite's dev server proxies `/api` to `http://localhost:8000` *without rewriting
+the path* (`frontend/vite.config.ts`), so uvicorn sees `/api/v1/incidents/…`.
+
+**Deployed:** CloudFront matches the `/api/v1*` cache behaviour and forwards the full,
+unmodified path to the Lambda Function URL. `function.py::handler` runs, finds no `action`
+key on the event, and hands it to `_asgi` — `Mangum(app, lifespan="off")` — which translates
+the Lambda event into an ASGI scope and calls the FastAPI application.
+
+Both paths arrive at the same place with the same URL. That is the entire point of the
+prefix discipline in §1.4.
+
+### Hop 5 — routing and dependencies
+
+`app/main.py::create_app` mounted `incidents.router` with `prefix=API_PREFIX`, so the
+request resolves to `app/routers/incidents.py::create_transition`.
+
+FastAPI resolves its dependencies **before** the function body runs:
+
+1. `session: DbSession` → `app/db.py::get_db` yields a `Session` from the process-wide
+   `get_session_factory()`.
+2. `user: CurrentUser` → `app/security/dependencies.py::get_current_user`, which depends on
+   `get_authenticated_user`, which:
+   - `get_bearer_token(request)` — pulls the token out of the `Authorization` header, 401
+     `MISSING_TOKEN` if absent;
+   - `app/security/tokens.py::decode_access_token(token)` — verifies the HS256 signature
+     and the `exp`/`iat`/`sub` claims, 401 `INVALID_TOKEN` on failure;
+   - `app/repositories/users.py::get_by_id` — loads the row. **The role is re-read from the
+     database, never trusted from the token**, so an admin's change applies on the very next
+     request;
+   - 401 `INACTIVE_ACCOUNT` if the row is gone or `is_active` is false.
+
+   `get_current_user` then adds the one thing `get_authenticated_user` does not: if
+   `user.must_change_password` it raises 403 `PASSWORD_CHANGE_REQUIRED`. That split is the
+   whole mechanism of the forced-password-change gate — `/auth/*` routes depend on the
+   former, everything else on the latter.
+3. `payload: TransitionRequest` — the body is parsed and validated by Pydantic
+   (`app/schemas/incident.py`). A malformed body never reaches our code.
+
+### Hop 6 — loading the ticket
+
+```python
+incident = incident_service.get_incident(session, incident_id)
+```
+
+`app/services/incident_service.py::get_incident` → `app/repositories/incidents.py::get`,
+which selects the row with `_detail_loaders()` — six `selectinload` options plus
+`escalator` and `duplicate_of`. A missing row becomes `NotFoundError` → 404
+`INCIDENT_NOT_FOUND`.
+
+### Hop 7 — the decision, in `perform_transition`
+
+```python
+updated = incident_service.perform_transition(
+    session, incident=incident, user=user, payload=payload
+)
+```
+
+Inside `app/services/incident_service.py::perform_transition`, in order:
+
+1. **`moment = now or utc_now()`** — the clock is read once, from `app/clock.py`, and passed
+   down. Every guard and timestamp below uses this one value, and a test passes `now=`
+   instead.
+
+2. **`workflow.resolve_actors(incident, user)`** — in what capacities is Nina acting on
+   *this* ticket? `incident.assignee_id == user.id`, so `{ASSIGNEE}`. (Had she been a LEAD,
+   she would count as ASSIGNEE on any ticket; had she reported it, REPORTER would be in the
+   set too.)
+
+3. **`workflow.select_transition(IN_PROGRESS, RESOLVED, actors)`** — scans `TRANSITIONS` for
+   rows matching the status pair whose `allowed_actors` intersect hers, then
+   `_highest_precedence` picks one using `ACTOR_PRECEDENCE`
+   (`FACILITY_ADMIN → ASSIGNEE → REPORTER`, widest powers first, so being the reporter never
+   costs an admin an option). One row matches:
+
+   ```python
+   Transition(
+       from_status=IncidentStatus.IN_PROGRESS,
+       to_status=IncidentStatus.RESOLVED,
+       allowed_actors=frozenset({Actor.ASSIGNEE, Actor.FACILITY_ADMIN}),
+       required_fields=("resolution_summary",),
+       action_label="Resolve",
+   )
+   ```
+
+   `None` here would raise `ConflictError` 409 `TRANSITION_NOT_ALLOWED`, carrying
+   `extra={"allowed_transitions": _describe(...)}` — deliberately the same shape as
+   `AllowedTransitionRead`, so a client recovering from a refusal can feed it straight back
+   into whatever draws the buttons instead of making a second request.
+
+4. **`workflow.check_guard(transition, incident, moment)`** — this row has no `guard`, so
+   `None`. (The two rows that do: `_requires_an_assignee` on `OPEN → IN_PROGRESS`, and
+   `_within_the_reopen_window` on `CLOSED → IN_PROGRESS`. A blocked guard is 409
+   `TRANSITION_BLOCKED`, again carrying the legal moves.)
+
+5. **`_require_transition_fields(transition, payload)`** — iterates `required_fields` and
+   raises 422 `TRANSITION_FIELD_REQUIRED` with `field="resolution_summary"` if it is
+   missing. The check is generic: the service never learns which transition it is handling.
+
+6. **`_resolve_close_reason`** — `to_status != CLOSED`, so `None`.
+   **`_resolve_duplicate_target`** — no close reason of `DUPLICATE`, so `None`.
+
+7. **`_apply_transition_effects(...)`** — the side effects, written as *what it means to be
+   in this status* rather than per-transition:
+
+   ```python
+   incident.status = IncidentStatus.RESOLVED
+   incident.resolved_at = now
+   incident.resolution_summary = payload.resolution_summary
+   # ... and, in the else-branch of the BLOCKED check:
+   incident.blocked_reason_type = None
+   incident.blocked_reason = None
+   ```
+
+   Keying on the status entered rather than the move made is what guarantees a reopened
+   ticket cannot keep a `closed_at` that the reports would then count — entering
+   `IN_PROGRESS` clears the resolution and closure fields whether it was reached by starting
+   work, resuming after a block, or reopening.
+
+8. **`repository.add_event(...)`** — one row in `incident_events`:
+   `event_type=transition.event_type` (`STATUS_CHANGED`, since `is_reopen` is false),
+   `from_value="IN_PROGRESS"`, `to_value="RESOLVED"`, `actor_id=user.id`,
+   `reason=payload.reason`. Its `created_at` is defaulted by PostgreSQL's
+   `clock_timestamp()`, so it sorts after anything written a microsecond earlier in the same
+   transaction.
+
+9. **`notification_service.record(session, NotificationType.STATUS_CHANGED, incident=incident, actor=user)`**
+   — one line, and it names no recipient. It builds a `NotificationContext` and calls
+   `notifications.plan()`, which looks up the `STATUS_CHANGED` row in `RULES`, walks
+   `AUDIENCE_PRECEDENCE`, resolves REPORTER to `incident.reporter_id` and ASSIGNEE to
+   `incident.assignee_id`, **drops Nina because she is the actor**, and renders the
+   reporter's sentence from the status the incident now carries. One row goes into
+   `notifications`, in this transaction, so a commit that fails notifies nobody about a
+   status the database never reached. Had Nina been the reporter too, the plan would have
+   been empty and no row would exist — not a row addressed to nobody.
+
+10. **`repository.reload(session, incident)`** — `session.flush()`, then re-select with
+   `_detail_loaders()` **and `execution_options(populate_existing=True)`**. That flag is
+   load-bearing: without it the query finds the object already in the session's identity map
+   and hands it back untouched, *including relationships loaded before the write*. This
+   particular request does not change a relationship, but the assign and escalate paths do,
+   and they share this function.
+
+Nothing in this sequence decides *whether* the move is legal. That is `app/workflow.py`.
+What happens here is only the part a table cannot express.
+
+### Hop 8 — commit, then assemble the response
+
+Back in `app/routers/incidents.py::create_transition`:
+
+```python
+session.commit()
+return _to_read(updated, user)
+```
+
+**The service never commits; the router does.** That is the transaction boundary, and it is
+why a service can raise halfway through and leave nothing behind. (One documented exception:
+`auth_service.rotate_session` commits its own revocation, because that request is about to
+fail and the security response must outlive it.)
+
+`_to_read` is safe *after* `commit()` because the session factory sets
+`expire_on_commit=False`; otherwise every attribute would have been expired and re-fetched
+one at a time. It builds:
+
+- `_to_list_item` → `_category_summary` (the subcategory flattened with its parent group),
+  `_location_summary` (building code / floor name / seat code joined by
+  `LOCATION_SEPARATOR`), `_user_summary` for reporter and assignee;
+- then the detail fields, and finally **this caller's permissions**, each from the function
+  that owns that rule:
+
+  ```python
+  can_edit             = incident_service.can_edit_content(incident, user)
+  can_change_priority  = incident_service.can_change_priority(incident, user)
+  can_escalate         = incident_service.can_escalate(incident, user)
+  can_clear_escalation = incident_service.can_clear_escalation(incident, user)
+  can_assign           = assignment.can_assign(incident, user)
+  can_add_note         = note_service.can_add_note(incident, user)
+  can_add_internal_note= note_service.can_add_internal_note(incident, user)
+  ```
+
+The response is an `IncidentRead`. Had anything raised, `app/errors.py::api_error_handler`
+— registered once in `app/main.py` — would have rendered it as
+`{detail, code?, field?}` plus any `extra`.
+
+### Hop 9 — back in the browser
+
+`useTransition`'s `onSuccess` calls `invalidateIncidents(queryClient)`:
+
+```ts
+Promise.all([
+  queryClient.invalidateQueries({ queryKey: queryKeys.incidents.all }), // ['incidents']
+  queryClient.invalidateQueries({ queryKey: queryKeys.reports.all }),   // ['reports']
+])
+```
+
+TanStack Query matches keys by **prefix**, so `['incidents']` invalidates the detail, the
+allowed-transitions, the activity *and* every list however it was filtered. That is broader
+than strictly necessary and is the right default: working out which of those a given move
+touched would put the workflow's side effects in a second place. `['reports']` goes with it
+because every home-screen tile and the whole admin dashboard are built from `/reports/*` — a
+tile still reading "1" under a list that just emptied is the kind of stale number that makes
+a reader stop trusting the page.
+
+### Hop 10 — what re-renders
+
+| Query | What changes |
+| --- | --- |
+| `useIncident` | status chip → **Resolved**; `resolution_summary` appears in `DetailsCard`; the `can_*` flags shift (Nina can still add a note; `can_escalate` is now false because `RESOLVED` is not in `ESCALATABLE_STATUSES`) |
+| `useAllowedTransitions` | now returns **Close ticket** (`CLOSED_BY_ENGINEER`) for Nina. For the *reporter* the same endpoint returns **Confirm fixed** and **Still broken** — same ticket, same moment, different rows of the same table |
+| `useActivity` | the new `STATUS_CHANGED` row appears in `ActivityTimeline` |
+| `WorkflowStepper` | advances to the Resolved step |
+| the reporter's home screen | "Awaiting your confirmation" goes up by one, via `/reports/me` |
+
+### The same trace, compressed
+
+```
+Resolve button (drawn from allowed-transitions)
+  └─ TransitionDialog            ← required_fields
+     └─ useTransition            → features/incidents/hooks.ts
+        └─ performTransition     → api/incidents.ts
+           └─ apiClient          → Bearer token attached (api/client.ts)
+              └─ Vite proxy / CloudFront + Function URL + Mangum (function.py)
+                 └─ routers/incidents.py::create_transition
+                    ├─ get_db                                  (db.py)
+                    ├─ get_current_user → decode_access_token  (security/)
+                    ├─ get_incident → repositories/incidents.py::get
+                    └─ incident_service.perform_transition
+                       ├─ utc_now                              (clock.py)
+                       ├─ workflow.resolve_actors
+                       ├─ workflow.select_transition           ← THE decision
+                       ├─ workflow.check_guard
+                       ├─ _require_transition_fields
+                       ├─ _apply_transition_effects            ← timestamps
+                       ├─ repository.add_event                 ← audit row
+                       └─ repository.reload                    ← populate_existing
+                    ├─ session.commit()                        ← the only commit
+                    └─ _to_read → can_* flags from four services
+              ← IncidentRead
+           ← invalidate ['incidents'] + ['reports']
+        ← three queries refetch, four components re-render
+```
+
+---
+
+## 5. Reading order
+
+To understand this system in an afternoon, read in this order. The point of the sequence is
+that each step makes the next one obvious.
+
+**First, 20 minutes — the constraints, so nothing later looks arbitrary.**
+1. `CLAUDE.md` — the scaffold's hard rules. Read §1.4 above alongside it.
+2. `docs/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
+
+**Then, 30 minutes — the shape of the domain.**
+3. `backend/v1/app/models/enums.py` — twelve enums, and the whole vocabulary of the system
+   in one file. Read this before any table.
+4. `backend/v1/app/models/incident.py` — the central table, heavily commented.
+5. §2 above, with `backend/v1/app/models/` open beside it.
+
+**Then, 45 minutes — the one file that explains the architecture.**
+6. `backend/v1/app/workflow.py`, start to finish including the module docstring. It is 340
+   lines and it is the thesis of the codebase: rules as data, read by three consumers and
+   restated by none.
+7. `backend/v1/tests/unit/test_workflow.py` — it parametrises over `TRANSITIONS` itself.
+   Reading it tells you what the table guarantees.
+
+**Then, 45 minutes — one request all the way down.**
+8. §4 above, with these four files open: `app/routers/incidents.py`,
+   `app/services/incident_service.py`, `app/security/dependencies.py`,
+   `app/repositories/incidents.py`.
+9. `backend/v1/app/services/visibility.py` — 55 lines, and the clearest statement of the
+   "one place, applied to the query" discipline in the repository.
+9a. `backend/v1/app/notifications.py` — the same thesis as `workflow.py` applied a second
+   time, and the shorter of the two. If §6 of `workflow.py` convinced you, this shows what
+   it looks like when the pattern is reused deliberately rather than discovered.
+
+**Then, 30 minutes — the frontend's contract with the backend.**
+10. `frontend/src/api/client.ts` — the session, the token, and the 401 retry, in one file.
+11. `frontend/src/features/incidents/IncidentActions.tsx` and `TransitionDialog.tsx` —
+    where the UI refuses to know the rules.
+12. `frontend/src/api/queryKeys.ts` and `features/incidents/hooks.ts` — how a change
+    propagates back to the screen.
+
+**Finally, 30 minutes — the parts that are their own world.**
+13. `backend/v1/app/repositories/reports.py` module docstring, then `_window_clauses` and
+    `_scope_clauses` — and `docs/DECISION-LOG.md` D9, D10, D11, which are the best worked
+    example in the repository of a rule being got wrong, exposed, and fixed twice.
+14. `backend/v1/app/seed/demo.py` docstring — only if you are going to change the demo data.
+
+**What to skip on a first pass.** `app/seed/demo.py`'s body (1,730 lines of generator),
+the admin CRUD screens (`features/facilities`, `features/categories`, `features/users`) —
+they are conventional forms, and their rules are all in `services/facilities.py` and
+`services/categories.py`, which you can read in fifteen minutes each — and the per-phase
+sections of this guide, which are history rather than description.
+
+**If you only have one hour:** §1 and §2 above, then `app/workflow.py`, then §4.
+
+---
+
+## 6. Glossary
+
+Every non-obvious term in the codebase and in this guide, in one place. Each is one or two
+sentences, written for someone meeting it for the first time. Terms the phase sections
+defined locally are merged here; where a phase glossary and this one differ, this one is
+current.
+
+### 6.1 Hosting, AWS and the deployment path
+
+| Term | Meaning |
+| --- | --- |
+| **ASGI** | Asynchronous Server Gateway Interface — the Python convention for how a web server hands a request to an application. FastAPI speaks it; uvicorn and Mangum are two different things that can drive it. |
+| **Mangum** | A small adapter that makes an ASGI application callable as an AWS Lambda handler: it converts the Lambda event into an ASGI scope and the response back. `lifespan="off"` skips startup/shutdown hooks we do not have. |
+| **uvicorn** | The ASGI server used in local development. In the cloud there is no server — Mangum plays that role per invocation. |
+| **Lambda Function URL** | A dedicated HTTPS endpoint attached to a Lambda function. Used here instead of API Gateway, which the IAM boundary does not permit. |
+| **Direct invoke** | Calling a Lambda through the AWS API (`aws lambda invoke`) rather than over HTTP. IAM-protected and not routed by CloudFront, which is why it is safe to run migrations through. |
+| **CloudFront** | AWS's CDN. One distribution fronts both the S3 site and the Lambda, which is what makes the browser same-origin with the API. |
+| **Cache behaviour** | A CloudFront rule matching a path pattern to an origin. `/api/v1*` → the Lambda; everything else → S3. |
+| **CloudFront Function / viewer-request function** | A tiny JavaScript function CloudFront runs at the edge on the *incoming* request, before it reaches an origin. Ours rewrites extension-less paths to `/index.html` so SPA deep links work — attached to the default behaviour only, so it never touches `/api/*`. |
+| **OAC (Origin Access Control)** | The mechanism that lets CloudFront read a private S3 bucket without the bucket being public. |
+| **SPA routing / deep link** | A single-page app owns its URLs client-side, so a reload of `/tickets/abc` must serve `index.html` rather than 404. That is what the viewer-request function is for. |
+| **Aurora Serverless v2** | A managed PostgreSQL that scales its capacity automatically. |
+| **ACU (Aurora Capacity Unit)** | Aurora's unit of provisioned capacity (roughly 2 GiB of memory plus matching CPU). Ours has `min_capacity = 0.0`, so it sleeps when idle and takes about 15 seconds to wake — the cause of a slow first request. |
+| **STS credentials** | Short-lived AWS credentials issued by Security Token Service. `./bin/setup-participant.sh` refreshes them into `ENVIRONMENT.config`, which is gitignored and must never be committed or echoed. |
+| **IAM boundary** | The policy (`infra/policy.tftpl`) capping what the deploy role may do — here, most resources only on ARNs matching `coding-workshop*`, with no VPC, API Gateway, EKS or DocumentDB rights. |
+| **Terraform / `terraform apply`** | The infrastructure-as-code tool the scaffold uses. We author none of it; we edited three provided files (see `docs/INFRA-CHANGES.md`). |
+
+### 6.2 PostgreSQL
+
+| Term | Meaning |
+| --- | --- |
+| **Extension** | An optional module adding types or functions. We enable two: `pgcrypto` and `citext`. |
+| **pgcrypto** | Supplies `gen_random_uuid()`, the default for every primary key here. |
+| **CITEXT** | A case-insensitive text type. `users.email` uses it, so uniqueness and lookup ignore case *in the database* rather than relying on every caller normalising first. |
+| **Enum type** | A PostgreSQL type with a fixed set of allowed values. Ours are created explicitly by the first migration from `ENUM_TYPES` so that no table definition has to create one implicitly. |
+| **Sequence / `nextval`** | A counter object the database increments atomically. `incident_ticket_seq` generates the human-facing ticket numbers, which are therefore stable, gap-tolerant and never reused. |
+| **Generated column (`GENERATED ALWAYS AS … STORED`)** | A column PostgreSQL computes from other columns on every write. `search_vector` is one, which is why it can never drift from `title` and `description`. |
+| **`tsvector`** | PostgreSQL's parsed form of a document: each word reduced to a stem, with positions. |
+| **`to_tsvector(config, text)`** | Builds a `tsvector`. The `'english'` config supplies the stemming and stop words. |
+| **Stemming** | Reducing words to a common root, so a search for "flickering" finds "flickers". |
+| **`setweight`** | Tags part of a `tsvector` with a label `A`–`D` so `ts_rank` can score it differently. Title is `'A'`, description `'B'`. |
+| **`tsquery` / `websearch_to_tsquery`** | The parsed form of a *search*. `websearch_to_tsquery` accepts what people actually type — quoted phrases, `or`, a leading `-` to exclude — and never raises a syntax error on stray punctuation, which `to_tsquery` does. |
+| **`@@`** | The match operator between a `tsvector` and a `tsquery`. |
+| **`ts_rank`** | Scores how well a document matches a query, honouring `setweight` labels. |
+| **GIN index** | Generalised Inverted Index — stores a posting list per stem, the way a book index stores page numbers per word. What makes full-text search fast. |
+| **`NULLS NOT DISTINCT`** | A PostgreSQL 15+ unique-constraint modifier making NULLs collide with each other. Without it, `UNIQUE(parent_id, name)` would silently never apply to category *groups*, whose `parent_id` is NULL. |
+| **CHECK constraint** | A row-level condition the database enforces. Ours: a `BLOCKED` incident must have a `blocked_reason_type`; `max_active_tickets > 0`. |
+| **`ON DELETE CASCADE / RESTRICT / SET NULL`** | What happens to a child row when its parent is deleted: delete it too, refuse the delete, or null the reference. All three are used, deliberately, per relationship. |
+| **`timestamptz`** | `TIMESTAMP WITH TIME ZONE` — an absolute instant. Rendered in the session's time zone, which `app/db.py` pins to UTC so the same value serialises identically everywhere. |
+| **`now()` vs `clock_timestamp()`** | `now()` is the **transaction** start time and is identical for every row one request writes. `clock_timestamp()` is read per call. The activity timeline orders by `created_at` across two tables, so both use `clock_timestamp()` (revision 0003). |
+| **Naive vs aware datetime** | A naive `datetime` has no timezone; an aware one does. Mixing them raises in Python and skews silently in SQL — which is why revision 0002 exists. |
+| **`EXTRACT(EPOCH FROM interval)`** | Converts a time interval to seconds. Every duration in the reports is this, divided by 3600. |
+| **Aggregate function** | A function over many rows returning one value: `COUNT`, `AVG`, `MAX`. |
+| **`FILTER (WHERE …)`** | A clause restricting a single aggregate to a subset of rows, so one scan can produce many segmented counts: `COUNT(*) FILTER (WHERE status = 'OPEN')` alongside a dozen siblings. |
+| **Ordered-set aggregate / `WITHIN GROUP`** | An aggregate that needs its input sorted. `percentile_cont(0.5) WITHIN GROUP (ORDER BY x)` is the syntax. |
+| **`percentile_cont(0.5)`** | The continuous median — interpolating between the two middle values. Used rather than `AVG` throughout so one ticket left over a long weekend cannot move a headline number. It ignores NULL inputs, which is exactly right: the median time to resolve is over tickets that *were* resolved. |
+| **`percentile_disc`** | The discrete variant, which returns an actual observed value. Not used here. |
+| **`NULLIF(x, 0)`** | Returns NULL when `x` is zero. Used to make a percentage NULL rather than a division error when nothing was in the denominator — "no tickets resolved" is not "0% informed". |
+| **`COALESCE`** | Returns the first non-NULL argument. Used to fall back to `created_at` when a blocked ticket has no `STATUS_CHANGED` event. |
+| **`generate_series`** | Produces a set of rows from a range. Supplies the calendar for the created-versus-closed daily series so days on which nothing happened come back as zeroes instead of being absent. |
+| **Correlated subquery** | A subquery referring to a column of the outer query, evaluated per outer row. Used for `active_ticket_count` and `_blocked_since`. |
+| **Scalar subquery** | A subquery returning exactly one value, usable anywhere an expression is. |
+| **Window function** | A function computing across a set of rows related to the current one without collapsing them. Used to carry each category group's total alongside its subcategory rows. |
+| **`ILIKE`** | Case-insensitive `LIKE`. User search uses it, with `%` and `_` escaped (`_escape_like`) so a user typing `%` does not match everything. |
+| **Partial vs. composite index** | A *composite* index covers several columns in order; a *partial* index covers only the rows matching a `WHERE` clause. `ix_notifications_user_id_read_at` is composite. A partial one (`WHERE read_at IS NULL`) would be smaller, and was not used: the composite also answers "all of this user's read rows", and two indexes are already the write cost `notifications` carries. |
+
+### 6.3 SQLAlchemy and Alembic
+
+| Term | Meaning |
+| --- | --- |
+| **ORM** | Object-Relational Mapper — maps table rows to Python objects. |
+| **Engine** | The connection factory and pool, one per process. Creating it opens no connection, so it is safe even when the database is down. |
+| **Session** | A unit of work: a transaction plus an identity map. One per request, via `get_db`. |
+| **Identity map** | The session's cache of "objects I have already loaded", keyed by primary key. It is why re-querying a loaded row returns the same Python object — and why `populate_existing` exists. |
+| **`flush` vs `commit`** | `flush` sends pending SQL so the database assigns ids and defaults, still inside the transaction. `commit` ends the transaction. Services flush; routers commit. |
+| **`expire_on_commit=False`** | By default, committing marks every loaded object stale so the next attribute access re-queries. Turning it off lets a router build its response from objects it already has, after the commit. |
+| **`populate_existing=True`** | Forces a query to overwrite the session's cached copy rather than returning it untouched. Without it, `reload()` would hand back an object whose *relationships* were loaded before the write — so a just-assigned ticket would report itself unassigned. |
+| **`selectinload`** | An eager-loading strategy that fetches a relationship for a whole result set in one extra `SELECT … WHERE id IN (…)`. Turns a page of 25 incidents from 176 queries into nine. |
+| **N+1 query** | The anti-pattern `selectinload` prevents: one query for a list, then one more per row per relationship. |
+| **`Select`** | SQLAlchemy 2.0's statement object. Passing one between layers is what lets `visibility.py` narrow a query that `repositories/` will later execute. |
+| **Declarative base** | The class every model inherits from, carrying the shared `MetaData`. Ours also carries a naming convention so Alembic emits stable constraint names. |
+| **Alembic** | SQLAlchemy's migration tool. Each migration is a *revision* with `upgrade()` and `downgrade()`, chained by `down_revision`. |
+| **head / `upgrade head`** | The newest revision in the chain. `upgrade_to_head()` applies everything not yet run. |
+| **Autogenerate** | Alembic's ability to diff models against a live database and draft a migration. Useful as a draft; our migrations are hand-checked because enum creation order and `USING` casts matter. |
+
+### 6.4 Authentication and security
+
+| Term | Meaning |
+| --- | --- |
+| **JWT** | JSON Web Token — a signed, self-describing token. Ours carries `sub`, `role`, `type`, `iat`, `exp`. |
+| **HS256** | HMAC with SHA-256: a symmetric signature, appropriate because one service both issues and verifies. |
+| **Claims** | The fields inside a JWT. `role` is carried for convenience and **never trusted** — authorisation re-reads the user from the database each request. |
+| **Access token vs refresh token** | The access token is a short-lived (15 min) stateless JWT, checked with no database round trip. The refresh token is a long-lived (7 day) opaque random string stored hashed, and therefore revocable — which is the whole reason it exists. |
+| **Bearer token** | A token sent as `Authorization: Bearer <token>`; possession alone authorises. |
+| **Refresh-token rotation** | Every use of a refresh token revokes it and issues a new one, so a stolen cookie has a short useful life. |
+| **Reuse detection** | Presenting an *already revoked* refresh token means either theft or a client racing itself; both are answered by revoking **every** session for that user, turning silent theft into a visible logout. |
+| **bcrypt / cost factor / salt** | A deliberately slow password hash. The cost factor (12 here, ~250 ms) sets how slow; the salt makes identical passwords hash differently. |
+| **bcrypt pre-hash** | bcrypt refuses inputs over 72 bytes, so the password is first reduced to a SHA-256 digest and base64-encoded — 44 ASCII bytes, no entropy lost. Removing or reordering this step would invalidate every stored hash. |
+| **`HttpOnly`** | A cookie flag making the cookie unreadable to JavaScript — the defence that makes a refresh cookie safer than a token in `localStorage`. |
+| **`SameSite=Strict`** | A cookie flag suppressing the cookie on cross-site requests. Workable here only because the browser is same-origin with the API in *both* environments. |
+| **`Secure`** | Sends the cookie over HTTPS only. Driven from config: false locally, true deployed. |
+| **Cookie `Path`** | Limits which paths the browser sends a cookie to. Ours is `/api/v1/auth`, so the refresh token never rides along on a request to `/api/v1/incidents`. |
+| **Same-origin / CORS** | Two URLs are same-origin if scheme, host and port match. Because ours always do, no CORS configuration exists anywhere in this codebase. |
+| **XSS** | Cross-site scripting — injected JavaScript running on your page. The reason the access token is in memory and the refresh token is `HttpOnly`. |
+| **RBAC** | Role-based access control. Here: three roles, plus three engineer *levels* checked separately, plus per-ticket relationships (reporter, assignee) that are not roles at all. |
+| **Account lockout** | Refusing sign-ins for an address after too many failures. Ours is 10 per email per 15 minutes, counted in `login_attempts` — including for addresses that have no account, which is what stops the refusal revealing who holds one. |
+| **Fixed vs sliding window** | A fixed window expires a set time after it *opened*; a sliding one, a set time after the last event in it. A sliding lockout can be held open for ever by one failure every fourteen minutes, so this one is fixed. |
+| **`Retry-After`** | The HTTP header saying how long to wait before retrying. Derived here from the response body's `retry_after_seconds`, so the two cannot disagree. |
+| **Upsert (`INSERT … ON CONFLICT DO UPDATE`)** | PostgreSQL's atomic insert-or-update. In its `SET` clause a bare column name means the **existing** row's value and `excluded.x` the row being inserted. It holds a row lock for the statement, which is what makes the failure count exact under concurrency. |
+
+### 6.5 FastAPI, Pydantic and the backend framework
+
+| Term | Meaning |
+| --- | --- |
+| **FastAPI dependency / `Depends`** | A callable FastAPI resolves before the endpoint runs, injecting the result. Used for the session, the current user and role checks, so an endpoint declares its requirements in its signature. |
+| **`APIRouter`** | A group of routes mounted under a prefix. One per domain, all mounted at `API_PREFIX` in `app/main.py`. |
+| **Pydantic** | The validation library FastAPI uses. Our request and response models live in `app/schemas/`. |
+| **pydantic-settings** | Pydantic's environment-variable loader. `app/config.py::Settings` is one. |
+| **`model_validator(mode="after")`** | A Pydantic hook running once the model is built — used to refuse a deployed environment carrying the development JWT secret. |
+| **`exclude_unset`** | Serialises only fields the caller actually sent, which is what makes `PATCH` genuinely partial: sending `{"is_active": false}` does not blank the address. |
+| **OpenAPI** | The machine-readable API description FastAPI generates, served at `/api/v1/openapi.json` with docs at `/api/v1/docs`. |
+| **`StrEnum`** | A Python enum whose members *are* strings, so a value from the database, from JSON or from a test all compare equal. |
+| **Frozen dataclass** | `@dataclass(frozen=True)` — immutable and hashable. `Transition` is one, so a workflow row cannot be mutated at runtime. |
+| **`frozenset`** | An immutable set. `allowed_actors` is one, so set intersection answers "may this caller use this row?" directly. |
+| **Sentinel value** | A special value standing for a case a normal value cannot express — here the literal string `'unassigned'` for `?assignee_id=`, meaning "tickets nobody owns". |
+| **ASGI middleware (pure)** | A callable wrapping `(scope, receive, send)` that awaits the app below it in the *same* task, so context variables propagate. Starlette's `BaseHTTPMiddleware` runs the app in a separate task, which breaks that and buffers the response. |
+| **ASGI scope** | The per-connection dictionary an ASGI application is handed. A plain dict shared by reference, which is why the request's log context lives there: it is the one channel that survives FastAPI running a synchronous endpoint in a worker thread. |
+| **`ContextVar`** | Python's per-task/per-thread variable. A thread inherits a *copy*, so values set before a call propagate down into it and values set inside it do not propagate back out. The request id travels down on one; the user id cannot. |
+| **Structured logging** | One JSON object per line instead of prose, so a log service can index and query the fields. `filter status >= 500` works only because of it. |
+| **Request id / correlation id** | One value shared by every line written while handling one request. Ours prefers the caller's `x-request-id`, then the Lambda request id — which is what CloudWatch files the invocation under, so the two views join. |
+| **Route template** | `/api/v1/incidents/{incident_id}` rather than one path per ticket. What makes a log aggregatable. |
+
+### 6.6 React and the frontend
+
+| Term | Meaning |
+| --- | --- |
+| **SPA** | Single-page application: one HTML document, with routing and rendering in the browser. |
+| **React context / provider** | React's mechanism for passing a value down the tree without threading props. `AuthProvider` supplies the session; `SnackbarProvider` supplies notifications. |
+| **Hook** | A function starting with `use` that plugs into React's state and lifecycle. Must be called unconditionally and in the same order every render. |
+| **Route guard** | A component wrapping routes and deciding whether to render them. `RequireAuth` checks for a session; `RequireRole` checks role and level. |
+| **`<Outlet />`** | React Router's placeholder for whichever child route matched — how a guard wraps many routes without listing them. |
+| **`<Navigate replace>`** | A redirect rendered as an element; `replace` avoids leaving the blocked URL in history. |
+| **TanStack Query** | The server-state library: caching, background refetching and invalidation, keyed by a query key. |
+| **Query key** | The array identifying a cache entry, e.g. `['incidents','detail',id]`. Registered centrally in `api/queryKeys.ts`. |
+| **Invalidation / prefix matching** | Marking cache entries stale so they refetch. Keys match by prefix, so invalidating `['incidents']` refreshes every incident query at once. |
+| **`staleTime`** | How long a cached answer is considered fresh. Zero on `allowed-transitions`, because a stale list of moves is a list of buttons that 409. |
+| **`placeholderData: keepPrevious`** | Keeps showing the previous data while new parameters load, so a dashboard does not flash empty when the date range changes. |
+| **`useInfiniteQuery`** | Accumulates pages rather than replacing them — the phone's "Load more" list. |
+| **Axios interceptor** | A hook into every request or response. Ours attaches the bearer token on the way out and handles a 401 on the way back. |
+| **Single-flight** | Collapsing concurrent calls into one in-flight promise. Essential here because two simultaneous refreshes with the same cookie would trip reuse detection and log the user out. |
+| **React `StrictMode`** | A development-only mode that deliberately double-invokes effects to surface bugs. It is the reason the bootstrap refresh had to be single-flight. |
+| **Fast Refresh** | Vite's hot reloading for React. A module exporting both a component and a plain function loses it — which is why `AuthContext.ts`, `SnackbarContext.ts`, `categoryIcons.ts` and `actionAvailability.ts` are split from their components. |
+| **Vite** | The dev server and bundler. Its dev proxy is what makes local development same-origin. |
+| **react-hook-form / zod / resolver** | Form state, schema validation, and the adapter between them. The zod schemas *mirror* the API's limits; the API decides. |
+| **Material UI (MUI)** | The component library. Styling is done in place with the `sx` prop, `styled()` and `theme.ts` — there are no stylesheets of ours. |
+| **`sx` prop** | MUI's per-instance style prop, with access to theme tokens. |
+| **`CssBaseline`** | MUI's CSS reset, the only one used. |
+| **Media query / breakpoint** | A width threshold at which layout changes. One threshold here: 899 px, via `react-responsive`, aligned with MUI's `md`. |
+| **FAB** | Floating action button — the phone's "Report an issue" shortcut. |
+| **Code splitting / lazy route** | Loading part of the bundle only when needed. The admin dashboard is lazy-loaded because it is the only screen importing `@mui/x-charts`. |
+| **`useSearchParams`** | React Router's hook for the URL query string, which is where every list filter lives so views are bookmarkable and shareable. |
+| **Error boundary** | A React class component that catches an error thrown while rendering its subtree and shows a fallback instead of unmounting the whole tree. There is no hook equivalent. It does not catch errors in event handlers, timers or rejected promises — those are handled where they happen. |
+| **Chunk-load error** | The failure of a lazily imported bundle, typically a tab left open across a deploy asking for a filename that no longer exists. The one render error where retrying is useless: only a reload fetches the new `index.html`. |
+| **axe-core** | The accessibility rule engine most automated checkers use. It runs inside the page and reports violations it can decide mechanically. `@axe-core/playwright` runs it against a Playwright page. |
+| **WCAG 2.1 AA** | The Web Content Accessibility Guidelines at their middle conformance level — the usual legal and procurement bar. Expressed to axe as the tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`. |
+| **Contrast ratio** | How different two colours are in luminance, 1:1 to 21:1. AA wants 4.5:1 for text under 24px. It must be checked against every surface the text appears on — here both `#ffffff` and the page's `#f4f6fa`. |
+| **Landmark** | An element naming a region of the page for navigation: `<header>`, `<nav>`, `<main>`. A screen reader can jump between them, which is why two must not share a name. |
+| **Skip link** | A link, first in the tab order and visually hidden until focused, that jumps past the navigation to the content. Its target needs `tabIndex={-1}` or the browser scrolls there without moving focus. |
+| **`:focus-visible`** | The CSS pseudo-class matching focus the browser thinks should be shown — keyboard yes, mouse click no. Beware: it has class-level specificity, and Material UI's `ButtonBase` sets `outline: 0` in a class of its own. |
+| **Live region** | An element a screen reader announces when its contents change, without moving focus. `aria-live="polite"` waits for a pause; `role="alert"` interrupts. Loading states are polite; failures are alerts. |
+| **Visually hidden** | Off screen but present in the accessibility tree (`@mui/utils`' `visuallyHidden`). Not `display: none`, which removes it from both — and not from the focus order either, which is what makes a skip link possible. |
+| **`aria-current`** | Marks the one item in a set that is current: `"page"` for a navigation link, `"step"` for a stepper. Often the only non-visual signal that a colour change is carrying meaning. |
+| **Sequential focus navigation starting point** | Where the browser resumes Tab from after a click. Clicking a non-focusable element sets it, so clicking the body before a keyboard test does not "reset" anything — it skips whatever precedes the click. |
+| **`refetchInterval` / `refetchIntervalInBackground`** | TanStack Query's polling. `refetchInterval` sets the period; the interval does **not** run while the browser window is unfocused unless `refetchIntervalInBackground` is set, which it deliberately is not. That is what stops an abandoned tab keeping a `min_capacity = 0` Aurora awake. |
+| **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders that control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor — invalid HTML that a screen reader and a keyboard both handle badly. |
+| **`role="img"` on a chart** | Makes the SVG subtree presentational and replaces several hundred unlabelled nodes with a single `aria-label`, written by a `summarise()` helper. Paired with a **table twin**, because a label says what the chart shows and the twin gives the numbers. |
+
+### 6.7 Testing
+
+| Term | Meaning |
+| --- | --- |
+| **Vitest** | The frontend unit/component test runner, Vite-native. |
+| **Testing Library** | Renders components and queries them the way a user perceives them — by role and visible text rather than by CSS selector. |
+| **`getBy` / `queryBy` / `findBy`** | Throw if absent / return null if absent / await appearance. Choosing the right one is how a test says whether it expects something to be there. |
+| **`getByRole`** | The preferred query: finds an element by its accessibility role and name, so a passing test is also evidence the element is reachable. |
+| **jsdom** | A DOM implementation in Node, so component tests need no browser. |
+| **Playwright** | The end-to-end runner: a real browser against the real stack. |
+| **Browser context** | An isolated cookie jar and storage within one browser. Three personas signed in at once need three contexts — two windows of one profile share a session. |
+| **Fixture** | Test setup provided by the framework. Ours create accounts over the API rather than through the UI, and deactivate them afterwards. |
+| **Viewport** | The browser window size a test runs at. Two projects: desktop 1440×900 and mobile 375×812. |
+| **Savepoint** | A nested transaction marker. Integration tests run each test inside one outer transaction rolled back afterwards, so a real database stays clean. |
+| **Coverage instrumentation** | Measuring which lines a test suite executes. Deliberately **not** installed — see D16 for why an unexamined percentage was judged worse than a named list of gaps. |
+
+### 6.8 This project's own vocabulary
+
+| Term | Meaning |
+| --- | --- |
+| **Actor** | The capacity in which someone acts on **one particular incident**: REPORTER, ASSIGNEE or FACILITY_ADMIN. Not a role — the same person is a different actor on a different ticket. |
+| **Guard** | A precondition on the incident itself rather than on the caller's input, expressed as a function on a workflow row. Returns `None` when the move is allowed, or the message to show when it is not. |
+| **Transition table** | `TRANSITIONS` in `app/workflow.py`: the entire state machine, as data. |
+| **State machine** | A set of states plus the legal moves between them. Ours has five statuses and eleven moves. |
+| **Audit log / append-only** | `incident_events`: rows are written and never modified. The absence of an `updated_at` column is the type signature of that promise. |
+| **Ops action** | A maintenance task run by direct Lambda invoke rather than over HTTP: `health`, `migrate`, `seed_admin`, `seed_demo`. |
+| **Idempotent** | Safe to run repeatedly with the same result. `migrate` and `seed_admin` are; `seed_demo` deliberately is **not**, and says so in its return payload rather than pretending (D12). |
+| **Period report vs current-state report** | The D9 split. A report about *activity during a period* takes `from`/`to` and echoes a `window`. A report about *what is true now* takes neither, and echoes a `scope` — a building and an `as_of` instant. `/reports/blocked-escalated` and `/reports/me` are the two current-state reports. |
+| **Scope vs window** | The two response shapes above. A response that echoed a period it had not applied would let a dashboard label a chart with a filter that never happened. |
+| **Live work** | `ACTIVE_INCIDENT_STATUSES` — OPEN, IN_PROGRESS, BLOCKED. One definition, used by `active_ticket_count`, the capacity warnings and all three current-state escalation readers. |
+| **Soft delete / deactivation** | Keeping a row but clearing `is_active`, or setting `deleted_at`. Used wherever deleting would damage history — users, engineers, categories, notes. |
+| **Visibility filter** | `apply_incident_visibility` / `apply_note_visibility`: functions narrowing a `Select` before it runs. The alternative — filtering the serialised result — is the bug they exist to prevent, because `total` would still count the hidden row and paging would still skip over it. |
+| **Capacity warning** | An advisory string returned alongside a successful assignment when the engineer is unavailable or at their limit. It warns; it never refuses. |
+| **Walking skeleton** | A thin slice through every layer that does almost nothing useful but proves the whole path works. M1 was one. |
+| **Vertical slice** | Building a phase as migration → endpoint → test → screen rather than all-backend-then-all-frontend, so the app is demoable at every point. |
+| **Drill-down** | Clicking a chart segment or tile to open the pre-filtered list it counted. Period tiles link with dates; current-state tiles deliberately do not. |
+| **Table twin** | The text view beside every chart, giving the same numbers to a keyboard, a screen reader or a printout — a hover is not available to any of them. |
+| **Audience** | The capacity in which someone *hears about* one particular incident: REPORTER or ASSIGNEE. The sibling of **Actor**, with one member fewer — there is no admin audience, because notifying every admin of every event is a fan-out with no bound. |
+| **Notification rule** | A row of `RULES` in `app/notifications.py`: a `NotificationType`, a mapping from audience to the sentence that audience is told, and optionally a precondition. The whole policy is four of them. |
+| **Precondition (`applies`)** | The notification analogue of a workflow **guard**: a condition on the triggering action rather than on who is listening. `_is_a_public_staff_note` is the only one, and it is what stops an INTERNAL note reaching a reporter. |
+| **Stored message** | A notification's `message` is rendered when it is written and never re-rendered. It records what was true at the time; the row's `incident_status`, read live, records what is true now. |
+| **Index-only scan** | A PostgreSQL plan that answers a query from an index without reading the table, possible when every column the query needs is in the index. `EXPLAIN` confirms it with `Heap Fetches: 0`. The unread count is one, which is why a 30-second poll is affordable. |
+| **Polling (and why not websockets)** | The badge asks the server every 30 seconds. Not a preference: a Lambda Function URL cannot hold a connection open, so there is no socket to open. The interval stops while the browser tab is unfocused, which also stops it keeping a `min_capacity = 0` Aurora awake. |
+| **Read rate** | Of the notifications sent to reporters inside the reporting period, the share read at any time since. Depressed by recent activity, inherently — which is why `notifications_total` is reported beside the percentage. |
+
+---
+
+# Part II — The build, phase by phase
+
+*What follows is the build log: one section per phase, written as that phase finished.
+It records the reasoning while it was fresh, including arguments that were later
+revisited. For the current state of any rule, prefer [Part I](#part-i--the-system-as-a-whole).*
 
 ---
 
@@ -51,7 +1624,7 @@ libraries the rest of the build needs.
 
 | File | Responsibility |
 | --- | --- |
-| [src/main.tsx](../frontend/src/main.tsx) | Mounts React and wraps the app in the four providers: TanStack Query, MUI theme, `CssBaseline`, React Router. |
+| [src/main.tsx](../frontend/src/main.tsx) | Mounts React and wraps the app in the four providers M1 needed: TanStack Query, MUI theme, `CssBaseline`, React Router. M5 added `AuthProvider` and `SnackbarProvider` — see the M5 section for the current list. |
 | [src/App.tsx](../frontend/src/App.tsx) | The route table. One route today. |
 | [src/theme.ts](../frontend/src/theme.ts) | MUI theme: palette, typography, corner radius. |
 | [src/api/client.ts](../frontend/src/api/client.ts) | The shared axios instance. `baseURL: '/api/v1'`, `withCredentials: true`. |
@@ -2942,6 +4515,9 @@ HTTP path was verified with curl through the Vite proxy rather than with a brows
 BUILD-PLAN section 14 allows this gap to be documented rather than closed; closing it
 means Playwright, and the natural time is M6 when there is a full lifecycle to walk.
 
+*(M6 closed it. The first browser run found a defect every jsdom test had passed — see
+that phase's gotchas.)*
+
 ### 7. Glossary
 
 **SPA (single-page application)** — the server sends one HTML file and the JavaScript
@@ -3055,3 +4631,3343 @@ has, since it has no stylesheets.
 
 **FAB (floating action button)** — the round button pinned above the mobile bottom bar.
 Here it opens "Report an issue" for employees.
+
+---
+
+## Phase M6 — Persona screens
+
+M5 built the frame and left every navigation item pointing at a placeholder. M6 fills
+them: the report questionnaire, the incident detail page every persona shares, the four
+ticket lists, and the four screens a facility admin maintains the system from.
+
+It also closes the gap M5 recorded. M5's 112 Vitest tests run in jsdom, which has no
+layout engine — they can prove what `useBreakpoint` *decides* at 375 px but not that
+anything is laid out at 375 px, because nothing is laid out at all. This phase adds
+Playwright, and the first thing it found was a defect that only exists in a browser.
+
+**Verified against local PostgreSQL only.** 211 frontend tests (up from 112), 609
+backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
+What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+### 0. Two carry-overs, both the same shape
+
+Both are M4-era code that was correct as far as it went and stopped one layer short of
+being usable — and both stayed invisible for two phases, because the layer they stopped
+at is the one nothing existed to call until now. Neither is a wrong answer that a test
+agreed with, which is what M3's and M4's carry-overs were. These are right answers that
+never reached a screen.
+
+#### A column nothing could read
+
+[BUILD-PLAN section 7](BUILD-PLAN.md) asks the report questionnaire to pre-fill the
+location from where you last reported something, and M4 implemented the half of that
+which lives in the database. `services/incident_service.py` has kept three columns
+current on every successful create since then:
+
+```python
+reporter.last_building_id = building.id
+reporter.last_floor_id = floor.id if floor is not None else None
+reporter.last_seat_id = seat.id if seat is not None else None
+```
+
+`tests/integration/test_incidents.py` asserted it, and the assertion passed, because it
+read the columns straight off the ORM object:
+
+```python
+db_session.refresh(employee)
+assert employee.last_building_id == building.id
+```
+
+What no test asked was whether a **client** could see them — and none could. `UserRead`
+does not carry them, `CurrentUserRead` inherits from `UserRead`, and `/auth/me` returns
+`CurrentUserRead`. Three columns were written on every report, for a feature whose only
+consumer had no way to read them.
+
+The fix is three fields, and *where* they go is the interesting part:
+
+```python
+class CurrentUserRead(UserRead):
+    """The caller's own record, with their engineer profile when they have one.
+
+    The three `last_*_id` fields are on *this* model rather than on `UserRead`
+    deliberately. They exist so the report questionnaire can pre-fill where you
+    were the last time you reported something, which is only ever a question
+    about yourself; an admin listing accounts has no business being told where
+    each of them sits.
+    """
+```
+
+`UserRead` is what `GET /users` returns to an admin, one row per account. Putting a
+person's usual desk on that model would turn a user-administration screen into a seating
+chart, which is not what anyone asked for and not something anyone consented to. The
+accompanying test asserts the reachability rather than the column, which is what the
+original test should have done:
+
+```python
+after = client.get("/api/v1/auth/me", headers=employee_headers).json()["user"]
+assert after["last_building_id"] == str(building.id)
+```
+
+#### A timeline that printed a UUID at a person
+
+The second was found by looking at the finished detail page, where the activity read:
+
+```
+Sam Senior   5m ago
+Assigned: f6ac2cf4-0330-415e-a327-0af55964e5d6
+```
+
+`services/assignment.py` records an assignment like this, and it is right to:
+
+```python
+repository.add_event(
+    session, incident_id=incident.id, actor_id=actor.id,
+    event_type=EventType.ASSIGNED,
+    from_value=str(previous_assignee_id) if previous_assignee_id else None,
+    to_value=str(assignee.id),
+)
+```
+
+An audit row should hold the **id**. A name can change; an id cannot, and an audit trail
+that says "Assigned: Sam Senior" is ambiguous the day two people share a name or one of
+them marries. The `from_value`/`to_value` columns are `str` because most events store a
+word — `OPEN`, `HIGH` — and these two store an id.
+
+So the recorded value is correct and unreadable, and `GET /activity` had been returning
+it verbatim since M4. Nothing noticed, because until M6 nothing rendered it.
+
+The fix is a **presentation** field rather than a change to what is stored:
+
+```python
+from_label: str | None = Field(
+    default=None,
+    description="Readable form of `from_value` when it is a user id.",
+)
+```
+
+`incident_service.resolve_event_labels` collects every id the timeline refers to and
+resolves them in **one** query — a ticket reassigned six times names at most a handful
+of people, usually the same two — and the router fills the labels in alongside the raw
+values. `ActivityTimeline` prefers the label and falls back to the value, so the audit
+trail keeps its ids for anyone reading it as an audit trail.
+
+This one has an epilogue worth keeping. The first version of the resolver's helper was
+called `_as_uuid`, and `incident_service.py` already had a private `_as_uuid` two hundred
+lines further down — one that *raises* when a value is not an id, because it narrows
+something the schema has already guaranteed. Python took the later definition, and every
+call to `/activity` on an assigned ticket answered `422 INVALID_ID`. Ruff did not catch
+it: `F811` flags a redefinition of an **unused** name, and the first one had been used.
+The helper is `_parse_user_id` now, and its docstring says why it is not the other one.
+
+### 1. What was built
+
+#### The API client — `src/api/`
+
+M5 had `auth.ts` and `health.ts`. M6 adds one module per domain, mirroring
+`app/routers/`, each a thin typed function per endpoint.
+
+| File | Responsibility |
+| --- | --- |
+| [api/incidents.ts](../frontend/src/api/incidents.ts) | List, read, create, edit, transition, assign, pick up, escalate, clear escalation, activity. |
+| [api/notes.ts](../frontend/src/api/notes.ts) | Writing notes. Reading them happens through `fetchActivity`, which merges them with events. |
+| [api/categories.ts](../frontend/src/api/categories.ts) | The two-level tree, and an admin's edits to it. |
+| [api/facilities.ts](../frontend/src/api/facilities.ts) | Buildings, floors, seats, the bulk insert, and the whole tree in one call. |
+| [api/engineers.ts](../frontend/src/api/engineers.ts) | The roster, creation with its one-time password, and an engineer's own availability. |
+| [api/users.ts](../frontend/src/api/users.ts) | Listing accounts, changing a role, deactivating. |
+| [api/types.ts](../frontend/src/api/types.ts) | Grown from four interfaces to the twin of every Pydantic schema. |
+| [api/queryKeys.ts](../frontend/src/api/queryKeys.ts) | Every cache key, as widening prefixes so one invalidation can cover a family. |
+
+One change to an M5 file, and it is load-bearing:
+
+```ts
+export const apiClient = axios.create({
+  // ...
+  paramsSerializer: { indexes: null },
+});
+```
+
+FastAPI reads a repeatable query parameter as `status=OPEN&status=CLOSED`. Axios's
+default is `status[]=OPEN&status[]=CLOSED`, which arrives as a parameter the API has
+never heard of and is silently ignored — a status filter that appears to work and
+returns everything.
+
+#### Presentation helpers — `src/display/`
+
+| File | Responsibility |
+| --- | --- |
+| [display/labels.ts](../frontend/src/display/labels.ts) | Every enum's human wording, and the ordered lists filters offer. |
+| [display/time.ts](../frontend/src/display/time.ts) | "2h ago" for a list, a full local date and time for a detail page. |
+| [display/statusColor.ts](../frontend/src/display/statusColor.ts) | The status palette, shared by the chips and by the workflow buttons. |
+
+Called `display/` and not the conventional `lib/` because the scaffold's `.gitignore`
+blocks any directory named `lib` — line 18, a rule meant for Python build output. A
+`src/lib/` would have type-checked, linted, passed its tests and never reached the
+repository. See the gotchas.
+
+#### Shared components — `src/components/`
+
+| File | Responsibility |
+| --- | --- |
+| [StatusChip](../frontend/src/components/StatusChip.tsx), [PriorityChip](../frontend/src/components/PriorityChip.tsx), [EscalatedFlag](../frontend/src/components/EscalatedFlag.tsx) | A ticket's state, drawn the same way on every screen. |
+| [ResponsiveDialog](../frontend/src/components/ResponsiveDialog.tsx) | Every dialog in the app. Full screen below 900 px. |
+| [QueryState](../frontend/src/components/QueryState.tsx) | The loading, error and empty states, written once. |
+| [PageHeader](../frontend/src/components/PageHeader.tsx) | One `h1` per screen, in the same place, with the screen's own actions. |
+| [SnackbarContext](../frontend/src/components/SnackbarContext.ts) / [SnackbarProvider](../frontend/src/components/SnackbarProvider.tsx) | The app's one-line confirmations. Split for the same Fast Refresh reason `AuthContext` is. |
+
+#### The questionnaire — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [ReportPage.tsx](../frontend/src/features/incidents/ReportPage.tsx) | The five questions, revealing as each is answered. |
+| [ReportSection.tsx](../frontend/src/features/incidents/ReportSection.tsx) | One numbered question. |
+| [SelectableCard.tsx](../frontend/src/features/incidents/SelectableCard.tsx) | One choice in a grid of them, behaving as a radio button. |
+| [LocationPicker.tsx](../frontend/src/features/incidents/LocationPicker.tsx) | Building, floor and seat, asked at the precision the category needs. |
+| [CategoryIcon.tsx](../frontend/src/features/incidents/CategoryIcon.tsx) + [categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts) | Turning `categories.icon` into a component. |
+| [reportSchema.ts](../frontend/src/features/incidents/reportSchema.ts) | The title and description bounds, mirroring `app/schemas/incident.py`. |
+
+#### The detail page — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [IncidentDetailPage.tsx](../frontend/src/features/incidents/IncidentDetailPage.tsx) | The layout, the three queries, and which dialog is open. |
+| [WorkflowStepper.tsx](../frontend/src/features/incidents/WorkflowStepper.tsx) | Where the ticket is in its life. Four steps; BLOCKED is not one of them. |
+| [ActivityTimeline.tsx](../frontend/src/features/incidents/ActivityTimeline.tsx) | Events and notes as one stream, internal notes shaded and labelled, ids rendered as names. |
+| [NoteComposer.tsx](../frontend/src/features/incidents/NoteComposer.tsx) | Adding a note, with the staff-only switch when the API allows one. |
+| [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) | `WorkflowButtons`, `ContextualButtons`, and the two shapes they render in. |
+| [actionAvailability.ts](../frontend/src/features/incidents/actionAvailability.ts) | Whether a viewer has anything to do — read by both shapes and by the page reserving room for one. |
+| [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) | Who, where, when, and why it is blocked or closed. |
+| [TransitionDialog.tsx](../frontend/src/features/incidents/TransitionDialog.tsx) | Exactly the fields `required_fields` named. |
+| [AssignDialog.tsx](../frontend/src/features/incidents/AssignDialog.tsx) | Engineers by specialty then load, with the API's warnings. |
+| [AssignButton.tsx](../frontend/src/features/incidents/AssignButton.tsx) | The same dialog, from a row in a list. |
+| [EditIncidentDialog.tsx](../frontend/src/features/incidents/EditIncidentDialog.tsx), [EscalateDialog.tsx](../frontend/src/features/incidents/EscalateDialog.tsx), [ClearEscalationDialog.tsx](../frontend/src/features/incidents/ClearEscalationDialog.tsx), [PriorityDialog.tsx](../frontend/src/features/incidents/PriorityDialog.tsx) | The four actions that are not status changes. |
+
+#### The lists — `src/features/incidents/`
+
+| File | Responsibility |
+| --- | --- |
+| [IncidentsPage.tsx](../frontend/src/features/incidents/IncidentsPage.tsx) | All four ticket lists. They differ by one preset. |
+| [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts) | The filters, stored in the URL and nowhere else. |
+| [IncidentFilterBar.tsx](../frontend/src/features/incidents/IncidentFilterBar.tsx) | Inline on desktop, a bottom drawer on a phone. |
+| [IncidentTable.tsx](../frontend/src/features/incidents/IncidentTable.tsx) | Eight columns and server-side sorting, for a desktop. |
+| [IncidentCardList.tsx](../frontend/src/features/incidents/IncidentCardList.tsx) | The same tickets as cards, for a phone. |
+
+#### The admin screens
+
+| File | Responsibility |
+| --- | --- |
+| [features/facilities/FacilitiesPage.tsx](../frontend/src/features/facilities/FacilitiesPage.tsx) | A tree of buildings and floors, and the selected floor's seats. |
+| [features/facilities/FacilityDialogs.tsx](../frontend/src/features/facilities/FacilityDialogs.tsx) | Building, floor, seat, and the bulk paste. |
+| [features/categories/CategoriesPage.tsx](../frontend/src/features/categories/CategoriesPage.tsx) | Groups with their subcategories nested beneath. |
+| [features/categories/CategoryDialog.tsx](../frontend/src/features/categories/CategoryDialog.tsx) | One dialog for four cases, showing only the fields that exist. |
+| [features/engineers/EngineersPage.tsx](../frontend/src/features/engineers/EngineersPage.tsx) | The roster, and adding to it. |
+| [features/engineers/EngineerRoster.tsx](../frontend/src/features/engineers/EngineerRoster.tsx) | The table both Engineers and Team render. |
+| [features/engineers/TeamPage.tsx](../frontend/src/features/engineers/TeamPage.tsx) | A lead's view: who has room, then what needs an owner. |
+| [features/engineers/TemporaryPasswordDialog.tsx](../frontend/src/features/engineers/TemporaryPasswordDialog.tsx) | The one-time password, with a copy button. |
+| [features/engineers/CapacityBar.tsx](../frontend/src/features/engineers/CapacityBar.tsx) | How much of an engineer's soft limit is spoken for. |
+| [features/users/UsersPage.tsx](../frontend/src/features/users/UsersPage.tsx) | Role changes and deactivation. |
+
+#### The shell grows two controls
+
+[TicketSearchField](../frontend/src/layout/TicketSearchField.tsx) and
+[AvailabilityToggle](../frontend/src/layout/AvailabilityToggle.tsx), both desktop-only.
+At 375 px the app bar holds a title and one control, and that control is the drawer
+button — see M5's reasoning about which corner a thumb reaches.
+
+#### Tests — 211 frontend and 12 end-to-end, up from 112 and none
+
+| File | Count | What it pins down |
+| --- | --- | --- |
+| `features/incidents/IncidentActions.test.tsx` | 12 | That the actions come from the API — including a label the backend invented, rendered unchanged — and the two spellings of assign. |
+| `features/incidents/TransitionDialog.test.tsx` | 10 | Which inputs each `required_fields` list produces, the conditional duplicate field, and a 422 landing on the input the API named. |
+| `features/incidents/useIncidentFilters.test.tsx` | 14 | The URL round trip, an unreadable value being ignored, paging reset, and a preset that cannot be filtered away. |
+| `features/incidents/ReportPage.test.tsx` | 9 | The progressive reveal, changing a group clearing its subcategory, which location fields each `location_detail` asks for, and what is posted. |
+| `features/incidents/LocationPicker.test.tsx` | 9 | The three precision levels, the "Room" relabelling, and the cascade that clears a stale floor or seat. |
+| `features/incidents/WorkflowStepper.test.tsx` | 9 | Four steps, blocked as an error state on the second, and the reopen count. |
+| `features/engineers/sortForAssignment.test.ts` | 6 | Specialty before load, load before name, and that someone on leave stays in the list. |
+| `features/incidents/ActivityTimeline.test.tsx` | 10 | That a status change reads in words, that an assignment names a person rather than printing their id, and that an internal note is labelled. |
+| `display/labels.test.ts`, `display/time.test.ts` | 19 | That no raw enum reaches a screen, that an absent timestamp renders as an em dash rather than "Invalid Date", and which transition destinations are coloured. |
+| `layout/AppShell.test.tsx` | +1 | That the report FAB is absent on the report page — M5's file, one row added. |
+| `e2e/lifecycle.spec.ts` | 1 × 2 widths | The acceptance criterion, end to end, in a browser. |
+| `e2e/assignment.spec.ts` | 1 | The assign-and-close branch, plus escalation. |
+| `e2e/responsive.spec.ts` | 5 × 2 widths | The geometry jsdom cannot see. |
+
+Added to `package.json`: `@playwright/test` and `@types/node`, both dev-only. No new
+runtime dependency — the bundle grows because there are sixty more components, not
+because anything was installed.
+
+### 2. Why it is shaped this way
+
+#### Two API answers decide what every persona sees
+
+The incident detail page is one component. An employee, an engineer and an admin opening
+the same ticket get the same JSX, and what differs is the data:
+
+```tsx
+<WorkflowButtons transitions={transitions.data ?? []} ... />
+{incident.can_escalate ? <Button ...>Escalate</Button> : null}
+```
+
+`allowed-transitions` returns the moves this caller can make *now*, each with the label
+to print on its button. The `can_*` flags on `GET /incidents/{id}` cover everything that
+is not a status change. There is no role check in the page, no status check, no table
+mapping "reporter + RESOLVED" to "Confirm fixed".
+
+Follow what that buys. `workflow.py` has two rows from RESOLVED to CLOSED, split by
+actor: the reporter's is labelled "Confirm fixed" and records `CONFIRMED_FIXED`, the
+assignee's is labelled "Close ticket" and records `CLOSED_BY_ENGINEER`. The frontend
+knows about neither. Each user's browser asks what it may do and prints the answer, and
+the two of them see different buttons on the same screen because the API sent different
+lists.
+
+The same holds for the dialog. `TransitionDialog` renders inputs from
+`transition.required_fields`:
+
+```tsx
+const requires = (field: string) => transition.required_fields.includes(field);
+// ...
+{requires('resolution_summary') ? <TextField label="What did you do?" ... /> : null}
+```
+
+Adding `"reason"` to the OPEN → IN_PROGRESS row of `app/workflow.py` would make that
+dialog collect a reason, with no React change at all.
+
+**Rejected:** a `TRANSITIONS` constant in the frontend mirroring the backend's, the way
+`features/auth/schemas.ts` mirrors the password length. The distinction M5 drew holds
+here: a length bound is a constant and a workflow is a decision. A mirrored constant
+that drifts produces a server error on a field the form thought was fine — visible and
+recoverable. A mirrored workflow that drifts produces a button that 409s, or worse, a
+button that is *missing* for someone entitled to press it, which nobody reports because
+it looks like the feature does not exist.
+
+#### The one rule the UI does read: which spelling of "assign"
+
+`ContextualButtons` has exactly one line that is not a `can_*` flag:
+
+```tsx
+const canPickUp = incident.can_assign && user.role === 'ENGINEER' && !incident.assignee;
+```
+
+This deserves explaining, because it looks like the thing the previous section says not
+to do.
+
+`assignment.can_assign` means "may change this ticket's assignee at all". It is true for
+an admin, for a LEAD, and for a SENIOR on an unassigned open ticket — the last because
+they may pick it up, even though they may not hand it to anyone else. So one flag covers
+two different buttons, and something has to choose between them.
+
+What it does **not** do is re-derive a permission. `can_assign` is still the gate;
+`role === 'ENGINEER'` and "has no assignee" only pick the spelling. A JUNIOR never
+reaches this line with a true flag. And a SENIOR who opens the full dialog and picks
+somebody else is refused **by the API**, with the message `services/assignment.py`
+writes, shown in the dialog. Copying "only a LEAD may assign others" into the page to
+pre-empt that would be the second copy of a rule, for the sake of avoiding an error that
+explains itself.
+
+#### BLOCKED is not a step
+
+`WorkflowStepper` has four steps — Open, In progress, Resolved, Closed — and renders
+BLOCKED as the "In progress" step in an error state, with the reason beneath it.
+
+A fifth column would say something false. It would imply a ticket passes *through*
+blocked on its way to resolved, when `workflow.py` only ever goes back to IN_PROGRESS
+from it:
+
+```
+IN_PROGRESS → BLOCKED    "Mark blocked"
+BLOCKED     → IN_PROGRESS "Resume work"
+```
+
+Blocked is in-progress work that has stalled, and drawing it as a stage between starting
+and finishing is the wrong mental model in a picture whose whole job is to convey the
+model.
+
+The reopen count sits outside the stepper for the mirror-image reason. A ticket reopened
+twice has walked back through steps it had already completed, and the stepper shows only
+where it is now — so "In progress" on a twice-reopened ticket would look like a ticket
+nobody has ever finished. `Reopened ×2` under it says what the four steps cannot.
+
+#### One list component, four screens
+
+My Tickets, All Tickets, My Queue and Unassigned differ by a title, a sentence, and one
+or two API filters:
+
+```tsx
+<IncidentsPage
+  title="My queue"
+  preset={{ mine: 'assigned' }}
+  ...
+/>
+```
+
+The `preset` is spread **after** the user's filters in `toQuery`, so it cannot be
+filtered away: My Queue narrowed to OPEN is still My Queue.
+
+Four components would have been four places to fix a column, four filter bars, four
+paging controls — and the three that are not the one someone is currently looking at
+would get the fix late or not at all.
+
+#### Filters live in the URL, and only in the URL
+
+```ts
+const [searchParams, setSearchParams] = useSearchParams();
+const filters = useMemo<IncidentFilters>(() => ({ ... }), [searchParams]);
+```
+
+There is no `useState` mirroring this. The address bar *is* the state, so the back
+button, a reload and a pasted link all produce the same screen, and there is no second
+copy to fall out of step.
+
+The practical reason is that a filtered list is a thing people send each other — "the
+blocked tickets in SFO-1" should be a link — and the structural reason arrives in M7,
+when the dashboard's chart segments and KPI tiles become links into exactly these views.
+A chart that can only say "there are 14 blocked tickets" is a worse chart than one whose
+bar you can click.
+
+The search box is the single exception, and it holds a local copy because a request per
+keystroke would put a full-text query on the database for every letter. It is
+reconciled with the URL **during render** rather than in an effect:
+
+```tsx
+if (filters.q !== termFromUrl) {
+  setTermFromUrl(filters.q);
+  setSearch(filters.q);
+}
+```
+
+React re-runs the component before touching the DOM, so there is no flash of the stale
+term and no second render pass. An effect would produce both, and
+`react-hooks/set-state-in-effect` says so.
+
+#### A table and a card list, not one responsive table
+
+The desktop list has eight columns. At 375 px those are either unreadable or a
+horizontal scroll that hides half of them, so the phone gets
+[IncidentCardList](../frontend/src/features/incidents/IncidentCardList.tsx) instead —
+four facts per card, the whole card a link, a target a thumb can hit.
+
+They page differently, and that is deliberate rather than an oversight. A table has
+numbered pages; a card list has "Load more", because scrolling and then losing your
+place to a page control is the wrong feel on a phone. So the screen calls both hooks and
+lets `enabled` decide which one fetches:
+
+```tsx
+const paged = useIncidents(query, !isMobile);
+const accumulated = useIncidentsInfinite(query, isMobile);
+```
+
+Both are called on every render so the hook order never changes when the viewport
+crosses 900 px — a conditional hook is a crash, not a layout bug.
+
+**Rejected:** `@mui/x-data-grid`, which BUILD-PLAN section 10 suggests. It brings column
+resizing, density controls and virtualisation, none of which a 25-row page needs, at a
+package size comparable to the rest of the application — and M5's notes already flag the
+bundle as one to watch. It would also have solved only the desktop half, leaving the
+card list to be written anyway.
+
+#### The timeline is built by hand
+
+BUILD-PLAN section 10 asks for MUI's `Timeline`. It lives in `@mui/lab`, whose only
+release compatible with Material UI 9 is `9.0.0-beta.9`. A whole additional package, at
+beta, in a project graded on stability, for a vertical rule and a column of dots — the
+component is about sixty lines of `Box` without it.
+
+What the hand-built version does carry is the thing that matters: INTERNAL notes are
+shaded, bordered and labelled "Internal". Note that this is **presentation only**. An
+employee's `/activity` response contains no internal notes to hide, because
+`services/visibility.py` filters them in the query. If one reaches this component, the
+viewer is entitled to it.
+
+#### `useState` in the questionnaire, react-hook-form everywhere else
+
+Every other form in the app uses react-hook-form with a zod resolver, which is the house
+pattern from M5. The report questionnaire does not, and the reason is what
+react-hook-form is *for*: keeping values out of React state so typing in one field does
+not re-render the form.
+
+This form is the opposite case. Four of its five answers decide what is **shown** next —
+choosing a group reveals its subcategories, choosing a subcategory reveals the location
+fields that group requires — so all four have to be watched, and watching them
+re-renders exactly as much as `useState` does. What would be left is `Controller`
+wrappers around four card grids that are not `<input>`s at all.
+
+The zod schema is kept for the two fields that *are* ordinary text, and the API's 422
+maps onto the inputs by field name exactly as it does on the auth screens.
+
+#### The questionnaire asks what the category says to ask
+
+`LocationPicker` decides which of building, floor and seat to show from the group's
+`location_detail`, which is a column an admin edits on the Categories screen:
+
+| `location_detail` | Building | Floor | Seat |
+| --- | --- | --- | --- |
+| BUILDING | required | behind "Add more detail" | behind "Add more detail" |
+| FLOOR | required | required | optional |
+| SEAT | required | required | required |
+
+And it relabels the seat field "Room" for meeting rooms, filtering to
+`seat_type = MEETING_ROOM`, because a room problem reported against a desk is the wrong
+question asked twice.
+
+The three fields are one component rather than three because they are not independent: a
+floor only exists inside a building, a seat only inside a floor, and changing a building
+has to clear both. Split into three, that cascade would live in whichever parent used
+them — which is two parents, since the edit dialog uses the same picker.
+
+`services/incident_service.py` enforces all of it again, and its 422 names the field.
+This component decides what to *ask*; it never decides what is valid.
+
+#### Two workflow buttons are coloured, and the rest deliberately are not
+
+This one went through three versions, and the middle one is the instructive part.
+
+**First**, every transition button was `contained` and primary. That put a large blue
+**Cancel ticket** in an employee's actions card, because on their own open ticket it is
+the only move `allowed-transitions` offers them. Cancel read as the recommendation.
+
+**Second**, the button took the colour of the status it produces, reusing the chip
+palette in `display/statusColor.ts` — so "Resolve" was the green of the Resolved chip
+and "Cancel ticket" the neutral grey of Closed. Looking at the result showed the
+problem. A reporter on a *resolved* ticket sees two buttons: **Confirm fixed** (→ CLOSED)
+and **Still broken** (→ IN_PROGRESS). Outcome colouring drew the happy path grey and
+the complaint blue. It had traded one mis-emphasis for its mirror image.
+
+**Third**, and current:
+
+```ts
+export function transitionButtonColor(toStatus: IncidentStatus): ButtonProps['color'] {
+  if (toStatus === 'RESOLVED') return 'success';
+  if (toStatus === 'BLOCKED') return 'warning';
+  return 'primary';
+}
+```
+
+Only two destinations mean the same thing to everyone. **Resolve** is always "I have
+fixed it"; **Mark blocked** is always "this has stalled". Those two get the colour of
+their outcome, and it is real information.
+
+CLOSED is the one that cannot be coloured, because a single (from, to) pair carries
+different meanings for different actors — `RESOLVED → CLOSED` is "Confirm fixed" to the
+reporter and "Close ticket" to the assignee, and `OPEN → CLOSED` is "Cancel ticket". A
+happy path and a discard share a destination. Telling them apart in the frontend means
+keeping a copy of `app/workflow.py` there, which is the thing this application spends
+the most effort not doing.
+
+So the ambiguous case is left plain rather than confidently mis-coloured, and the label
+— which the API supplies — does the work. `statusChipColor` stays as it was: that is the
+palette from BUILD-PLAN section 10, and it is about what a ticket *is*, not about what a
+button will do to it.
+
+#### The admin screens each take the shape of their data
+
+**Facilities** is two panes because the data is a tree whose leaves are a table. A floor
+has forty desks; forty desks nested inside an expander is a scroll, not a list. The tree
+answers "where am I" and the table answers "what is here". The whole hierarchy arrives
+in one `GET /facilities/tree`, so expanding a building and selecting a floor are both
+instant — a facility is tens of rows, and paginating it would cost a request per click
+and buy nothing.
+
+**Categories** nests subcategories under their groups because the nesting *is* the
+model, and because it is the order the questionnaire asks the two questions in. An
+accordion per group mirrors what a reporter sees, and "which group is this under?" never
+has to be asked.
+
+**Engineers** ends its create flow in a dialog rather than a snackbar. The temporary
+password exists in that one response and nowhere else — the database holds a bcrypt hash
+— so a confirmation that disappears after five seconds is the wrong container for the
+only copy of a credential. It is rendered monospaced, where `l` and `1` are
+distinguishable, with a copy button, because an admin retyping it into a chat window is
+how a working account becomes a support ticket.
+
+**Users** offers two controls per row because two is what the API allows. Email is the
+sign-in identity and the key every audit trail is read by, so changing it would be an
+account migration; a password can only be set by its owner. The controls are disabled on
+your own row, matching `_reject_self_change` — locking the last admin out is the failure
+with no recovery path from inside the application.
+
+#### "Remove", never "Delete"
+
+Every destructive button on the admin screens says Remove, and reports what actually
+happened:
+
+```tsx
+const result = await deleteCategory.mutateAsync(category.id);
+notify(result.detail, result.deactivated ? 'warning' : 'success');
+```
+
+`DeleteResult` carries `deleted` and `deactivated` separately because the API does one
+or the other depending on whether anything references the row. A category an incident
+was filed under is deactivated so that ticket keeps its category. Labelling the button
+"Delete" would promise something the system deliberately does not always do.
+
+#### Mutations invalidate a whole prefix
+
+```ts
+function invalidateIncidents(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: queryKeys.incidents.all });
+}
+```
+
+`['incidents']` is the prefix of every incident key — the lists, the detail, the
+allowed transitions, the activity — and TanStack Query matches by prefix, so one call
+re-reads all of them.
+
+That is broader than strictly necessary and it is the right default here. A single
+transition can change the ticket, the moves available on it, its activity **and** its
+membership of any list filtered by status. Working out which of those a given move
+touched would put the workflow's side effects in a second place, which is the thing this
+codebase spends the most effort not doing. The exception is assignment, which also
+invalidates `['engineers']`, because `active_ticket_count` has just changed for two
+people and every capacity bar drawn from it is stale.
+
+#### Playwright, and what it is for
+
+The Vitest suite runs in jsdom, which parses HTML and runs JavaScript but has no layout
+engine. Every `getBoundingClientRect()` it returns is zero by zero. So
+`AppShell.test.tsx` can prove that at a stubbed 375 px the shell *decides* to render a
+bottom bar — a real and useful assertion — and can prove nothing about whether the
+result is usable at 375 px, because nothing is laid out at all.
+
+That is the first reason. The second is more pointed: **three defects in this project
+were visible only over HTTP.** M5's refresh-reuse rollback passed its test suite and
+failed against a real server, because the test client shares one session where
+production gives each request its own. The same class of gap is why
+`tests/conftest.py` sets `expire_on_commit=False`.
+
+So M6 adds real-browser tests, and they found a fourth. See the gotchas.
+
+**Two projects, one viewport each.** 1440×900 and 375×812, the two widths BUILD-PLAN
+section 10 names. The mobile project uses a plain viewport rather than
+`devices['iPhone 13']`, because a device preset also brings touch emulation and a mobile
+user agent — and a failure under all three at once is ambiguous about which caused it.
+The layout switch is on width alone.
+
+**Three browser contexts, not one page signing in and out.** Each context has its own
+cookie jar, so the employee's session and the engineer's session exist simultaneously
+and a test moves between them in one statement. Signing out and in between every step
+would work, and would mean a bug in `POST /auth/logout` failing a test about resolving a
+ticket.
+
+**Accounts are created through the API, per worker, with a unique suffix.** Not through
+the database, because a fixture that writes rows directly can produce states the
+application cannot — and then the test proves something about a state that never occurs.
+Not through the UI, because sign-up and engineer creation have their own tests, and
+re-driving them at the top of every lifecycle test would make a failure there look like
+a failure here. They are deactivated on teardown; the tickets they created stay, because
+they are ordinary data.
+
+**Queries are by role and visible text**, never by CSS class or position. A test that
+clicks `.MuiButton-root:nth-child(2)` passes after a change that moves the button
+somewhere useless. There is exactly one `data-testid` in the application, on the detail
+page's status chip, and it exists because "In progress" appears twice on that page — in
+the chip and as the stepper's current step — so "what status is this ticket?" has no
+unambiguous accessible query. The alternative is a test that knows which match comes
+first, which is a test that breaks on a layout change.
+
+### 3. How the pieces connect
+
+**Resolving a ticket.** The trace worth knowing, because it touches the workflow, the
+two API answers the UI is built from, and the cache.
+
+```
+Engineer presses "Resolve" on /tickets/<id>
+  │
+  ├─ IncidentActions.WorkflowButtons
+  │     the button exists because GET /allowed-transitions returned
+  │     {to_status: "RESOLVED", action_label: "Resolve",
+  │      required_fields: ["resolution_summary"]}
+  │     its colour is transitionButtonColor("RESOLVED") -> success, because
+  │     "Resolve" means the same thing to every actor
+  │  onTransition(transition)
+  │
+  ├─ IncidentDetailPage        setDialog({kind: 'transition', transition})
+  ├─ TransitionDialog          requires('resolution_summary') -> true
+  │                            renders one field: "What did you do?"
+  │                            (no table here maps Resolve to that field —
+  │                             required_fields did)
+  │  submit
+  │
+  ├─ useTransition(id).mutateAsync({to_status: 'RESOLVED', resolution_summary})
+  │  └─ api/incidents.performTransition
+  │       POST /api/v1/incidents/<id>/transitions
+  │         apiClient request interceptor -> Authorization: Bearer ...
+  │         │
+  │         ├─ routers/incidents.create_transition
+  │         ├─ incident_service.perform_transition
+  │         │    workflow.resolve_actors(incident, user) -> {ASSIGNEE}
+  │         │    workflow.select_transition(IN_PROGRESS, RESOLVED, {ASSIGNEE})
+  │         │      -> the row whose allowed_actors contains ASSIGNEE
+  │         │    _require_transition_fields  resolution_summary present ✓
+  │         │    _apply_transition_effects   status = RESOLVED, resolved_at = now
+  │         │    repository.add_event        STATUS_CHANGED, IN_PROGRESS -> RESOLVED
+  │         └─ session.commit()
+  │       <- 200 IncidentRead
+  │
+  ├─ onSuccess: invalidateQueries({queryKey: ['incidents']})
+  │     prefix match, so all four re-fetch:
+  │       ['incidents','detail',id]                     -> status RESOLVED,
+  │                                                        can_add_note still true
+  │       ['incidents','detail',id,'allowed-transitions']
+  │                                                     -> now "Confirm fixed" for
+  │                                                        the reporter, "Close
+  │                                                        ticket" for this engineer
+  │       ['incidents','detail',id,'activity']          -> the new event
+  │       ['incidents','list',{...}]                    -> the row's status column
+  │
+  ├─ notify('INC-000482: resolve.')                 snackbar, top on a phone
+  └─ re-render
+       StatusChip              success/green
+       WorkflowStepper         activeStep 2, steps 0–1 completed
+       ActionsCard             the buttons the *new* allowed-transitions returned
+```
+
+The step to notice is the second query. The engineer did not tell the page what to
+offer next; the page asked again and got a different answer, and it would have got a
+different one still if a reporter were looking at the same screen.
+
+**Reporting an issue**, which is where the category tree drives the form:
+
+```
+/report
+  ├─ useCategoryTree()     GET /categories        cached 1 hour (reference data)
+  ├─ useFacilityTree()     GET /facilities/tree   cached 1 hour
+  │
+  ├─ step 1  group cards from tree.groups, icon via categoryIcons.ts
+  │     click "Hardware"  ->  setGroupId, setCategoryId(null)
+  ├─ step 2  revealed: group.children
+  │     click "Monitor"   ->  setCategoryId
+  ├─ step 3  revealed: LocationPicker, locationDetail = group.location_detail
+  │     Hardware is FLOOR -> building and floor required, seat optional
+  │     pre-filled from user.last_building_id / last_floor_id / last_seat_id
+  ├─ step 4  revealed once the location is complete for that detail level
+  ├─ step 5  revealed once title and description are non-blank
+  │
+  └─ submit
+       reportTextSchema.safeParse  -> field errors, or
+       POST /api/v1/incidents
+         incident_service.create_incident
+           subcategory, not a group                       else 422 category_id
+           location matches the group's location_detail    else 422 floor_id/seat_id
+           reporter.last_*_id = this location              <- the carry-over above
+       <- 201 IncidentRead
+       notify('INC-000482 created.')
+       navigate('/tickets/<id>')
+```
+
+**Filtering a list**, which is shorter and lives entirely in the URL:
+
+```
+User ticks "Blocked" in the status filter
+  ├─ IncidentFilterBar  setFilters({statuses: ['BLOCKED']})
+  ├─ useIncidentFilters  builds URLSearchParams, page resets to 1
+  │                      setSearchParams(params, {replace: true})
+  ├─ the URL is now /tickets?status=BLOCKED
+  ├─ useSearchParams re-renders IncidentsPage
+  ├─ toQuery(filters, preset) -> {status: ['BLOCKED'], sort: '-created_at', page: 1, ...}
+  ├─ useIncidents(query)  key ['incidents','list',{...}] — a new key, so a fetch
+  │     GET /api/v1/incidents?status=BLOCKED&sort=-created_at&page=1&page_size=25
+  │       paramsSerializer {indexes: null} — NOT status[]=BLOCKED, which FastAPI
+  │       would ignore, returning every ticket and looking like a broken filter
+  └─ IncidentTable re-renders
+
+  ...and the URL is now something the user can send to someone else.
+```
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Which workflow buttons a user sees | `GET /incidents/{id}/allowed-transitions`, rendered by [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) |
+| What a workflow dialog collects | `required_fields` on that response, rendered by [TransitionDialog.tsx](../frontend/src/features/incidents/TransitionDialog.tsx) |
+| Which non-workflow actions a user sees | the `can_*` flags on `GET /incidents/{id}` |
+| Which spelling of assign — "Pick up" or "Assign…" | [IncidentActions.tsx](../frontend/src/features/incidents/IncidentActions.tsx) — `can_assign` plus the role, presentation only |
+| Whether a ticket is blocked, and why | rendered by [WorkflowStepper.tsx](../frontend/src/features/incidents/WorkflowStepper.tsx); decided by `app/workflow.py` |
+| Which location fields the questionnaire asks for | the group's `location_detail`, applied in [LocationPicker.tsx](../frontend/src/features/incidents/LocationPicker.tsx) |
+| Which location fields are **valid** | `app/services/incident_service.py` — the 422 is the authority |
+| Whether a seat is called "Desk" or "Room" | [display/labels.ts](../frontend/src/display/labels.ts) — `seatFieldLabel` |
+| Title and description bounds, client side | [reportSchema.ts](../frontend/src/features/incidents/reportSchema.ts) |
+| Title and description bounds, **authoritatively** | `app/schemas/incident.py` |
+| Who may read an INTERNAL note | `app/services/visibility.py`, in the query. The timeline only styles them |
+| What an audit event *records* | `app/services/assignment.py` and `incident_service.py` — ids, because a name can change |
+| What an audit event *reads as* | `incident_service.resolve_event_labels` fills `from_label`/`to_label`; `ActivityTimeline` prefers them |
+| What a status is called, and what colour it is | [display/labels.ts](../frontend/src/display/labels.ts), [display/statusColor.ts](../frontend/src/display/statusColor.ts) |
+| What colour a workflow button is | `display/statusColor.ts` — `transitionButtonColor`, which colours only the two unambiguous destinations |
+| What a list is filtered by | the URL query string, read by [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts) |
+| What a list screen is *for* | the `preset` prop in [App.tsx](../frontend/src/App.tsx) |
+| Which rows a list may show at all | `app/services/visibility.py` — `apply_incident_visibility`, before any user filter |
+| How engineers are ordered in the assign dialog | [features/engineers/hooks.ts](../frontend/src/features/engineers/hooks.ts) — `sortForAssignment` |
+| Who may actually be assigned | `app/services/assignment.py`. The dialog offers; the API decides |
+| Whether a delete deletes or deactivates | the API's `DeleteResult`, reported by the screen |
+| Which cache entries a mutation invalidates | the feature's `hooks.ts`, keyed through [api/queryKeys.ts](../frontend/src/api/queryKeys.ts) |
+| Which icons a category may use | [features/incidents/categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts) |
+| Where a dialog is full screen | [components/ResponsiveDialog.tsx](../frontend/src/components/ResponsiveDialog.tsx) — one place, so no screen forgets |
+| Where confirmations appear | [components/SnackbarProvider.tsx](../frontend/src/components/SnackbarProvider.tsx) — top on a phone, bottom on desktop |
+
+### 5. How to change it
+
+**To add a workflow transition** — still one row and one test, and now no frontend
+change at all:
+
+1. `backend/v1/app/workflow.py`: add a `Transition` to `TRANSITIONS`.
+2. `backend/v1/tests/unit/test_workflow.py`: the suite parametrises over `TRANSITIONS`,
+   so add the allowed and denied actor cases.
+3. Nothing else. The button appears with its `action_label`, coloured by its
+   `to_status`, and `TransitionDialog` collects whatever `required_fields` names — as
+   long as the field is one of the five it knows how to render. A genuinely new field
+   needs a sixth branch there and a field on `TransitionRequest`.
+
+**To add a field to a ticket** — five files, in this order:
+
+1. `app/models/incident.py` and an Alembic revision.
+2. `app/schemas/incident.py`: the create, update and read models.
+3. `app/services/incident_service.py`: whatever validates it.
+4. [api/types.ts](../frontend/src/api/types.ts): the twin on `Incident`.
+5. The screens: [ReportPage.tsx](../frontend/src/features/incidents/ReportPage.tsx) to
+   collect it, [DetailsCard.tsx](../frontend/src/features/incidents/DetailsCard.tsx) to
+   show it, [EditIncidentDialog.tsx](../frontend/src/features/incidents/EditIncidentDialog.tsx)
+   to correct it.
+
+**To add a list filter** — four places, all small:
+
+1. `app/routers/incidents.py`: the query parameter, on `get_incident_query`.
+2. `app/repositories/incidents.py`: the `WHERE` clause.
+3. [api/incidents.ts](../frontend/src/api/incidents.ts): the field on `IncidentQuery`.
+4. [useIncidentFilters.ts](../frontend/src/features/incidents/useIncidentFilters.ts):
+   read it from `searchParams`, write it back in `setFilters`, count it in
+   `activeCount`; then a control in
+   [IncidentFilterBar.tsx](../frontend/src/features/incidents/IncidentFilterBar.tsx).
+
+**To add a ticket list screen**: a `<Route>` rendering `<IncidentsPage>` with a
+`preset`, plus a path in [routes.ts](../frontend/src/routes.ts) and an item in
+[navigation.ts](../frontend/src/layout/navigation.ts). No new list component.
+
+**To add a category icon**: one entry in
+[categoryIcons.ts](../frontend/src/features/incidents/categoryIcons.ts). It appears in
+the admin's picker automatically, because `CATEGORY_ICON_NAMES` is the table's keys.
+
+**To add an end-to-end test**: a file in `frontend/e2e/`, importing `test` from
+`./fixtures/test` rather than from `@playwright/test` — that is what supplies the three
+signed-in pages. Use the helpers in `fixtures/ticket.ts` to reach a state rather than
+re-driving the questionnaire by hand.
+
+**To run the end-to-end tests against a different stack**: `E2E_BASE_URL` for the
+origin, `E2E_ADMIN_EMAIL` and `E2E_ADMIN_PASSWORD` for the account that creates
+engineers. The suite reuses an already-running dev server and starts one if there is
+none.
+
+### 6. Gotchas
+
+**The first thing Playwright found was a snackbar sitting on the controls.** The mobile
+lifecycle test failed at "Start work" with Playwright's clearest possible message:
+
+```
+<div class="MuiSnackbarContent-root"> intercepts pointer events
+```
+
+The engineer had just pressed "Pick up", which confirms with a snackbar. The snackbar
+was anchored bottom-centre with `bottom: 72px` — clear of the shell's 56 px bottom
+navigation, which is what it was written for — and the incident detail page's sticky
+action bar sits at `bottom: 56px`, in exactly that space. "You have picked this ticket
+up" covered "Start work".
+
+Every jsdom test passed. They always would: jsdom has no layout, so nothing can overlap
+anything, and a `fixed` element is just a `<div>` in the tree.
+
+The fix moves the snackbar to the **top** on a phone:
+
+```tsx
+anchorOrigin={
+  isMobile
+    ? { vertical: 'top', horizontal: 'center' }
+    : { vertical: 'bottom', horizontal: 'center' }
+}
+```
+
+Material Design puts snackbars at the bottom, and this deliberately does not, because on
+a phone this application puts its *controls* at the bottom — the navigation bar, the
+report FAB, and the detail page's action bar. A confirmation that covers the buttons it
+is confirming is worse than no confirmation at all.
+
+**`lib/` is gitignored by the scaffold.** Line 18 of `.gitignore`, a rule from the
+standard Python template meant for `build/lib/`, matches a directory named `lib`
+anywhere in the tree — including `frontend/src/lib/`. The presentation helpers were
+written there first. They type-checked, linted, passed their tests and were invisible to
+`git add`; the only symptom was `git status` staying quiet.
+
+They live in `src/display/` now. If a future phase wants the conventional `src/lib/`,
+the fix is a negation in `.gitignore` — but renaming avoided editing scaffold config
+for a directory name.
+
+**Axios sends `status[]=OPEN` unless you tell it not to.** FastAPI reads a repeatable
+query parameter as `status=OPEN&status=CLOSED`; axios's default serialisation is
+`status[]=OPEN&status[]=CLOSED`, which arrives as a parameter the API does not declare
+and is silently dropped. The filter does nothing and the list returns everything, which
+looks like a filter that "isn't working yet" rather than a bug. `paramsSerializer:
+{ indexes: null }` on the shared client fixes it for every caller.
+
+**MUI puts the required asterisk in the accessible name.** A required `TextField`
+labelled "Building" has the accessible name `"Building *"`, so
+`getByLabel('Building', { exact: true })` finds nothing. The first version of the
+Playwright helper did exactly that, skipped the field because its "is it visible?"
+check said no, and failed three steps later on a form that had never been filled in.
+Match labels as a prefix, and make a field that must exist assert its own presence
+rather than skipping quietly.
+
+**`getByRole('button')` matches the `SelectableCard`s.** The questionnaire's group,
+subcategory and priority cards are `ButtonBase` with `aria-pressed`, which is correct —
+a card that behaves as a radio button should be reachable by keyboard and announced as
+pressed — but it means `getByRole('button', { name: 'Monitor' })` matches a card, and
+`{ name: /^Hardware/ }` is needed because a group card's accessible name includes its
+hint.
+
+**The mobile bottom navigation items are buttons, not links.** `AppShell` drives them
+through `BottomNavigation`'s `onChange` and `navigate`, so there is no anchor element.
+`getByRole('link', { name: 'Home' })` finds the *drawer's* link on mobile and nothing in
+the bottom bar.
+
+**`@mui/lab` has no stable release for Material UI 9.** `Timeline`, `TreeView` and the
+rest are on `9.0.0-beta.x`. Anything reaching for them should either build the thing by
+hand — as `ActivityTimeline` does — or accept a beta dependency deliberately.
+
+**MUI v9 renames icons, and the error does not say so.** M5 recorded this for
+`AddCircleOutline`; M6 hit it twice more. `HelpOutline` is `HelpOutlined` and
+`ChatBubbleOutline` is `ChatBubbleOutlineOutlined`. The failure is TypeScript's "cannot
+find module", which reads like a missing package.
+
+**A capitalised local holding a component trips `react-hooks/static-components`.**
+`CategoryIcon` looks up a component from a table and renders it. Written as
+`const Icon = lookup(name); return <Icon {...props} />` the rule objects, because it
+cannot tell a lookup from a definition — and defining a component during render really
+does remount its subtree on every keystroke. `createElement(lookup(name), props)` says
+what is actually happening.
+
+**Playwright's fixture parameter must be a destructuring pattern**, even an empty one:
+Playwright reads the source of that parameter to work out which fixtures a function
+depends on. `async ({}, provide, workerInfo) => {}` is required and
+`no-empty-pattern` objects, hence the one `eslint-disable-next-line` in `e2e/`. The
+second parameter is renamed from Playwright's `use` to `provide` for a related reason:
+a function called `use` outside a component trips `react-hooks/rules-of-hooks`.
+
+**The end-to-end suite writes to the development database.** It creates accounts with a
+unique suffix, creates tickets, and deactivates the accounts afterwards — it never drops
+or truncates anything, and the tickets stay. That is a deliberate difference from the
+pytest suite, which recreates `acme_incidents_test` on every run. Point it elsewhere
+with `E2E_BASE_URL` if that matters.
+
+**Two queries on every list screen, one of them idle.** `useIncidents` and
+`useIncidentsInfinite` are both called on every render, with `enabled` deciding which
+fetches. That is not waste — a disabled query issues no request — and it is what keeps
+the hook order stable when a window is resized across 900 px. A conditional hook is a
+crash, not a layout glitch.
+
+**A private helper can shadow another one two hundred lines away.** `incident_service.py`
+now has `_parse_user_id` and `_as_uuid`, which do nearly opposite things — one answers
+None for a value that is not an id, the other raises. The first version of the former was
+also called `_as_uuid`, Python took the later definition, and every call to `/activity`
+on an assigned ticket answered `422 INVALID_ID`. Ruff's `F811` did not fire, because it
+flags a redefinition of an *unused* name and the first had been used. In a module this
+size, check before naming a private helper.
+
+**The bundle has grown.** M6 adds no runtime dependency, and the JavaScript still grows
+because there are now sixty more components. Route-level `React.lazy` remains the lever,
+and the admin screens remain the natural split point; M7 adds `@mui/x-charts`, which is
+when it will matter.
+
+### 7. Glossary
+
+**End-to-end test** — a test that drives the real application in a real browser against
+a real server and a real database, rather than rendering a component in isolation. It is
+the only kind that can catch two correct things overlapping.
+
+**Playwright** — the browser automation library these tests use. It drives Chromium,
+waits for elements rather than sleeping, and fails with the reason — including "this
+other element intercepts pointer events", which is how the snackbar defect announced
+itself.
+
+**Browser context** — an isolated browser session: its own cookies, its own storage. The
+tests give each persona one, so three people can be signed in at once.
+
+**Fixture** — in Playwright, a value a test declares in its arguments and the framework
+supplies. `worker` scope means once per parallel worker; the default is once per test.
+
+**Viewport** — the size of the browser window's content area. The two projects set 1440
+× 900 and 375 × 812, and nothing else differs between them.
+
+**`getByRole`** — Playwright's and Testing Library's preferred query: find the element by
+what it *is* to an assistive technology ("a button named Resolve") rather than by class
+or position. A test written this way breaks when the interface becomes unusable, which
+is when it should.
+
+**`data-testid`** — an attribute added purely so a test can find something. Used once
+here, on the detail page's status chip, because two elements on that page legitimately
+have the same accessible text.
+
+**Progressive disclosure** — showing the next question only once the previous one is
+answered, on one page. Distinct from a wizard, which puts each step on its own page and
+makes going back a navigation.
+
+**`useSearchParams`** — React Router's hook for the URL query string, read and written
+like state. Using it *as* the state is what makes a filtered list bookmarkable.
+
+**TanStack Query key** — the array identifying a cached query. Keys nest, so
+`['incidents']` is a prefix of `['incidents', 'detail', id]` and invalidating the former
+invalidates the latter.
+
+**Invalidation** — marking cached data stale so it is re-fetched. The alternative is
+writing the new value into the cache by hand, which means the client reconstructing what
+the server just did.
+
+**`useInfiniteQuery`** — TanStack Query's hook for "load more": it keeps the pages
+fetched so far and appends the next one, rather than replacing.
+
+**Optimistic** — updating the interface before the server confirms. The availability
+select does this in appearance only, reverting on failure, because a control that does
+nothing for 300 ms reads as broken.
+
+**Debounce** — waiting for a pause in typing before acting. The list's search box waits
+350 ms, so a five-letter query is one full-text search rather than five.
+
+**Soft limit** — a bound that warns rather than refuses. `max_active_tickets` is one:
+assigning past it succeeds and returns a warning, because an admin who has decided to
+overload a lead is making a judgement the system should record, not overrule.
+
+**Sticky / fixed positioning** — CSS that takes an element out of the page's flow and
+pins it to the viewport. The phone's action bar is `fixed`, which is why the detail page
+reserves the height it occupies — otherwise the last line of the note composer would sit
+underneath it permanently.
+
+**Pointer-events interception** — one element sitting over another and receiving the
+clicks meant for it. Invisible to a test framework without layout; the first thing a
+real browser notices.
+
+**Accessible name** — the text an assistive technology announces for a control. Usually
+its label or its content, and it is what `getByRole(..., {name})` matches — including,
+for a required Material UI field, the asterisk.
+
+**`aria-pressed`** — the attribute marking a toggle button as on or off. The
+questionnaire's cards carry it, which is what makes a grid of styled buttons behave like
+a radio group for a screen reader.
+
+**Full-text search vs ticket-number search** — `GET /incidents?q=` branches on the
+shape of the term: something like `INC-000482` or a bare number is looked up by ticket
+number, anything else goes to PostgreSQL's `websearch_to_tsquery`. One box, two
+searches, decided on the server.
+
+---
+
+## Phase M7 — Dashboards and demo data
+
+M7 is three passes. This section covers **pass 1: the report endpoints.** Passes 2
+(`seed_demo`) and 3 (the three dashboard screens) append their own sections below when
+they land, so if you are reading this and there is nothing after it, that is why.
+
+BUILD-PLAN section 11 lists eight business questions and one endpoint each. All eight now
+exist, all eight are computed by PostgreSQL rather than by Python, and all eight are
+tested against a fixture world small enough to check by hand.
+
+**Verified against local PostgreSQL only.** 665 backend tests (up from 609), ruff check
+and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
+that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/schemas/report.py` | The window model, the scope model and one response model per report. Also the three tuning constants: `DEFAULT_WINDOW_DAYS`, `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT`. |
+| `app/repositories/reports.py` | Every aggregate, as SQL. Nothing else in the application issues an aggregate over incidents. |
+| `app/services/reporting.py` | Resolves and validates the window (or, for the two current-state reports, the scope); maps aggregate rows onto response models; nests subcategories under their group. No arithmetic. |
+| `app/routers/reports.py` | The eight endpoints, the two query-parameter dependencies (period and scope), and the admin-only/self split. |
+| `app/models/incident.py` | Gained a module-level `format_reference(ticket_number)`; the `Incident.reference` property now calls it. |
+| `app/main.py` | Mounts `reports.router` under `/api/v1`. |
+| `tests/factories.py` | `make_incident` gained `created_at`, `escalated_at` and `blocked_reason_type`; new `make_event`. |
+| `tests/integration/test_reports.py` | 56 tests. The fixture table at the top of the file is the specification the assertions are read off. |
+
+The endpoints, and the question each answers:
+
+| Endpoint | Answers | Who |
+| --- | --- | --- |
+| `GET /api/v1/reports/summary` | What is open, how urgent, whose, and the daily created-versus-closed flow | admin |
+| `GET /api/v1/reports/categories` | What people report most, per group and per subcategory | admin |
+| `GET /api/v1/reports/locations` | Top 10 buildings, floors and seats | admin |
+| `GET /api/v1/reports/response-times` | Median time to assign / acknowledge / resolve, overall and per priority | admin |
+| `GET /api/v1/reports/engineer-workload` | Level, availability, live load by status, capacity used, resolved this period | admin |
+| `GET /api/v1/reports/blocked-escalated` | What is blocked **right now**, grouped by reason with age; what is escalated right now and why | admin |
+| `GET /api/v1/reports/communication` | Share of resolved tickets whose reporter was told something first; median time to that; reopen rate | admin |
+| `GET /api/v1/reports/me` | The caller's own counts, **as they stand now** | anyone signed in |
+
+**Six of them cover a period** and take `from`, `to` (default: the last 30 days) and an
+optional `building_id`. Their responses echo a `window`.
+
+**Two of them describe the present** — `/reports/blocked-escalated` and `/reports/me` —
+and take `building_id` only. They declare no `from`/`to` at all, and their responses carry
+a `scope` (`as_of`, `building_id`) instead of a `window`. That split is
+[decision D9](DECISION-LOG.md), which partially reversed D5 and D7.
+
+### 2. Why it is shaped this way
+
+#### The aggregates are SQL, and that is the whole point of the phase
+
+Every number is computed by PostgreSQL. `COUNT(*) FILTER (WHERE ...)` for the segmented
+counts, `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM ...))` for the
+medians, `AVG`/`MAX` for the blocked ages, a window function for the category group
+totals, `generate_series` for the daily calendar.
+
+The alternative — select the rows, add them up in Python — is not merely slower; it is
+slower *in proportion to how well the platform is doing*. Eleven segments of the summary
+are eleven `FILTER` clauses over one scan, and adding a twelfth costs nothing:
+
+```python
+columns.extend(
+    func.count().filter(Incident.status == status).label(status_label(status))
+    for status in IncidentStatus
+)
+```
+
+One place where the line is worth drawing precisely: the service layer *does* loop, over
+rows the database has already aggregated, to nest subcategories under their group. That
+is assembling a tree out of finished totals, not computing totals. The totals themselves
+arrive complete, including each group's, via `sum(count(*)) OVER (PARTITION BY group)` in
+the same pass.
+
+#### Medians, not means, and no `FILTER` on them
+
+Every duration is a median. A single ticket that sat over a long weekend moves a mean and
+does not move a median, and the headline number on a dashboard is read by people who will
+not check the distribution.
+
+`percentile_cont` needs no `FILTER` clause, which surprised me until it did not: an
+incident that was never resolved contributes `NULL` to `EXTRACT(EPOCH FROM (resolved_at -
+created_at))`, and aggregate functions ignore `NULL`. So the median time to resolve is
+automatically over the tickets that were resolved. The counts published beside each
+median — `resolved_count` and friends — exist so that a reader knows how many rows it
+rests on, because "median 2 hours" over one ticket is not the same claim as over two
+hundred.
+
+#### `NULL` is a real answer and survives all the way out
+
+A period in which nothing was resolved has no median time to resolve. That is not zero.
+Every hours field and every percentage is `float | None`, `NULLIF` guards the two
+divisions, and there is a test asserting that a twelve-hour window with nothing in it
+returns `null` rather than `0`:
+
+```python
+assert body["informed_pct"] is None
+assert body["reopen_rate_pct"] is None
+assert body["median_first_public_note_hours"] is None
+```
+
+A dashboard that renders "0% of reporters were informed" for a quiet Tuesday is lying
+about the business, and the lie starts here if it starts anywhere.
+
+#### Counts come back as lists, with their zeroes
+
+`by_status` always carries five rows and `by_priority` always carries four, including the
+ones nobody used. A `GROUP BY` would omit them, and then the client has to decide whether
+a missing key means "none" or "the server forgot". Making the aggregate a row of
+`FILTER` columns rather than a grouped query is what makes this free.
+
+#### The window rule, in two halves
+
+> **A report about *current state* is not window-scoped. A report about *activity during a
+> period* is.**
+
+On the six period reports, `from`/`to` filter `created_at`, with three exceptions that
+name their own timestamp: the closed series in `summary.per_day` (`closed_at`),
+`engineer-workload.resolved_in_period` (`resolved_at`), and engineer-workload's active
+counts (no date filter — "how loaded is Nina" is a question about today).
+
+The two current-state reports take no period at all. `/reports/blocked-escalated` answers
+"which incidents *are* blocked or escalated, and why", and `/reports/me` feeds home tiles
+that read Open / In Progress / Blocked / Awaiting your confirmation. Both are present
+tense. A thirty-day window on the first hides the ticket that has been blocked since June —
+the one row an admin opens that report to find — and on the second it silently drops an
+employee's own ticket from February that is still open.
+
+They keep `building_id`, because that is a **scope** filter and not a **time** filter: it
+narrows which tickets are in view, not when they happened.
+
+This started as one rule (D5, applied to `/reports/me` by D7) and became two
+([D9](DECISION-LOG.md), which reversed both in part). The cost is that a reader has to
+know which kind of report they are looking at; three things make that cheap:
+
+* the distinction follows from the tense of the business question, not from taste;
+* the response says which it is — a `window` or a `scope`;
+* the router enforces it with two dependencies, `get_report_window` and
+  `get_report_scope`, so a route cannot quietly get the wrong one. The two current-state
+  routes do not *accept* `from`/`to`, rather than accepting them and ignoring them: a
+  parameter that is documented and silently discarded is how a dashboard ends up labelling
+  a chart with a period nobody applied.
+
+Each half is written down once — `_window_clauses()` and `_scope_clauses()` in
+`app/repositories/reports.py`.
+
+#### Present tense means *live*, not merely *flagged*
+
+The two halves of `/reports/blocked-escalated` were filtered differently, and only
+one of them was right. "Blocked" is a status, so `status == BLOCKED` drops closed
+work without anyone having to think about it. "Escalated" is a boolean column, and
+the escalated half asked for `is_escalated` and nothing else.
+
+That column is raised by `escalate` and lowered by exactly one thing,
+`clear_escalation`. **Closing or resolving a ticket does not clear it**, on purpose:
+the flag is a fact about the ticket's history and `incident_events` records both
+`ESCALATED` and `ESCALATION_CLEARED`. So the usual ending — an engineer fixes the
+thing that was escalated about and the ticket closes, with no admin ever clicking
+Clear — left a row flagged for ever.
+
+Until D9 the thirty-day window hid this: stale escalations aged out and nobody saw
+them pile up. Removing the window did not create the bug, it uncovered one that was
+always there. Uncovered, it is worse than untidy — `ESCALATED_TICKET_LIMIT` caps the
+list at 50, so fifty closed-but-flagged tickets would push every live escalation off
+the end of the panel, and `escalated_total` would count work nobody can act on.
+
+Both the list and the count now also require `ACTIVE_INCIDENT_STATUSES` — the same
+tuple in `app/models/enums.py` that defines an engineer's `active_ticket_count` and
+the capacity warnings in `services/assignment.py`, so "active" means one thing
+everywhere. The two terms sit in one helper, `_live_escalation_clauses()`, shared by
+the count and the list, because a count and a list that filtered differently is
+precisely the defect being fixed.
+
+The alternative — clear `is_escalated` when a ticket closes — was rejected: it
+changes the state machine to satisfy a report, it destroys a fact the detail screen
+and `GET /incidents?is_escalated=` both read, and it gives the flag a second writer.
+See [decision D10](DECISION-LOG.md).
+
+`/reports/me` had the identical defect and now shares the identical fix
+([decision D11](DECISION-LOG.md)). `personal_counts` counted `is_escalated` with no
+status term, so an employee whose ticket was escalated, fixed and closed carried
+"1 escalated" on their home screen permanently — and that count, unlike the admin
+panel's, is capped by nothing and has no list under it to contradict it. It now
+counts through `_live_escalation_clauses()` too, which corrects both capacities at
+once: an engineer's `assigned` block runs through the same function with
+`Incident.assignee_id` in place of `Incident.reporter_id`.
+
+So every present-tense read of the flag goes through one helper — three of them,
+`blocked_escalated_totals`, `escalated_tickets` and `personal_counts` — and the one
+period reader, `summary.escalated_total`, deliberately does not and says why. The
+rule is not "always filter on status"; it is that **the tense of the question
+decides**, which is D9's rule reaching the last place it had not been applied.
+
+#### Where "blocked since" comes from
+
+There is no `blocked_at` column, deliberately: `incident_service.py` clears
+`blocked_reason_type` when a ticket leaves BLOCKED, because `incident_events` already
+holds the history. So the age is read from the event log, `COALESCE`d to `created_at` for
+rows whose blocking predates their events. [Decision D6](DECISION-LOG.md).
+
+```python
+latest = (
+    select(func.max(IncidentEvent.created_at))
+    .where(
+        IncidentEvent.incident_id == Incident.id,
+        IncidentEvent.event_type == EventType.STATUS_CHANGED,
+        IncidentEvent.to_value == IncidentStatus.BLOCKED.value,
+    )
+    .correlate(Incident)
+    .scalar_subquery()
+)
+return func.coalesce(latest, Incident.created_at)
+```
+
+This is the event log's docstring claim — that events carry `from_value`/`to_value`
+"rather than a rendered message" so the reports can read them — being cashed in for the
+first time.
+
+#### `now` is a parameter, never `now()`
+
+Ages are measured against an instant the caller passes in — `scope.as_of`, defaulting to
+`app.clock.utc_now()` in `build_scope`. That is the same convention M4 established for the reopen window,
+and it is what lets `test_blocked_age_is_measured_from_when_the_ticket_became_blocked`
+assert `96.0` exactly rather than approximately.
+
+#### Permissions: seven admin reports and one that needs no role
+
+The seven aggregate reports describe the organisation, so they are admin-only through the
+existing `require_roles` dependency — expressed as `dependencies=[ADMIN_ONLY]` per route
+rather than on the router, because `/reports/me` must not inherit it.
+
+`/reports/me` takes **no user parameter**. There is no `?user_id=` to tamper with; the
+subject is whoever the access token says it is. That is what makes it safe to expose to
+everyone, and it is why the permission test suite parametrises over the seven and treats
+the eighth separately.
+
+### 3. How the pieces connect
+
+One real request, hop by hop — an admin's dashboard asking for the response-time chart:
+
+```
+browser
+  → GET /api/v1/reports/response-times?from=...&to=...&building_id=...
+  → Vite dev proxy (frontend/vite.config.ts), /api forwarded unchanged
+  → app/main.py                       router mounted at /api/v1
+  → app/routers/reports.py            get_response_times
+      ├─ Depends(ADMIN_ONLY)          security/dependencies.require_roles(FACILITY_ADMIN)
+      │     └─ get_current_user       token → user, password-change gate
+      ├─ Depends(get_report_window)   the three query parameters
+      │     └─ services/reporting.build_window   defaults, UTC, from <= to
+      └─ Depends(get_db)              app/db.py session
+  → app/services/reporting.response_times
+      ├─ repositories/reports.response_times_overall      one row
+      └─ repositories/reports.response_times_by_priority  one row per priority
+           └─ SQL: percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY EXTRACT(epoch FROM (resolved_at - created_at)) / 3600.0)
+  → _to_response_times: Decimal → float, NULL preserved
+  → ResponseTimesReport  (FastAPI serialises by alias, so `date_from` → "from")
+  → TanStack Query cache → chart re-renders
+```
+
+The two things in that trace that are easy to get wrong: the window is resolved by a
+dependency, so no route can forget it; and the `Decimal` → `float` conversion is explicit
+in `_as_float`, because `round(numeric, 2)` comes back as a `Decimal` and `None` has to
+survive the trip.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| What `from`/`to` filter, and the building filter, on a period report | `app/repositories/reports.py` → `_window_clauses` |
+| What a current-state report filters — the building, and nothing else | `app/repositories/reports.py` → `_scope_clauses` |
+| Which reports are period and which are current state | `app/routers/reports.py` → `ReportPeriod` vs `ReportScopeDep` |
+| Default period, UTC coercion, `from <= to` | `app/services/reporting.py` → `build_window` |
+| The instant a current-state snapshot describes | `app/services/reporting.py` → `build_scope` |
+| Which reports are admin-only | `app/routers/reports.py` → `dependencies=[ADMIN_ONLY]` per route |
+| Who may be an assignee (hence `/reports/me`'s shape) | `app/services/assignment.py` |
+| When a ticket became blocked | `app/repositories/reports.py` → `_blocked_since` |
+| What counts as an escalation somebody can still act on (all three current-state readers) | `app/repositories/reports.py` → `_live_escalation_clauses` |
+| What counts as live work, application-wide | `app/models/enums.py` → `ACTIVE_INCIDENT_STATUSES` |
+| What counts as "kept informed" | `app/repositories/reports.py` → `_first_public_staff_note` + `communication` |
+| Which roles are staff for that purpose | `app/repositories/reports.py` → `STAFF_ROLES` |
+| Hours, rounding, percentages, `NULL` handling | `app/repositories/reports.py` → `_hours`, `_rounded`, `_percentage` |
+| Top-N limits | `app/schemas/report.py` → `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT` |
+| Ticket reference formatting | `app/models/incident.py` → `format_reference` |
+
+### 5. How to change it
+
+**To add a segment to an existing report** — say, a count of tickets closed as duplicates
+— add one `func.count().filter(...)` column in `app/repositories/reports.py`, one field on
+the response model in `app/schemas/report.py`, one line in the mapping in
+`app/services/reporting.py`, and one assertion in `tests/integration/test_reports.py`
+with the number worked out from the fixture table at the top of that file. Four files, no
+new query.
+
+**To add a whole report** — one function in the repository, one in the service, one route
+in the router, one response model, one test class. Follow `/reports/categories`: it is the
+shortest one that does something non-trivial.
+
+**To change what the window means** — `_window_clauses` for the six period reports,
+`_scope_clauses` for the two current-state ones. Read D5 and D9 before you do, and note
+which side of the split the report you are changing sits on: moving a report across that
+line means swapping its dependency in the router and its echo field (`window` ↔ `scope`)
+in the response model, not just editing a `WHERE`.
+
+**To add a fixture incident** — add a row to *both* tables in the
+`tests/integration/test_reports.py` docstring, then to `_build_incidents`, then fix every
+assertion the new row changes. That will be most of them, which is deliberate: a fixture
+world small enough that one more ticket moves twenty numbers is a fixture world you can
+still reason about.
+
+### 6. Gotchas
+
+**`count(*)` versus `count(column)` on an outer join.** `/reports/engineer-workload`
+LEFT JOINs incidents onto engineers so that an engineer holding nothing still appears.
+`count(*)` would score that engineer 1, because the join manufactures a row of nulls.
+Every count in that query is `count(Incident.id)`. This is the single most likely place
+for a future edit to introduce a wrong number that looks plausible.
+
+**A `GROUP BY` cannot produce a zero.** Hence the `FILTER`-columns-in-one-row shape for
+the status and priority segments, and `generate_series` for the daily series. If you
+convert either to a grouped query for tidiness, quiet days and unused statuses vanish.
+
+**Casting a `timestamptz` to a `date` uses the session time zone.** The daily series does
+this twice per row — `cast(column, Date) == cast(day, Date)` in `_counted_on_day`, which is
+`::date` in SQL. `app/db.py` pins the session zone to UTC via `build_connect_args`, and the
+test fixtures build their engine the same way. Without that pin, the series would bucket
+differently on a developer's machine than in the Lambda — the same instants, different days.
+(`date_trunc` has the same dependency, and is the function to reach for if the series ever
+needs hours or weeks rather than days.)
+
+**Naive datetimes in the query string.** `?from=2026-09-01` parses to a naive datetime.
+`_as_utc` attaches UTC explicitly rather than letting the comparison against a
+`timestamptz` column be resolved by the session default. Same value today; not an
+accident tomorrow.
+
+**`/reports/blocked-escalated` and `/reports/me` ignore no parameters — they do not
+accept them.** Sending `?from=...&to=...` to either is not an error (FastAPI discards
+query parameters a route did not declare) and it changes nothing. If you are debugging a
+number on one of those two and reaching for the window, that is the wrong lever: the only
+filter they have is `building_id`. Their responses carry `scope`, not `window`, so a
+client that reads `body["window"]["from"]` will `KeyError` rather than quietly label a
+chart with a period that was never applied. That is deliberate.
+
+**A window of 30 days spans 31 calendar days.** Both ends are inclusive, matching
+`GET /incidents`'s `created_from`/`created_to`. `test_summary_reports_created_and_closed_for_every_day_in_the_window`
+asserts `len(per_day) == 31`, which looks off by one until you remember that.
+
+**`is_escalated` is never cleared by closing a ticket.** Only `clear_escalation` lowers
+it, so a closed ticket can and often does still carry the flag, its reason and its
+`escalated_at`. That is deliberate — it is history, and the detail screen and
+`GET /incidents?is_escalated=` both read it. The consequence is that **`is_escalated` on
+its own never means "needs attention"**: any present-tense query over it has to add a
+status filter, which is what `_live_escalation_clauses()` exists for, and all three
+current-state readers call it — `blocked_escalated_totals`, `escalated_tickets` and
+`personal_counts` (`/reports/me`, both capacities). `/reports/summary`'s
+`escalated_total` deliberately does not add one, because it is a period report counting
+what happened during the window. If you add a fourth place that reads the flag, decide
+which of those two questions you are asking before you write the `WHERE`. See
+decisions [D10](DECISION-LOG.md) and [D11](DECISION-LOG.md).
+
+**`CLOSED` keeps `resolved_at`.** Closing a ticket does not erase the fact that it was
+resolved first, so `communication.resolved_total` counts closed tickets too, and
+`engineer-workload.resolved_in_period` credits an engineer for a ticket that has since
+been closed. Reopening *does* clear it — `_apply_transition_effects` nulls `resolved_at`
+and `closed_at` on entering IN_PROGRESS — which is exactly why that code says it is
+written as "what it means to be in this status".
+
+**The fixture world is anchored to `utc_now()` at fixture-build time**, not to a literal
+date, so the default-window test is meaningful. Only two assertions depend on the server's
+clock as well as the fixture's, and both use `pytest.approx` with 0.05-hour slack; the
+exact-age assertions go through the service with an explicit `now`.
+
+### 7. Glossary
+
+**Aggregate function** — SQL that collapses many rows into one value: `count`, `avg`,
+`max`. All of them ignore `NULL` inputs except `count(*)`, which is why the medians here
+need no `FILTER` clause.
+
+**`FILTER (WHERE ...)`** — a per-aggregate condition, so one scan can produce many
+differently-conditioned counts. `count(*) FILTER (WHERE status = 'OPEN')` beside
+`count(*) FILTER (WHERE status = 'BLOCKED')` in the same `SELECT`.
+
+**Ordered-set aggregate** — an aggregate that needs its input sorted, written
+`f(args) WITHIN GROUP (ORDER BY ...)`. `percentile_cont` is one.
+
+**`percentile_cont(0.5)`** — the continuous median. With an even number of values it
+*interpolates* between the two middle ones rather than picking one: `[5, 9, 12, 20]` gives
+10.5, not 9 or 12. `percentile_disc` would pick an actual data point instead.
+
+**`EXTRACT(EPOCH FROM interval)`** — an interval as a number of seconds. Subtracting two
+`timestamptz` values gives an interval; this is how it becomes arithmetic.
+
+**Window function** — an aggregate evaluated over a frame of rows without collapsing
+them, written `f(...) OVER (PARTITION BY ...)`. `sum(count(*)) OVER (PARTITION BY group)`
+puts each group's total on every one of its subcategory rows.
+
+**Correlated subquery** — a subquery that refers to a column of the enclosing query and is
+therefore evaluated per outer row. `_blocked_since()` and `_first_public_staff_note()` are
+both correlated on `incidents.id`.
+
+**Scalar subquery** — a subquery used where a single value is expected, in a `SELECT` list
+or a comparison. In SQLAlchemy, `.scalar_subquery()`.
+
+**`generate_series`** — a set-returning function producing a sequence; here, one row per
+calendar day, so that days with no incidents appear in the series as zeroes.
+
+**`NULLIF(x, 0)`** — returns `NULL` when `x` is zero. Used as the denominator of every
+percentage, so an empty period yields `NULL` rather than a division error.
+
+**`COALESCE`** — the first non-`NULL` of its arguments. `COALESCE(blocked_event_time,
+created_at)` is what stops a missing event producing a `NULL` age.
+
+**`table_valued()` / `render_derived()`** — SQLAlchemy's way of putting a set-returning
+function in the `FROM` clause with a column alias: `generate_series(...) AS calendar(day)`.
+
+**Ordered-set versus grouped** — `GROUP BY priority` produces one row per priority *that
+has rows*. A row of `FILTER` columns produces one row with a column per priority, present
+whether or not it has rows. The reports use both, deliberately, and the choice is always
+about whether zeroes must appear.
+
+## Phase M7 — Dashboards and demo data (pass 2: `seed_demo`)
+
+Pass 1 built the eight report endpoints. This pass builds the thing that makes them worth
+looking at: an ops action that fills a **local** database with a plausible ninety days of
+ACME. Pass 3 is the three dashboard screens, and appends its own section below.
+
+**Verified against local PostgreSQL only.** 683 backend tests (up from 666), ruff check
+and ruff format clean. A full default seed takes **0.9 seconds** and writes 300 incidents,
+~1,800 events and ~500 notes. What that leaves unproven in the cloud is items 7.5 to 7.8
+in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
+guard's `IS_LOCAL` really arrives on the deployed Lambda.
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/seed/demo.py` | The whole generator: the static world (buildings, engineers, names, weights), the lifecycle planner, the timeline walk, and the row writers. |
+| `app/services/ops.py` | `_op_seed_demo` — the environment guard, the payload overrides, and the registry entry beside `migrate` and `seed_admin`. |
+| `tests/integration/test_seed_demo.py` | 13 tests against a 60-incident spec. Shape, not values. |
+| `tests/unit/test_ops.py` | 4 more: the registry, the production refusal, and payload validation. No database needed for any of them. |
+| `docs/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
+
+It is invoked exactly as `migrate` and `seed_admin` are — a direct Lambda invoke, or the
+same handler called locally:
+
+```sh
+python -c "import function, json; print(json.dumps(
+    function.handler({'action': 'seed_demo'}, None), default=str))"
+```
+
+What a default run produces, and what each number is for:
+
+| | Count | Why |
+| --- | --- | --- |
+| Buildings | 3 | Weighted 50 / 32 / 18, so `/reports/locations` ranks rather than ties. |
+| Floors | 4–6 each (~14) | |
+| Desks | 20–40 per floor (~420) | |
+| Meeting rooms | 2–3 per floor (~34) | `seat_type = MEETING_ROOM`; the Meeting Rooms category group reports against these and nothing else. |
+| Admin | 1 | `demo.admin@acme.inc`. |
+| Engineers | 6 | Two per level, specialties covering all five category groups, uneven load weights. |
+| Employees | 30 | Two deactivated, so the users screen has both states. |
+| Incidents | 300 over 90 days | ~60% CLOSED, the rest live. |
+| Events | ~1,800 | Backdated. This is the point. |
+| Notes | ~500 | PUBLIC and INTERNAL, backdated. |
+
+Every account shares the password `AcmeDemo2026!`, reported in the invoke payload, and
+none is flagged `must_change_password`.
+
+### 2. Why it is shaped this way
+
+#### The status is an outcome, not an input
+
+The obvious generator picks a status from a distribution and back-fills whatever
+timestamps that status implies. This one does the opposite. Each incident gets a full
+intended **path** — assigned after *n* hours, acknowledged after *m*, perhaps blocked,
+resolved, closed, perhaps reopened — with a duration drawn for every hop, and then `_walk`
+applies the steps in time order and **stops at the first one later than `now`**:
+
+```python
+for step in plan.steps:
+    if step.when > now:
+        break
+    outcome.last_activity = step.when
+    _apply_step(step, plan, outcome, events, notes, worker_id=worker_id, admin=admin)
+```
+
+A ticket reported eighty days ago with a thirty-hour path is therefore closed; one
+reported this morning is still open; one whose block outlasts the run is still blocked,
+with a real age. The alternative — pick a status, then back-fill the timestamps it
+implies — is [decision D12](DECISION-LOG.md), part 1. The age distribution and the status distribution come out consistent with
+each other because they are the same fact looked at twice, and nothing has to be
+reconciled afterwards.
+
+The effects in `_apply_step`/`_enter` mirror `_apply_transition_effects` in
+`services/incident_service.py` one for one — entering IN_PROGRESS clears the resolution
+and closure fields, anything other than BLOCKED clears the blocked reason, a reopen
+increments `reopen_count`. So the generator cannot produce a row the state machine could
+not have produced, and it does not need to import the service layer to manage it.
+
+#### Backdating the event log is the phase, not a detail of it
+
+`incident_events.created_at` defaults to `clock_timestamp()` and `incidents.created_at` to
+`now()`. Leave either alone and the whole dataset is stamped with the moment of seeding.
+Every count in the application still works. Every number the phase exists for does not:
+
+| Report | What it reads | What "created now" gives you |
+| --- | --- | --- |
+| `/reports/response-times` | `assigned_at - created_at` and friends | zeroes |
+| `/reports/blocked-escalated` | `MAX(incident_events.created_at)` for the STATUS_CHANGED → BLOCKED row | every block zero hours old |
+| `/reports/communication` | first PUBLIC staff note vs `resolved_at` | a median of zero |
+| `/reports/summary` | `per_day` over `created_at` / `closed_at` | one spike on today, 30 empty days |
+
+So every row is written with an explicit timestamp taken from the plan, including the
+notes. There is no `blocked_at` column by design (decision D6) — the blocked age is read
+back out of the event log — which means a generator that wrote correct incident columns
+and a lazy event log would still produce a blocked report full of zeroes. Both halves have
+to be right.
+
+`test_every_event_is_backdated_and_in_order` is the test that would fail: it asserts that
+each ticket opens with a CREATED event at exactly `incident.created_at`, that no event
+precedes its own ticket or postdates `now`, that each log is in time order, and that the
+events as a whole span more than ten distinct days.
+
+#### Why there are seven paths, not one
+
+The first working version gave every ticket a path to CLOSED. Measured, that produced a
+database **85% closed** after ninety days — 254 of 300, with two blocked tickets, one
+resolved and ten in progress. Every live-work dashboard was empty. Real queues carry work
+that stalled, so the stalling is modelled rather than left to the tail of a distribution:
+
+```python
+PATH_WEIGHTS = {
+    "normal": 0.58,               # runs all the way to CLOSED
+    "never_assigned": 0.09,       # nobody picked it up — stays OPEN
+    "assigned_not_started": 0.04, # in an engineer's list, not started — stays OPEN
+    "stalled": 0.07,              # started, engineer pulled away — stays IN_PROGRESS
+    "stuck_blocked": 0.07,        # blocked on a vendor since July — stays BLOCKED
+    "awaiting_confirmation": 0.05,# fixed, reporter never confirmed — stays RESOLVED
+    "duplicate": 0.05,
+    "invalid": 0.05,
+}
+```
+
+That gives roughly 60–65% CLOSED and the rest live, spread across all four other
+statuses in double figures. Each of the five stopping paths exists because a specific
+tile or column was empty without it —
+`assigned_not_started` was added after `/reports/engineer-workload` returned `open_count:
+0` for all six engineers, which is not a thing that happens in a real facilities team.
+
+#### Nothing is uniform, because a uniform world answers no questions
+
+BUILD-PLAN section 11 lists eight business questions. Several of them — which building has
+the most problems, who is overloaded, are there recurring problems at the same location —
+have no answer at all if everything is drawn uniformly. So the weights are in the file,
+named and commented: `BUILDING_WEIGHTS`, `CATEGORY_GROUP_WEIGHTS`, `PRIORITY_WEIGHTS`,
+`ENGINEER_LOAD_WEIGHTS`, `BLOCKED_REASON_WEIGHTS`, and a decaying weight per subcategory
+so each group's "Other" stays rare.
+
+Two of them do more than tilt a bar chart:
+
+* **`_draw_assignee` multiplies the load weight by 4 when the ticket's group is one of the
+  engineer's specialties.** The workload report and the engineers screen then agree with
+  each other, which they would not if assignment were random.
+* **`_choose_hotspots` picks a few (seat, subcategory) pairs and repeats them** across the
+  ninety days. In a default run those three seats top the list at 9, 6 and 5 tickets
+  against a background of 2, which is a visible answer to "are there recurring problems at
+  the same location?" rather than a noise floor.
+
+Durations are lognormal about a published median (`RESPONSE_MEDIANS`), not uniform,
+because that is the shape response times actually have — a cluster near the median and a
+thin tail. It also means the medians `/reports/response-times` computes come back
+recognisably as the numbers in that table, so the dashboard can be checked against this
+file by eye. A default run gives 0.4 h to assign for CRITICAL against 16.6 h for LOW, and
+6.6 h to resolve against 141 h.
+
+#### The resolution note lands *after* the resolution
+
+A subtle one, and it was wrong at first. `/reports/communication` counts a reporter as
+"kept informed" when the first PUBLIC staff note is at or before `resolved_at` — it is
+asking whether they heard anything *while the ticket was open*. The first version wrote
+the resolution note at exactly `resolved_at`, which satisfied that test on every resolved
+ticket and pinned the report at **100.0%**.
+
+`_resolution_steps` now schedules the note a few minutes after the resolve step, which is
+also the order the two really happen in: marking a ticket resolved is one request and
+writing a note is another, and nobody types the summary before pressing the button. The
+note the metric is actually about is the early "I've picked this up" update, written
+`PUBLIC_UPDATE_PROBABILITY` (72%) of the time. The report now reads around 70–80%, and
+`test_the_communication_report_is_neither_zero_nor_a_perfect_score` asserts strictly
+between 0 and 100 so it cannot silently go back to being perfect.
+
+#### The demo data deliberately contains the bug D10 and D11 fixed
+
+A default run produces both live escalations and closed-but-still-flagged ones, a dozen
+or more of each. That is not an oversight: `is_escalated` is lowered only by `clear_escalation`, so
+the ordinary ending — an engineer fixes the thing and the ticket closes — leaves the flag
+standing, and a demo world without that case would let a regression in
+`_live_escalation_clauses()` go unnoticed on every screen.
+`test_the_blocked_report_reads_a_real_age_out_of_the_event_log` asserts that every row in
+the escalated list is in `ACTIVE_INCIDENT_STATUSES`, over data that contains counterexamples.
+
+#### One bcrypt hash, reused across every demo account
+
+`hash_password` at twelve rounds costs about a quarter of a second by design. Hashing
+thirty-seven identical demo passwords separately would add roughly nine seconds to a seed
+that otherwise takes under one, and would protect nothing: the password is printed in the
+return payload. So it is hashed once in `_seed_people` and the string is reused. This is
+confined to demo data — every real account still goes through `hash_password` per user —
+and it is the single reason the whole seed fits in under a second. What keeps it safe is
+the guard below, which is why that guard reads the same `IS_LOCAL` everything else does.
+[Decision D12](DECISION-LOG.md), part 3.
+
+#### Refusing to run, and where the refusal lives
+
+CLAUDE.md requires `seed_demo` to refuse in production. The check is `settings.is_local`,
+which is the same flag that drives `sslmode=require`, the `Secure` cookie flag and the
+weak-JWT-secret startup refusal in `app/config.py`. Using it rather than inventing a
+second environment test means there is one answer in this codebase to "is this
+production", and one place to be wrong. It returns a payload rather than raising, matching
+`seed_admin`'s treatment of a missing email: an ops action that is refused should say why
+in the invoke response, not produce a stack trace in CloudWatch.
+
+The payload may override four fields — `incidents`, `employees`, `days`, `random_seed` —
+and nothing else. The shape of the world stays in the file where it can be read and
+reviewed, rather than being assembled out of an invoke payload.
+
+#### Not idempotent, and saying so out loud
+
+Running it twice does not top up or refresh. Half of what it writes is unique-constrained
+(building names and codes, user emails) and half is not, so a blind second run would
+either fail an insert or silently double the incident count. Instead it looks for its own
+buildings first and returns without writing:
+
+```json
+{"created": false,
+ "detail": "Demo data is already present ('Austin Campus' exists). Nothing was changed:
+            seed_demo does not top up or refresh. Drop and recreate the database, run
+            migrate, then run seed_demo again."}
+```
+
+That is the honest version of idempotence for a generator: **safe** to run twice, not
+*useful* to. Matching on natural keys the way `seed_categories` does was considered and
+does not apply — three hundred generated incidents have no natural key
+([decision D12](DECISION-LOG.md), part 2). The requirement said "idempotent or clearly documented as not", and this is
+the second, documented in the return payload, the module docstring, the action docstring
+and here. Decision D4 already prescribes dropping and recreating the review database
+before seeding, so the recovery path is one somebody is following anyway.
+
+### 3. How the pieces connect
+
+```
+aws lambda invoke --payload '{"action":"seed_demo"}'     (or function.handler locally)
+  → function.py handler                    sees `action`, never touches Mangum
+  → app/services/ops.run_ops               registry lookup
+  → app/services/ops._op_seed_demo
+      ├─ get_settings().is_local           False → refuse here, nothing is written
+      ├─ _seed_demo_overrides(event)       four optional positive integers
+      ├─ replace(DEFAULT_SPEC, ...)        the DemoSpec for this run
+      └─ _with_session(seed)               one session, committed by the wrapper
+  → app/seed/demo.seed_demo
+      ├─ _existing_demo_building           already seeded? return, write nothing
+      ├─ _category_groups                  the five groups `migrate` seeded
+      ├─ _seed_facilities                  buildings → floors → seats  (flush between:
+      │                                    each level needs the level above's id)
+      ├─ _seed_people                      one bcrypt hash → admin, 6 engineers
+      │                                    (+ profiles, pointed at their specialty
+      │                                    groups), 30 employees
+      └─ _seed_incidents               (given a `_World`: the buildings, the floor and
+           │                               seat lookups, the category tree and the people,
+           │                               bundled so five functions do not take nine
+           │                               parameters each)
+           ├─ _plan_all                    hotspots first, then the rest, sorted by
+           │     └─ _plan_incident         created_at so ticket numbers follow time
+           │           └─ _plan_steps      the whole intended life, as timestamps
+           ├─ _walk (per incident)         apply steps up to `now`; stop
+           │     └─ _apply_step / _enter   mirrors _apply_transition_effects
+           ├─ session.add_all(incidents); flush     → ids and ticket_numbers exist
+           ├─ _link_duplicates             point each duplicate at an earlier ticket
+           ├─ _write_events_and_notes      explicit created_at on every row
+           └─ _summarise                   the counts in the invoke response
+  → DemoSeedResult → asdict → invoke response
+```
+
+The three-pass order at the bottom is forced: events, notes and duplicate links all need
+`incident.id`, which does not exist until the incidents are flushed.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Refuse to seed outside local development | `app/services/ops.py` → `_op_seed_demo` |
+| Which spec fields a payload may override | `app/services/ops.py` → `SEED_DEMO_OVERRIDES` |
+| How much of everything to generate | `app/seed/demo.py` → `DemoSpec` / `DEFAULT_SPEC` |
+| Whether a second run does anything | `app/seed/demo.py` → `_existing_demo_building` |
+| What a ticket's life can look like | `app/seed/demo.py` → `PATH_WEIGHTS`, `_plan_steps` |
+| How much of that life has happened yet | `app/seed/demo.py` → `_walk` |
+| What entering a status means | `app/seed/demo.py` → `_enter` (mirrors `services/incident_service._apply_transition_effects`) |
+| How long each hop takes | `app/seed/demo.py` → `RESPONSE_MEDIANS`, `_draw_hours` |
+| When a ticket is reported | `app/seed/demo.py` → `_draw_created_at`, `WORKING_HOURS` |
+| Who gets assigned what | `app/seed/demo.py` → `_draw_assignee`, `ENGINEER_LOAD_WEIGHTS` |
+| Which engineer covers which group | `app/seed/demo.py` → `ENGINEER_SEEDS` |
+| Recurring problems at one seat | `app/seed/demo.py` → `_choose_hotspots` |
+| Where a ticket is allowed to happen | `app/seed/demo.py` → `_random_placement` (honours `location_detail`) |
+| The demo password | `app/seed/demo.py` → `DEMO_PASSWORD` |
+
+### 5. How to change it
+
+**To make the demo bigger or smaller** — pass `incidents` in the payload, or edit
+`DEFAULT_SPEC`. Nothing else scales off a hard-coded number.
+
+**To add a kind of ticket** — add a weight to `PATH_WEIGHTS`, a branch to `_plan_steps`
+that stops (or does not) where you want it to, and, if it introduces a new moment, a
+branch to `_apply_step`. Then add an assertion to
+`test_the_dataset_contains_the_awkward_cases_the_dashboards_are_for`. Three places, and
+the walk needs no changes at all.
+
+**To add a field to incidents** — set it in `_build_incident`. If it has to change over
+the ticket's life, put it on `_Outcome` and set it from `_apply_step`, not from
+`_build_incident`.
+
+**To change the mix** — every weight is a module-level dict with a comment saying what the
+dashboard looks like without it. Change the numbers, re-run against a throwaway database,
+and read the `by_status` / `by_priority` / `by_engineer` block in the return payload; it is
+there so you do not have to write a query to find out what you just made.
+
+**To verify a change by hand** — never against `acme_incidents_dev` (decision D4: the
+owner resets it themselves). Use a throwaway:
+
+```sh
+createdb acme_scratch
+POSTGRES_NAME=acme_scratch python -c "import function, json; print(json.dumps(
+    function.handler({'action':'migrate'}, None)))"
+POSTGRES_NAME=acme_scratch python -c "import function, json; print(json.dumps(
+    function.handler({'action':'seed_demo'}, None), default=str))"
+dropdb acme_scratch
+```
+
+### 6. Gotchas
+
+**`seed_demo` needs `migrate` to have run first**, and not only for the schema. It reads
+the five category groups and their subcategories, which `seed_categories` writes as part
+of the `migrate` action rather than in the Alembic migration. Against a migrated-but-not
+-seeded database it raises a `KeyError` on the group name. The integration tests call
+`seed_categories` in their fixture for this reason.
+
+**The tests never run the ops action against the database.** They call
+`seed_demo(db_session, ...)` directly, inside the transaction the fixture rolls back.
+`_with_session` opens its own session and commits, and the suite recreates the test
+database only once per session — so a committed demo world would be visible to every test
+that ran afterwards, including `test_reports.py`, which asserts exact counts over its own
+ten-incident fixture. The action wrapper is tested in `tests/unit/test_ops.py`, where the
+three things worth testing all return before a session is opened.
+
+**The leak runs the other way too, and that one did bite.** `test_ops_actions.py`
+commits four `seed_admin` accounts, and integration files run in alphabetical order, so
+by the time `test_seed_demo.py` runs those rows are in `users`. A test asserting
+"`seed_demo` created exactly one admin" by counting every row in the table therefore
+passed on its own and failed in the full suite — `1 failed, 682 passed`. The `users_before`
+fixture takes a snapshot of the ids that already exist and the assertions run over the
+difference. **Anything in this file that counts a table has to ask whether an ops-action
+test writes to it**: `users` and `categories` are the two that survive, and `categories`
+is safe only because `seed_categories` is idempotent and seeds the same five groups.
+
+**Determinism is per-spec, not per-run.** `DemoSpec.random_seed` seeds one
+`random.Random`, and every draw comes from it in order — so adding a draw anywhere
+reshuffles everything after it. That is fine (nothing asserts a specific value) but it
+means "the same seed gives the same world" only holds for the same version of this file.
+Note bodies are the exception: `_pick_note` keys off the step's own timestamp rather than
+the shared generator, so changing how many notes an earlier ticket gets does not rewrite
+the text on every ticket after it.
+
+**`_random_placement` honours `location_detail`, and more precision is allowed.** A
+Meeting Rooms ticket (SEAT) always names a meeting room; a Building & Facilities ticket
+(FLOOR) names a floor and, 65% of the time, a desk as well. That is legal —
+`_require_location_precision` in `services/incident_service.py` checks a *minimum* — and
+it is necessary, because a location report over tickets that only name a building has
+nothing to rank.
+
+**Two engineers can exceed 100% capacity** in a default run, and one of them is
+`ON_LEAVE` holding seven active tickets. Both are deliberate: `capacity_used_pct` above
+100 is exactly the condition `/reports/engineer-workload` exists to surface, and somebody
+going on leave without handing their queue over is the reason an admin looks at it.
+
+**`escalated_on_closed` in the payload is not a defect count.** It is how many closed
+tickets still carry `is_escalated`, which is correct behaviour (decisions D10 and D11) and
+is generated on purpose so the live-escalation filter has something to filter.
+
+### 7. Glossary
+
+**Lognormal distribution** — what you get when the *logarithm* of a value is normally
+distributed. Multiplicative rather than additive, so it cannot go negative and has a long
+right tail: most repairs take about the median, a few take twenty times it. `_draw_hours`
+uses `random.lognormvariate(0, 0.62)` as a multiplier on a published median.
+
+**Weighted choice** — picking from a list where each item has its own probability.
+`random.choices(population, weights=...)`. Every "not uniform random" decision in this
+file is one of these.
+
+**Deterministic generator** — a random generator seeded from a fixed number, so the same
+seed produces the same sequence. `random.Random(spec.random_seed)`, never the module-level
+`random` functions, which share global state with anything else that touches them.
+
+**Scale factor** — running a generator at a fraction of its real size to test its shape
+cheaply. Here it is a whole `DemoSpec` rather than a multiplier, so the tests state the
+sixty they expect instead of computing it.
+
+**Idempotent** — an operation that can be applied repeatedly without changing the result
+beyond the first application. `migrate` and `seed_admin` are idempotent in the strong
+sense (they converge on a state). `seed_demo` is idempotent only in the weak sense: the
+second run is a no-op, but it will not repair or refresh a partial world.
+
+**Ops action** — a task run by invoking the Lambda directly with a payload carrying an
+`action` key, rather than over HTTP. IAM-protected and not routed by CloudFront, which is
+what lets migrations and seeding exist without a public maintenance endpoint. See
+`function.py` and `app/services/ops.py`.
+
+---
+
+## Phase M7 — Dashboards and demo data (pass 3: the three persona screens)
+
+Pass 1 built the eight report endpoints. Pass 2 built `seed_demo`, which fills a local
+database with ninety days of plausible ACME so those endpoints return something worth
+drawing. This pass draws it: the employee home, the engineer home and the admin
+dashboard, replacing the three placeholders M5 wired to `/`.
+
+**Verified.** 271 frontend tests (up from 211), 32 Playwright cases across two viewports
+of which 25 run and 7 are deliberate viewport skips (up from 14 and 12), eslint +
+`tsc -b` + `vite build` clean. Backend untouched — no server file
+changed in this pass, so the 683-test suite is unaffected and was not re-run for it.
+The screens were developed and screenshotted against `acme_demo`; `backend/v1/.env` is
+restored to `POSTGRES_NAME=acme_incidents_dev`.
+
+**The one thing to understand before changing any of this** is in section 2 below: the
+admin dashboard shows two kinds of number under a single filter bar, the difference is
+real, and every label on the page exists to keep them apart.
+
+### 1. What was built
+
+**The data layer.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/api/reports.ts` | One typed function per report endpoint, and the response types. Carries the period/current-state split **in the parameter types**: `fetchBlockedEscalated` and `fetchMyReport` take `ReportScopeParams`, which has no date field. |
+| `src/api/queryKeys.ts` | `queryKeys.reports.*`. Period and current-state keys take different parameter types, so two requests that differ in whether a window applied can never share a cache entry. |
+| `src/features/dashboard/hooks.ts` | A TanStack Query hook per report. The six period hooks hold the previous answer while a new one is fetched, so moving the date picker does not collapse the page into spinners. |
+
+**Shared dashboard pieces.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/features/dashboard/StatTile.tsx` | One number, its name, and a **required** `caption` saying what it is scoped to. A tile cannot be added without someone deciding that. Plus `StatTileGrid`, an auto-fit grid. |
+| `src/features/dashboard/ScopeHeading.tsx` | `PeriodScopeHeading` and `CurrentScopeHeading` — the two section headers that say which question the widgets below them answer. |
+| `src/features/dashboard/chartPalette.ts` | Every colour a chart uses, with the validator results that justify each one recorded beside it. |
+| `src/features/dashboard/BreakdownChart.tsx` | A horizontal bar chart of one measure across categories, with a table twin behind a toggle. Every bar is a link or a drill-down. |
+| `src/features/dashboard/FlowChart.tsx` | Reported against closed, per day. The only two-series chart. |
+| `src/features/dashboard/listLinks.ts` | `periodListLink` and `currentListLink` — two builders, not one with a flag, so the choice is visible at each call site. |
+| `src/features/dashboard/useDashboardFilters.ts` | The dashboard's filters in the URL, and the resolution of a preset into two instants. |
+| `src/features/dashboard/DashboardFilterBar.tsx` | The one filter row, above everything it scopes. |
+
+**The three screens.**
+
+| File | Responsibility |
+| --- | --- |
+| `src/features/home/HomePage.tsx` | The `/` route's branch on role. Lazy-loads the admin dashboard. |
+| `src/features/home/EmployeeHomePage.tsx` | Greeting, full-width Report an issue, four tiles, "Needs your attention" when non-empty, recent tickets. |
+| `src/features/home/EngineerHomePage.tsx` | Four tiles, active tickets by priority then age, the unassigned queue for SENIOR/LEAD, the sentence for a JUNIOR. |
+| `src/features/home/HomeTicketRow.tsx` | One ticket with room for its own buttons. |
+| `src/features/home/sortTickets.ts` | `sortByPriorityThenAge`. |
+| `src/features/dashboard/AdminDashboardPage.tsx` | The dashboard, and `CategoryBreakdown` with its one level of drill-down. |
+| `src/features/dashboard/NeedsAttentionPanel.tsx` | Escalated tickets and tickets unassigned over 24 h, each row with an inline Assign. |
+| `src/features/dashboard/EngineerWorkloadTable.tsx` | Who holds what, with the period column named in its own header. |
+| `src/features/dashboard/BlockedByReasonPanel.tsx` | Blocked tickets grouped by reason, with ages. |
+
+**Changed, not new.**
+
+| File | Change |
+| --- | --- |
+| `src/features/incidents/useIncidentFilters.ts` | Four more URL filters — `category_id`, `assignee_id`, `created_from`, `created_to` — so a dashboard link lands on exactly the tickets its tile counted. |
+| `src/features/incidents/AppliedFilterChips.tsx` | New. Renders those four as removable chips above the list, because a filter that is applied but invisible is worse than one that is missing. |
+| `src/features/incidents/InlineTransitionButtons.tsx` | New. Workflow buttons for one ticket in a list, still drawn only from `allowed-transitions`. |
+| `src/features/incidents/AssignButton.tsx` | Now takes four ids rather than a whole `IncidentListItem`, so it also serves the report rows in the Needs attention panel. |
+| `src/features/incidents/hooks.ts` | Mutations invalidate `['reports']` as well as `['incidents']`. |
+| `src/display/time.ts` | `formatHours` — hours under a day, days above, and `—` for `null`. |
+| `src/theme.ts` | Unchanged. Every chart colour lives in `chartPalette.ts`, not the theme, for the reason in section 2. |
+
+### 2. Why it is shaped this way
+
+#### The split that everything else follows from
+
+Decision [D9](DECISION-LOG.md) divided the eight reports in two. Six cover a **period**
+and take `from`/`to`; two describe the **present** and refuse those parameters outright,
+because "what is blocked" is a question about now and a thirty-day window would hide the
+ticket that has been blocked since February.
+
+That split was made in the API for the sake of this screen. A dashboard has one filter
+bar, and the temptation is to make it look as though the bar reaches everything. Against
+`acme_demo`, `summary.blocked_total` is **11** and `blocked-escalated.blocked_total` is
+**21** — the first is "tickets reported in the last thirty days that are blocked now",
+the second is "tickets blocked now". Both are correct. A tile labelled "Blocked · 21"
+under a heading that says "last 30 days" is the exact failure D9 exists to prevent.
+
+So the dashboard is two sections with two headings, and the difference is stated three
+times over: once in the filter bar's own caption, once per section heading, and once more
+in an alert under the live tiles for the case where the two figures visibly disagree.
+The period heading reads its dates **off the response's `window`**, never off the picker —
+the server is the only thing that knows what period it actually applied.
+
+The second guard is in the types. `fetchBlockedEscalated` and `fetchMyReport` take
+`ReportScopeParams`:
+
+```ts
+export interface ReportScopeParams {
+  building_id?: string;
+}
+```
+
+Deliberately not `Omit<ReportPeriodParams, 'from' | 'to'>`: an optional property set to
+`undefined` still satisfies an `Omit`, so a caller could write `{ from: undefined }` and
+believe it meant something. A separate interface with one field cannot be handed a date
+at all, and a screen that tried would not compile.
+
+`building_id` survives on both kinds, because it narrows *which* tickets are in view
+rather than *when* they happened. That is a scope filter, not a time filter, and D9 kept
+it for the same reason.
+
+#### Why the chart colours are not the chip colours
+
+The obvious move for a "by status" chart is the palette the status chips already use —
+blue Open, purple In progress, orange Blocked, green Resolved, grey Closed. A reader has
+already learned it everywhere else in the app.
+
+It fails as a chart palette. Run against this application's own chart surface — the white
+of `background.paper`, not a tool's default grey — the five-colour set fails two checks:
+blocked-orange beside resolved-green measures ΔE 3.2 under protanopia against a floor of
+8, and closed-grey falls below the chroma floor entirely. The two failing colours are
+**adjacent in workflow order**, and workflow order is not something a chart may rearrange.
+
+The resolution is that a chip and a chart mark have different jobs. A chip is a small
+token beside its own word, so its colour never has to stand alone; a chart mark is a block
+of colour a reader may have to tell from the one next to it. So:
+
+- **One series, many nominal categories** (status, category group, building) → one colour
+  for every bar, and the axis label carries identity. This is the correct treatment
+  regardless: shading each bar by its own value would encode the bar's length twice and
+  spend the only free channel on information the length already shows.
+- **A genuinely ordered scale** (priority) → a single-hue ramp, light to dark, so
+  more-urgent-is-darker is information. Validated: monotone lightness, every adjacent step
+  gap above 0.06, hue spread 3°, lightest step 2.11:1 against white.
+- **Two series that must be told apart** (reported vs closed) → two categorical hues with
+  a legend. Validated: worst CVD ΔE 24.7, normal-vision ΔE 33.6, both well clear.
+
+All of it is in `chartPalette.ts` with the numbers written down, so the next person to
+touch a hex knows what the old one was holding up. `chartPalette.test.ts` guards the
+structure — the ramp stays monotone and one hue, the two slots stay far apart — without
+re-deriving OKLab, which would only be testing its own arithmetic.
+
+#### A calendar day is not an instant
+
+`summary.per_day[].day` is a bare `YYYY-MM-DD`. ECMAScript parses that as **UTC
+midnight**, and `toLocaleDateString` then renders it in the reader's zone, so in any zone
+west of Greenwich every label on the daily-flow axis came out a day early: the axis began
+"Sep 15" under a heading reading "Counted over Sep 16, 2026 – Sep 23, 2026". It looks like
+an off-by-one in the data and is one in the parse.
+
+`parseCalendarDay` in `display/time.ts` appends a time, so the same string parses as
+**local** midnight — which is what a row the server grouped by date means. A full ISO
+timestamp is passed through untouched: it carries a zone and must keep it.
+
+This was wrong against the demo database too, where the axis began "Aug 23" for a window
+starting Aug 24, and it went unnoticed there because the heading was far enough up the
+page to compare against. It was only obvious once the app was pointed back at the sparse
+dev database and a seven-day range put the two within a screen of each other.
+
+#### Why every bar's value is drawn outside the bar
+
+The library centres bar labels inside the bar by default. On the darkest step of the
+priority ramp the dark label was close to unreadable, and on a short bar it spilled past
+the end. Outside, every label sits on the card in ordinary secondary ink at the same
+contrast whatever colour the bar is.
+
+That change then hid the largest number on each chart: the longest bar ran flush to the
+plot's right edge and had nowhere to put its label, so Material UI dropped it. The value
+axis now carries 15% headroom past the largest value. Both were found by looking at a
+screenshot, not by a test.
+
+#### Why a period link and a current-state link are two functions
+
+`periodListLink` appends `created_from`/`created_to`; `currentListLink` cannot. One
+function with a flag would have been shorter and would have made the decision invisible at
+the call site — and the decision is the whole point. A live number opened through a
+windowed list shows fewer tickets than the tile claimed, which is D9's failure one layer
+up from the API.
+
+The property this buys is checkable end to end, and `dashboards.spec.ts` checks it: read
+the tile's number, click it, read the list's total, assert they are equal. That assertion
+needs to know neither number, which is why it survives a reseed.
+
+#### Why "Needs your attention" is hidden rather than emptied
+
+A heading that demands attention in order to report that none is needed is worse than no
+heading, and an empty one would push the recent tickets below the fold to do it. The
+section renders only when the resolved-tickets query comes back non-empty.
+
+Its buttons come from `allowed-transitions`, not from `status === 'RESOLVED'`. The
+shortcut would have saved one request per row and would have kept drawing "Still broken"
+past the reopen window, where the API refuses it. See D14.
+
+#### Why the admin dashboard is lazy-loaded
+
+It is the only screen importing `@mui/x-charts`, which is about a third of the bundle,
+and `RequireRole` already keeps every other persona off it. One `lazy()` and one
+`Suspense` took the main bundle from 406 kB gzipped to 301 kB, with a 106 kB chunk that
+only an admin ever fetches. The cut follows a line the permission model already draws.
+
+### 3. How the pieces connect
+
+**An admin opens the dashboard and clicks the "Still open" tile.**
+
+1. `App.tsx` matches `/` inside `RequireAuth` → `AppShell` → `features/home/HomePage.tsx`.
+2. `HomePage` reads `useAuth()`, sees `FACILITY_ADMIN`, and renders the lazy
+   `AdminDashboardPage` inside a `Suspense`. The browser fetches
+   `AdminDashboardPage-*.js` — the chart chunk — for the first time.
+3. `AdminDashboardPage` calls `useDashboardFilters()`. It reads `useSearchParams()`,
+   finds no `range`, defaults to `30d`, and resolves that against a `now` **frozen at
+   mount** into `periodParams = { from, to, building_id: undefined }` and
+   `scopeParams = { building_id: undefined }`.
+4. Six period hooks and one scope hook fire, keyed by those objects:
+   `GET /api/v1/reports/summary?from=…&to=…`, and
+   `GET /api/v1/reports/blocked-escalated` with no dates on it at all.
+5. Vite's dev proxy forwards `/api` to uvicorn unchanged → `routers/reports.py`.
+   `get_report_window` collects the three parameters for the six; `get_report_scope`
+   collects one for the other. `ADMIN_ONLY` guards all but `/reports/me`.
+6. → `services/reporting.py` → `repositories/reports.py`. `_window_clauses()` applies
+   `created_at BETWEEN …`; `_scope_clauses()` applies only the building. One SQL statement
+   per report, `COUNT(*) FILTER (…)` throughout.
+7. The responses land in the TanStack cache. `summary.data.window` — the period the server
+   *actually* used — flows into `PeriodScopeHeading`, which renders "Counted over 24 Aug
+   2026 – 23 Sep 2026", and into `scope`, the object `periodListLink` builds hrefs from.
+8. The "Still open" tile renders `by_status.OPEN` with
+   `to={periodListLink(scope, { statuses: ['OPEN'] })}` →
+   `/tickets?status=OPEN&created_from=…&created_to=…`.
+9. The click is a `RouterLink`. `App.tsx` matches `paths.allTickets` → `IncidentsPage`.
+10. `useIncidentFilters()` reads the query string, including the two new date filters, and
+    `toQuery()` turns them into `GET /incidents?status=OPEN&created_from=…&created_to=…`.
+11. `IncidentFilterBar` renders `AppliedFilterChips`, which draws a removable chip reading
+    "Reported between 24 Aug 2026 and 23 Sep 2026" — so the reader can see what arrived
+    with the link.
+12. `routers/incidents.py` applies the same `created_at` bounds the report applied, and the
+    table's footer reads "1–20 of 20" against a tile that said 20.
+
+**An employee confirms a ticket fixed from their home screen.**
+
+`EmployeeHomePage` → `useIncidents({ mine: 'reported', status: ['RESOLVED'] })` gives the
+rows → each row renders `InlineTransitionButtons`, which calls
+`useAllowedTransitions(id)` → `GET /incidents/{id}/allowed-transitions` → the API returns
+`Confirm fixed` and `Still broken` **if this caller may make those moves now** → the
+button is drawn from `action_label` → clicking opens `TransitionDialog`, built from
+`required_fields` → `POST /incidents/{id}/transitions` → `useTransition`'s `onSuccess`
+invalidates both `['incidents']` and `['reports']`, so the tile above the list and the
+list itself both re-fetch and the count drops as the row disappears.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Which reports may be given a date range | `api/reports.ts` — the two parameter types |
+| Which section of the dashboard a widget belongs in | `AdminDashboardPage.tsx` — between the two scope headings |
+| What a period heading says, and where its dates come from | `ScopeHeading.tsx` |
+| Whether a link carries dates | `listLinks.ts` — `periodListLink` vs `currentListLink` |
+| Every chart colour, and the checks behind it | `chartPalette.ts` |
+| Chart form: bars horizontal, one colour, labels outside | `BreakdownChart.tsx` |
+| Which filters survive in a ticket-list URL | `features/incidents/useIncidentFilters.ts` |
+| Which filters are shown as chips | `features/incidents/AppliedFilterChips.tsx` |
+| Whether a JUNIOR sees the unassigned queue | `EngineerHomePage.tsx` — `mayPickUp`; the API enforces it in `services/assignment.py` |
+| Whether "Needs your attention" renders | `EmployeeHomePage.tsx` — `needsAttention.length > 0` |
+| Which workflow buttons a list row shows | `InlineTransitionButtons.tsx` — from `allowed-transitions`, never from status |
+| How long a ticket may go unowned before it needs attention | `NeedsAttentionPanel.tsx` — `UNASSIGNED_HOURS` |
+| How many rows the attention panel shows | `NeedsAttentionPanel.tsx` — `ROW_CAP` |
+| How a duration in hours is worded | `display/time.ts` — `formatHours` |
+
+### 5. How to change it
+
+**To add a KPI tile.** Decide first whether its number is period-scoped or current-state;
+everything else follows. Then: (1) put a `<StatTile>` in the right section of
+`AdminDashboardPage.tsx`; (2) write a `caption` that says what it is scoped to — the prop
+is required for this reason; (3) give it a `to` built with `periodListLink` or
+`currentListLink` to match, or **no `to` at all** if no list matches the number; (4) add
+a case to `AdminDashboardPage.test.tsx` asserting the value and the link's shape.
+
+**To add a chart.** If it is one measure across categories, build a `BreakdownDatum[]` and
+hand it to `BreakdownChart` — you get the bars, the table twin, the links and the palette.
+Only reach for `@mui/x-charts` directly if the form is genuinely different, and load the
+data-visualisation guidance before choosing a colour.
+
+**To add a colour.** Put it in `chartPalette.ts`, never in `theme.ts`, and record the
+validator result beside it in a comment, as the existing entries do. **The validator is
+not in this repository** — it came from the data-visualisation guidance used while M7 was
+built, invoked as
+`node <that tool>/validate_palette.js "#hex,#hex" --mode light --surface "#ffffff"`. If
+you no longer have it, any contrast and colour-vision checker will do, but pass the
+**surface** colour explicitly: a contrast figure computed against the wrong background
+means nothing, and the cards these charts sit on are not white.
+
+**To add a filter to the ticket list.** Five places, in order: `IncidentQuery` in
+`api/incidents.ts`; `IncidentFilters` and the three blocks of `useIncidentFilters.ts`
+(read, write, `toQuery`); `activeCount`; then either a control in `IncidentFilterBar` or a
+chip in `AppliedFilterChips` — but not neither, or the filter becomes invisible.
+
+**To change what a persona's home screen counts.** The counts come from `/reports/me`,
+which is current state. If the number you want is about a period, it does not live there
+and widening that endpoint would undo D9 — see D14 §4 for the same problem and how it was
+answered.
+
+### 6. Gotchas
+
+- **A bare `YYYY-MM-DD` from the API is not a `new Date()` argument.** Use
+  `parseCalendarDay`. See the section above; this is the subtlest bug in the phase.
+- **`useDashboardFilters` freezes `now` at mount, and must.** A fresh `new Date()` on
+  every render puts a new instant in every query key; TanStack Query sees eight new
+  queries per pass, each answer triggers the next render, and the page refetches itself
+  for ever. The frozen value is never displayed — headings read their dates off the
+  response — so nothing goes stale on screen.
+- **The chart class names are `MuiBarChart-element` and `MuiBarChart-label`**, not
+  `MuiBarElement-root` / `MuiBarLabel-root`. The plausible-looking names match nothing, so
+  an `sx` block written against them fails silently: the bars had no pointer cursor and
+  the labels ignored their ink for an afternoon. A Playwright assertion that a bar exists
+  is what found it. If you style a chart, assert on the element you styled.
+- **The value axis needs headroom or the biggest label vanishes.** A bar that reaches the
+  plot edge has nowhere to draw its outside label and Material UI drops it silently, so
+  the largest number on the chart is the one that disappears.
+- **`AssignButton` takes ids, not a ticket.** The escalated half of
+  `/reports/blocked-escalated` returns `EscalatedTicket`, which is not an
+  `IncidentListItem` — a report row is not a ticket row. It has no category group, so the
+  assign dialog orders by load alone there rather than by specialty match.
+- **A `<button>` inside an `<a>` is invalid HTML and browsers resolve it by making the
+  button part of the link.** That is why home-screen rows are `HomeTicketRow` rather than
+  `IncidentCardList`: the latter wraps the whole card in a link, so "Confirm fixed" would
+  have navigated to the ticket instead of closing it.
+- **The unassigned-over-24h count is computed from one page of 50.** The API has no
+  "older than" filter, so the panel asks for open unowned tickets **oldest first** and cuts
+  at the age. Exact while fewer than fifty tickets are that stale; past that it
+  under-reports. Noted in `DEPLOYMENT-CHECKLIST.md`.
+- **`summary.escalated_total` and `blocked-escalated.escalated_total` will differ.** They
+  are supposed to. See D10 and the alert on the dashboard that says so to the reader.
+- **Playwright against `acme_demo` needs the doubled exclamation mark.**
+  `E2E_ADMIN_PASSWORD='AcmeLocalDev2026!!'` — the fixture's default is the dev database's
+  single-`!` password, and a wrong one fails with a loud message from `apiLogin` rather
+  than a confusing timeout.
+- **e2e assertions must not name a seeded number.** `seed_demo` is not idempotent (D12)
+  and every Playwright run adds tickets, so "Blocked is 21" would pass today and fail
+  after a demo. Assert shapes and agreements instead.
+
+### 7. Glossary
+
+**Period report / current-state report** — the two halves of this project's reporting API.
+A period report counts incidents *created between* two instants; a current-state report
+counts what is in a state *now* and takes no dates. The distinction is D9's, and every
+label on the admin dashboard exists to carry it to the reader.
+
+**Scope vs window** — what a report echoes back about its own filtering. A `window` is
+`{from, to, building_id}`; a `scope` is `{as_of, building_id}`. A response that carried a
+window it had not applied would let a dashboard label a chart with a period that was never
+used.
+
+**KPI tile** — a single headline number with a label and, here, a required caption naming
+its scope. The right form when the data is one value; a one-bar bar chart is the wrong one.
+
+**Drill-down** — clicking a chart segment to see the level beneath it. The category chart
+drills a group into its subcategories; the level lives in the URL (`?group_id=`) so a
+drilled view is a link somebody can send.
+
+**Table twin** — the same numbers a chart shows, as text, behind a toggle in the card's
+header. A chart puts its values behind a hover, and a hover is unavailable to a keyboard,
+a screen reader and a printout.
+
+**Categorical / sequential / ordinal palette** — three jobs colour can do. *Categorical*
+distinguishes entities that have no order (use distinct hues). *Sequential* encodes
+magnitude (one hue, light to dark). *Ordinal* encodes an ordered set of categories, which
+is what priority is — hence the one-hue ramp on the priority chart and one flat colour on
+every other.
+
+**CVD ΔE** — how far apart two colours are for a viewer with a colour-vision deficiency,
+measured in OKLab × 100 after simulating the deficiency. Eight is the floor these charts
+are held to; the status-chip palette scored 3.2 on one adjacent pair, which is why it is
+not the chart palette.
+
+**Lazy route / code splitting** — deferring a module's download until something needs it.
+`React.lazy()` plus a `Suspense` boundary makes the bundler emit a separate chunk; here
+the admin dashboard and its charting library are one such chunk.
+
+**`placeholderData: keepPrevious`** — a TanStack Query option that holds the last
+successful answer on screen while a new one is fetched, instead of returning to a pending
+state. It is what stops the dashboard from collapsing into spinners and jumping several
+hundred pixels every time the date range changes.
+
+**Auto-fit grid** — `repeat(auto-fit, minmax(190px, 1fr))` in CSS Grid: as many equal
+columns as fit above a minimum width, re-flowing on their own. Five tiles become five
+columns on a desktop and one on a phone without a breakpoint per count.
+
+---
+
+## Phase M8 — The README, the demo script, this guide's front section (deploy deferred)
+
+M8 in BUILD-PLAN section 15 is "final deploy, README, guide, demo script". No AWS
+credentials exist for this build, so the deploy half cannot run and is not attempted;
+[D1](DECISION-LOG.md) records that choice and `docs/DEPLOYMENT-CHECKLIST.md` holds every
+step that needs the cloud, with its command and its expected output. This phase is the
+other half: the documents a reviewer, and later you, will actually read.
+
+**Verified.** No application code changed — `git diff` for this phase touches `README.md`
+and four files under `docs/` and nothing else, so the 683 backend / 271 frontend / 25
+end-to-end figures carry over from M7 untouched and no suite was re-run for it. What *was*
+verified is every claim the new documents make: the route list was read out of the running
+OpenAPI document, the workflow table out of `app/workflow.py`, the test counts from the
+owner's own run, the demo logins out of `acme_demo` through the application's own
+`verify_password`, and every quoted dashboard figure by SQL against that database.
+
+**The one thing to understand before changing any of this**: the README is now a claim
+surface. Every sentence in it is checkable in one hop — a file path, a command, a number
+that can be re-queried. Section 6 lists what that cost and where it nearly went wrong.
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| [README.md](../README.md) | Rewritten end to end, 281 lines → ~615. The repository's front door for someone with fifteen minutes and no context. |
+| [docs/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
+| [docs/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
+| [docs/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
+| **[Part I](#part-i--the-system-as-a-whole) of this guide** | The front section BUILD-PLAN §15 asks for: system overview, the data model as a narrative, the complete rule-to-file map, one full end-to-end trace, a reading order, and the merged glossary. ~1,330 lines, written last and checked against the code rather than against the phase sections. |
+| This section | The M8 entry in this guide. |
+
+**Why Part I exists.** By M8 this guide was eight stitched-together phase logs: excellent
+on *why a decision was made that morning*, useless for *where is X now*. A reader wanting
+to know who may resolve a ticket had to know that incidents were M4, and then that M4's
+rule map was written before the workflow table was extended. Part I is the answer to the
+second question — one description of the system as it currently stands, with every path
+and symbol re-verified — and the phase sections keep the first, which is the thing no
+amount of reading the code recovers.
+
+**What verifying it found.** All 372 markdown links in the file (176 distinct targets)
+resolve, and of 818 backticked identifiers two in the **existing phase sections** were
+wrong, both in rule-map tables rather than in prose:
+`apply_visibility`, which has been two functions (`apply_incident_visibility` and
+`apply_note_visibility`) since M4, and a gotcha attributing the daily series' timezone
+dependency to `date_trunc` when the code casts with `::date`. Both are corrected in place
+and noted in section 6. The rest of the phase sections held up — which is the argument for
+writing each one while its phase was fresh rather than reconstructing it here.
+
+**What a second pass found in Part I itself**, and the reason it is worth recording: a
+first check asked "does this identifier exist in the source?" and everything passed. A
+second check asked the stricter question the map actually promises — "is it *defined* in
+the file beside it?" — and six rows failed, because an imported name is present in a file
+without being defined there. Two of the six (`LOCATION_SEPARATOR`, `DEFAULT_WINDOW_DAYS`)
+are constants that live in `schemas/` and are used in `routers/` and `services/`; one
+(`revoke_all_refresh_tokens`, twice) is a repository function called from three services;
+one was a Terraform claim that Part I and the M1 section disagreed about. All are fixed.
+
+**The lesson, if you ever re-verify this file:** grep for the name and grep for its
+*definition* are different questions, and a rule map is only worth having if it answers
+the second. The check that works is `def NAME` / `class NAME` / `^NAME =` in the file the
+row points at — not `NAME` anywhere in the tree.
+
+**What the README now contains**, in the order a reviewer meets it: what the application
+does and for whom; the architecture as two Mermaid diagrams (deployed, then local) plus a
+table of how the two differ; the code layout and the three rules that each live in exactly
+one file; the three roles and a permission matrix; the workflow as a state diagram and as
+the eleven rows that are actually in the code; getting started, every command re-checked
+against the repository as it stands; testing — commands, current numbers, what each level
+covers, and eight named gaps; the trade-offs a reviewer is most likely to ask about; the
+known limitations; and one section covering the fork's origin, licence and attribution.
+
+**What was removed**, and it is most of the old file: the "Coding Workshop" title, the
+brief reproduced verbatim, a Roadmap section pointing at the *upstream* repository's issue
+tracker, and a Feedback section asking the reader to star the repository. [D15](DECISION-LOG.md)
+sets out the test each section was put to.
+
+**What was kept and corrected.** `LICENSE` is untouched and unmodifiable by us — Apache-2.0,
+`Copyright 2023 Citigroup, Inc.` The old README said "This library is licensed under the
+MIT-0 License", which was never true of this repository. The new one states Apache-2.0 and
+says in a parenthesis that the earlier claim was wrong, because a licence statement that
+changes without explanation is exactly what a reviewer should distrust.
+
+### 2. Why it is shaped this way
+
+**The architecture is two diagrams, not one.** `docs/full-stack.md` ships a single diagram
+with both environments folded into one picture ("AWS CloudFront (Local: Port 3000)"), plus
+DocumentDB and a LocalStack S3 that this project does not use. Folding them together hides
+the only thing about this topology worth explaining: local and deployed are *the same
+shape on purpose*, the browser talks to one origin in both, and the path `/api/v1/...` is
+byte-identical in both because CloudFront forwards the prefix unstripped and Vite's proxy
+does not rewrite it. Two diagrams and a difference table say that; one merged diagram
+cannot. The scaffold's Mongo and LocalStack boxes are absent because this project ships
+neither, and a diagram that draws components that do not exist is worse than no diagram.
+
+**The workflow section was written from `app/workflow.py`, not from BUILD-PLAN section 6.**
+They agree on nine rows and differ on one: the plan has a single "RESOLVED → CLOSED,
+assignee or admin, close_reason = CLOSED_BY_ENGINEER or ADMIN_CLOSED" row, and the code
+splits it into two rows, one per actor, so the recorded reason is a property of the table
+rather than a conditional in the service. The README documents eleven rows because eleven
+is what ships. The general rule for this repository: **the plan is the intent, the code is
+the contract, and documentation describes the contract.**
+
+**The permission matrix is BUILD-PLAN section 5, spot-checked against the code rather than
+copied.** Four rows were re-derived from source before being written down: `can_edit_content`
+(reporter, OPEN *and* unassigned), `can_change_priority` (reporter, OPEN — deliberately
+wider, it survives assignment), `ESCALATABLE_STATUSES`, and the note `EDIT_WINDOW` of 15
+minutes. Two facts that the matrix alone would mislead a reader about are called out in
+prose beneath it: every signed-in user may read every ticket (`apply_incident_visibility`
+returns the query unchanged, on purpose), and internal notes are filtered in SQL rather
+than in a serializer.
+
+**Testing is documented as commands, numbers, coverage-by-description, and gaps — in that
+order.** The rubric asks for "test artifacts (commands, results, and known gaps)
+documented clearly", and the gaps are the part a project is tempted to soften. Eight are
+named, including the four admin screens with no component tests and the fact that nothing
+has run against AWS. [D16](DECISION-LOG.md) explains why no coverage percentage is
+published: no coverage tooling is installed, and a number generated on the last day, which
+nobody then acts on, is worth less than an accurate list of what is missing.
+
+**Trade-offs are summarised with links, not re-explained.** The decision log is 18 entries
+and ~800 lines; a README that absorbed it would be read by nobody. Six decisions are
+summarised at a paragraph each — chosen because a reviewer would ask about them — and the
+rest are a link. The reversals are in, prominently: D5 and D7 chose one elegant rule, both
+entries flagged in writing the case that would break it, the case broke it, and
+[D9](DECISION-LOG.md) reversed it; D10 and D11 then found the latent defect the original
+rule had been concealing. A decision revisited when evidence arrived is the strongest
+thing in the log, and burying it would be the wrong instinct.
+
+**The demo script is a script, not a description.** Exact accounts, exact clicks, and the
+sentences to say in blockquotes, because the failure mode of a demo document is a
+presenter reading prose and improvising the clicks. It carries times, a three-minute setup
+section that has to happen before anyone is watching, a troubleshooting table, and a list
+of things the presenter will see that the script does not mention (318 incidents rather
+than 300, deactivated `e2e.*` accounts on the Users screen) so that nothing is discovered
+live. [D17](DECISION-LOG.md) covers why the whole thing runs on `acme_demo`;
+[D18](DECISION-LOG.md) covers the three-cookie-jar problem and how the logins were checked.
+
+### 3. How the pieces connect
+
+There are five documents and they are not interchangeable. A reader arrives through one of
+three doors:
+
+**A grader, fifteen minutes, no context.** `README.md` top to bottom. It answers what this
+is, how it is built, who may do what, how to run it, what is tested, what was traded away
+and what is missing — and links out rather than expanding. Nothing else is required
+reading, which is the constraint the rewrite was designed against.
+
+**Someone about to demo it.** `docs/DEMO-SCRIPT.md` — setup section first, hours before;
+then the walkthrough. It links back to the README only for installation.
+
+**You, later, changing something.** This guide, at the phase that built the thing you are
+changing; then `docs/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
+scaffold constraints that are not negotiable; then `docs/DEPLOYMENT-CHECKLIST.md` before
+anything reaches AWS.
+
+Tracing one claim end to end, which is the property the rewrite was trying to buy — the
+README says *"the frontend renders action buttons exclusively from `allowed-transitions`"*:
+
+`README.md` (Architecture → the three rules table)
+→ `backend/v1/app/workflow.py` `TRANSITIONS`, eleven `Transition` rows
+→ `app/routers/incidents.py` `GET /incidents/{id}/allowed-transitions`
+→ `app/services/incident_service.py` resolves the caller's actors, drops guarded moves
+→ `frontend/src/api/incidents.ts` typed fetch
+→ `frontend/src/features/incidents/IncidentActions.tsx` L44–62, one `<Button>` per entry
+  whose text **is** `transition.action_label` from the API — no label is spelled in the
+  frontend
+→ `frontend/src/features/incidents/TransitionDialog.tsx`, which builds its fields from
+  `required_fields`
+→ `backend/v1/tests/unit/test_workflow.py`, which parametrises over `TRANSITIONS` itself.
+
+Every hop is a file you can open. That is what "verified" means in section 1: not that the
+sentence sounded right, but that the chain was walked.
+
+### 4. Where the rules live
+
+The documentation map — which file answers which question, so no question has two homes:
+
+| Question | Document |
+| --- | --- |
+| What is this, how do I run it, what is tested, what is missing? | `README.md` |
+| How do I show it to someone in five minutes? | `docs/DEMO-SCRIPT.md` |
+| How does the whole system fit together, and where does rule X live? | `docs/PROJECT-GUIDE.md` [Part I](#part-i--the-system-as-a-whole) |
+| What was built in each phase, and why is it shaped this way? | `docs/PROJECT-GUIDE.md` [Part II](#part-ii--the-build-phase-by-phase) |
+| Why was *this* call made, and what was rejected? | `docs/DECISION-LOG.md` (D1–D18) |
+| What does the scaffold force on us? | `CLAUDE.md` |
+| What was the plan, and what does each phase have to prove? | `docs/BUILD-PLAN.md` |
+| Where has the build got to? | `docs/BUILD-STATUS.md` |
+| What must be checked the first time credentials exist? | `docs/DEPLOYMENT-CHECKLIST.md` |
+| What did we change in the provided Terraform, and why? | `docs/INFRA-CHANGES.md` |
+| What is this project graded on? | `docs/full-stack.md` (the scaffold's, not ours) |
+
+Facts that live in more than one document, and which copy wins:
+
+| Fact | Authority | Who else states it |
+| --- | --- | --- |
+| The workflow transitions | `app/workflow.py` | README (all 11 rows), BUILD-PLAN §6 (10 rows, pre-split) |
+| Test counts | the suites themselves | README, BUILD-STATUS, this guide |
+| Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
+| Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
+| The API surface | the running OpenAPI document | README (45 paths / 65 operations), BUILD-PLAN §9 |
+| Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the eleven per-phase §4 maps it merges (M1–S1; M8's own §4 maps documents, not rules). Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
+
+### 5. How to change it
+
+**You added a workflow transition.** One row in `app/workflow.py`, one test — and then
+three documentation edits: the transition table in `README.md`, the state diagram above it
+if the new row adds an edge, and BUILD-PLAN §6 if you want the plan to stay honest. The
+frontend needs nothing.
+
+**You added or changed an endpoint.** The README quotes "45 paths / 65 operations"; re-derive
+it rather than adjusting it by hand:
+
+```sh
+cd backend/v1 && .venv/bin/python -c "
+from app.main import app
+spec = app.openapi()['paths']
+ops = sum(1 for p in spec for m in spec[p] if m in ('get','post','patch','put','delete'))
+print(len(spec), 'paths', ops, 'operations')"
+```
+
+(Note for FastAPI 0.141: `app.routes` holds lazy `_IncludedRouter` objects, so iterating it
+finds three routes and no endpoints. Read the OpenAPI document instead.)
+
+**The test numbers moved.** They appear in `README.md` (twice — the summary table at the
+top and the results table), `docs/BUILD-STATUS.md` and this guide's phase headers. Change
+all of them in one commit or they will disagree within a day.
+
+**You want the demo data fresh.** `seed_demo` will not top up or refresh:
+
+```sh
+sudo -u postgres dropdb acme_demo && sudo -u postgres createdb acme_demo
+cd backend/v1
+POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'migrate'}, None))"
+POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'seed_demo'}, None))"
+```
+
+Then re-check the figures the demo script quotes — they are all live counts.
+
+**You are about to demo.** Run the four pre-flight checks in DEMO-SCRIPT "Before you start
+→ Thirty seconds of dry run". The one that matters most is the date range: the seeded
+history is 90 days ending at seed time, so a dashboard opened weeks later shows an empty
+"Reported in this period" section under the default 30-day window, and looks broken when it
+is merely old.
+
+**Credentials arrived and you are deploying.** `docs/DEPLOYMENT-CHECKLIST.md` top to
+bottom, then update the README's status paragraph, the "Deployed (AWS) — designed and
+configured, not yet verified" heading, and known-limitation item 4. Those three are written
+to be changed together on that day.
+
+### 6. Gotchas
+
+- **`bcrypt.checkpw` against a stored hash returns False for the correct password.**
+  `app/security/passwords.py` reduces every password to a base64-encoded SHA-256 digest
+  before bcrypt — the `bcrypt_sha256` construction — so a naive check bypasses the pre-hash
+  and fails. The first pass at verifying the demo logins did exactly that and reported that
+  all six accounts had wrong passwords, which was nearly written into the demo script as a
+  warning. Always verify through `app.security.passwords.verify_password`.
+- **`acme_demo` is not only `seed_demo`'s output.** It holds 318 incidents, not 300, plus
+  deactivated `e2e.*` accounts, because Playwright was pointed at it during M7. Nothing is
+  broken; but any document quoting "300 incidents" is quoting the specification rather than
+  the database.
+- **Every "right now" figure in the demo script is perishable.** 21 blocked, 16 live
+  escalations, 26 unassigned over 24 hours — all true on 2026-09-23 and all drifting. The
+  script says to say "about twenty".
+- **Two Escalated numbers on one screen is correct and looks like a bug.** 16 live against
+  12 in the period. If a reader is going to be shown this page without narration, the alert
+  under the live tiles is the thing to point at.
+- **Mermaid renders on GitHub and in few other places.** VS Code needs an extension, and
+  plain `cat` shows a code fence. Both README diagrams are written to be readable as text
+  if they never render: node labels are full sentences, not `A`/`B`.
+- **README anchor links are generated from heading text.** `#known-gaps`, `#known-limitations`
+  and `#upstream-scaffold-and-licence` are linked from several places; renaming a heading
+  silently breaks them, and nothing in CI checks it.
+- **Line counts in commit messages age instantly.** This phase's say "281 → ~615"; treat
+  them as the shape of the change, not a measurement to re-verify.
+- **BUILD-PLAN's M8 also asks for a front section on this guide.** It is now
+  [Part I](#part-i--the-system-as-a-whole), written in a second M8 pass. Two things about
+  it are worth knowing. First, **it is the current account and the phase sections are
+  not** — where they disagree, Part I was checked against the code and a phase section was
+  checked against the morning it was written. Second, **its rule-to-file map is the merge
+  of all nine per-phase maps**, so a rule added in a future phase needs adding in two
+  places, or the map stops being the thing that answers "where is X" in one hop.
+  *(Written at M8, when there were nine. Two phases followed and both did it: S6's and
+  S1's rules are in Part I §3 as well as in their own §4 maps, so the merge is now of
+  **eleven**. The instruction held.)*
+- **Two claims in the phase sections were stale, and both were in tables.** Corrected in
+  place during that pass:
+  - the M6 rule map named `apply_visibility` in `app/services/visibility.py`. There has
+    never been a function of that name — M4 shipped it as two, `apply_incident_visibility`
+    and `apply_note_visibility`, because notes and incidents are filtered by different
+    rules. (`CLAUDE.md` still says `apply_visibility(query, user)`; that file is the
+    pre-implementation specification and is deliberately left as written.)
+  - the M7 gotcha about the daily series' timezone dependency attributed it to
+    `date_trunc`. The statement is true of `date_trunc` but the code does not use it —
+    `_counted_on_day` casts with `cast(column, Date)`, which is `::date`. The dependency,
+    and therefore the need for `app/db.py` to pin the session zone, is identical.
+
+  Both were wrong in a way that grep would not catch and reading the prose would not
+  notice: a table cell naming a symbol that does not exist. **If you add a row to a rule
+  map, open the file and confirm the symbol.** Nothing in CI checks these.
+
+### 7. Glossary
+
+**Mermaid** — a text-to-diagram syntax that GitHub renders natively inside a
+` ```mermaid ` code fence. `graph TD` draws boxes and arrows top-down;
+`stateDiagram-v2` draws a state machine. It is used here so the diagrams live in the same
+file as the prose and change in the same commit.
+
+**State diagram** — a picture of a state machine: the states a thing can be in, and the
+labelled transitions between them. The README's is generated by hand from `TRANSITIONS`
+and shows the nine distinct edges between five statuses; several edges carry more than one
+table row, because who you are changes what the move is called and what it records.
+
+**Apache License 2.0** — the licence this repository is under, inherited from the Citi
+scaffold. Permissive: you may use, modify and redistribute, including commercially. Its
+§4 obligations are the ones that matter to a fork — keep the licence text with the work,
+state that you changed files, and preserve attribution notices. Hence `LICENSE` untouched
+and a section of the README that says plainly which parts are the scaffold's.
+
+**MIT-0** — "MIT No Attribution", a permissive licence that drops even the attribution
+requirement. The old README claimed it; the repository has never been under it. The
+distinction matters precisely because MIT-0 would remove the obligation Apache-2.0 keeps.
+
+**DCO (Developer Certificate of Origin)** — a per-commit assertion that you wrote the
+contribution or have the right to submit it, made by signing a commit (`git commit -s`,
+which appends a `Signed-off-by:` line). Citi requires it on contributions to their
+repositories; `DCO.md` holds the text being agreed to.
+
+**Coverage instrumentation** — a tool that records which lines or branches ran during a
+test suite (`pytest-cov` for Python, `@vitest/coverage-v8` for the frontend). Neither is
+installed here, which is why the README names no percentage; see [D16](DECISION-LOG.md).
+
+**Cookie jar** — the store of cookies a browser profile keeps. Two windows of one profile
+share one jar, which is why three personas signed in at once need three *profiles* rather
+than three windows: the refresh cookie is scoped to `localhost:3000` and the second sign-in
+overwrites the first.
+
+**Pre-flight check** — a thing you verify before an audience exists, because its failure
+mode during a demo is indistinguishable from the application being broken. The demo
+script's are: health endpoint, a non-empty unassigned queue, and a dashboard whose date
+range still covers the seeded history.
+
+---
+
+## Phase S6 — Hardening: accessibility, error boundaries, 404, lockout, JSON logs
+
+*The first stretch phase, and it goes first for a reason worth stating.
+`docs/full-stack.md` lists "Accessibility (a11y) and inclusivity" as an Expected
+Capability of the frontend, and nothing in M1–M8 had addressed it. An unmet
+stated criterion outranks a new feature, however much better the new feature
+would demo — that is [D2](DECISION-LOG.md#d2--which-stretch-features-in-what-order).*
+
+### 1. What was built
+
+**Backend.**
+
+| File | Responsibility |
+| --- | --- |
+| `app/observability.py` | **New.** The JSON log formatter, the logging configuration, the request-logging middleware, and the small amount of per-request state the middleware needs. |
+| `app/models/login_attempt.py` | **New.** One row per email address: the current run of consecutive failed sign-ins. |
+| `app/repositories/login_attempts.py` | **New.** The four queries that counter needs — read, atomic increment, clear, purge. |
+| `alembic/versions/0004_login_attempts.py` | **New.** Creates `login_attempts`. Head moves `0003 → 0004`. |
+| `app/services/auth_service.py` | `authenticate` gains a lockout check before the user lookup, a failure counter on all three refusal paths, and an injectable `now`. |
+| `app/errors.py` | `RateLimitError` → 429, plus a `Retry-After` header derived from the body's `retry_after_seconds`. |
+| `app/main.py` | Calls `configure_logging()` and mounts the application's first middleware. |
+| `app/migrations.py`, `alembic/env.py` | Stop Alembic's `fileConfig` silencing the application's loggers and replacing its log handler. |
+| `app/config.py` | One new setting, `log_level`. |
+| `function.py` | Loses its lone `setLevel` line; `create_app()` owns logging now. |
+| `app/security/dependencies.py` | Binds the verified user id to the request's log context. The dead `current_user_id` helper is gone. |
+| `app/models/category.py` | The vestigial `if TYPE_CHECKING: pass` is gone. |
+| `app/services/incident_service.py` | `clear_escalation` refuses with the right status for the right reason. |
+
+**Frontend.**
+
+| File | Responsibility |
+| --- | --- |
+| `components/ErrorBoundary.tsx` | **New.** Catches a render error so one component failing does not blank the application. |
+| `components/staleBundle.ts` | **New.** Recognises a failed lazy chunk, which is the one render error where "try again" is useless. |
+| `components/SkipLink.tsx` | **New.** The first focusable element on every screen. |
+| `features/placeholder/NotFoundPage.tsx` | **New.** What an unknown URL says, replacing a silent redirect. |
+| `e2e/accessibility.spec.ts` | **New.** axe-core over every screen at both widths, plus the keyboard tests axe cannot replace. |
+| `layout/AppShell.tsx` | Real `<nav>` landmarks, `aria-current="page"`, the skip link, a route-level error boundary, and a bottom bar of links rather than buttons. |
+| `theme.ts` | A visible focus ring, a contrast-checked status palette, readable disabled helper text, `prefers-reduced-motion`. |
+| `features/incidents/WorkflowStepper.tsx` | Each step's state in words; `aria-current="step"`. |
+| `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `role="img"` with a written summary; a table twin for the flow chart, which had none. |
+| `components/QueryState.tsx`, `FullPageProgress.tsx` | Loading states are polite live regions rather than silent spinners. |
+| `layout/DrawerAccountSection.tsx`, `features/facilities/FacilitiesPage.tsx`, `features/incidents/AssignDialog.tsx` | `<li>` wrappers, so a `<ul>` contains list items. |
+| `features/incidents/ReportSection.tsx` | The step number is readable. |
+| `App.tsx`, `main.tsx` | The catch-all route renders a page; the root boundary wraps everything. |
+
+### 2. Why it is shaped this way
+
+**The lockout counter is a table because nothing else is shared.** A Lambda
+container shares no memory with the next one: an in-process counter resets on
+every cold start and disagrees between two warm ones, so ten attempts spread
+over three containers would be three counts of three or four and the lockout
+would never fire. The database is the only shared state in this architecture.
+The alternatives considered and rejected were a column on `users` (impossible —
+the interesting case is an address with no user row) and an in-memory LRU
+(wrong for the reason above). See [D19](DECISION-LOG.md#d19--where-a-failed-login-counter-can-live-when-there-is-no-shared-memory).
+
+**One row per email, not per attempt.** A row *is* the window. A
+credential-stuffing run against one address costs one row rather than one per
+guess, and the whole rule — "ten in fifteen minutes" — is answerable from that
+row without an aggregate.
+
+**No foreign key to `users`, deliberately.** Attempts against an address nobody
+holds are counted identically to attempts against a real colleague's, and the
+check runs *before* the lookup. A lockout that only applied to real accounts
+would answer "does this person have an account here?", which is precisely the
+question M2's single generic 401 exists to refuse. `test_migration.py` asserts
+the absence of that key, because it is load-bearing rather than an omission.
+
+**A fixed window, not a sliding one.** Expiry is measured from the *first*
+failure in the run. With a sliding window an attacker could hold a colleague's
+address locked indefinitely by failing one login every fourteen minutes.
+
+**Self-cleaning, because there is nowhere to put a sweeper.** Aurora runs at
+`min_capacity = 0` and sleeps; a scheduled job would wake the cluster on a timer
+to delete rows nobody reads. Every failed login purges the expired windows
+instead, and the failure path is the only path that inserts.
+
+**A middleware, in a codebase that argues against middleware.** M2's argument —
+in `security/dependencies.py`'s docstring and in §1.3 above — is about a
+middleware that *decides* something by pattern-matching URLs. This one decides
+nothing, cannot refuse a request, and has to wrap requests that fail before any
+dependency runs, which is every 404 and every 500. That is the thing a
+`Depends` cannot be. It is pure ASGI rather than `BaseHTTPMiddleware` because
+the latter runs the application in a separate task, which breaks the context
+variable carrying the request id. [D20](DECISION-LOG.md#d20--the-first-middleware-in-a-codebase-that-argues-against-middleware).
+
+**Standard library logging, no new dependency.** `requirements.txt` is what
+Terraform installs into the Lambda package, so `structlog` or
+`aws-lambda-powertools` would have grown the deployed artefact. A
+`logging.Formatter` subclass and `json.dumps` cost nothing and are about forty
+lines.
+
+**Nothing secret is logged structurally, not by filtering.** The middleware
+never reads a header, a cookie, a body or the query string, so there is no code
+path on which a password or a token could reach a line. The query string is
+excluded because it carries what somebody typed into the search box.
+`SENSITIVE_KEY_PARTS` is a second belt for fields application code passes
+itself.
+
+**Two error boundaries, because there are two failures.** One inside `AppShell`
+around `<Outlet />`, keyed on the pathname, where the navigation survives and
+"try again" is a real offer. One in `main.tsx` outside the router, for the shell
+and the providers themselves, where nothing is left to navigate with and the
+only honest offer is a reload.
+
+**A 404 page rather than a redirect**, following `NotPermittedPage`, which had
+already made the argument in M6: a URL somebody pasted to you should tell you
+why it will not open. [D21](DECISION-LOG.md#d21--an-unknown-url-gets-a-page-not-a-redirect).
+
+**axe-core *and* a keyboard pass.** axe decides what a machine can decide — a
+missing name, a failing contrast ratio, a skipped heading level. It cannot see
+whether the focus ring is visible or whether Escape returns focus, and it went
+green over an application with no focus indicator at all.
+[D23](DECISION-LOG.md#d23--what-tabbing-found-that-axe-did-not).
+
+### 3. How the pieces connect
+
+**A failed sign-in, end to end.**
+
+```
+POST /api/v1/auth/login   {"email": "…", "password": "…"}
+  └─ RequestLogMiddleware.__call__            (observability.py)
+     ├─ scope["acme.log_context"] = {}        ← the dict the user id comes back in
+     ├─ _resolve_request_id                   ← x-request-id | Lambda id | uuid4
+     ├─ _request_id.set(...)                  ← every log line below joins this request
+     └─ await self.app(...)
+        └─ routers/auth.py::login
+           └─ auth_service.authenticate
+              ├─ utc_now()                                 (clock.py)
+              ├─ _require_not_locked_out
+              │    └─ login_attempts.get  → SELECT … WHERE email = :email
+              │       └─ 10 failures inside the window? → RateLimitError(429)
+              ├─ users.get_by_email  → None
+              ├─ verify_password(password, _DUMMY_HASH)    ← equal timing
+              ├─ _record_failed_login
+              │    ├─ login_attempts.purge_expired         ← the table tidies itself
+              │    ├─ login_attempts.record_failure        ← INSERT … ON CONFLICT
+              │    └─ session.commit()                     ← the request is about to fail
+              └─ raise AuthenticationError(401)
+           ← never reaches session.commit()
+     ← api_error_handler → {"detail": …, "code": …}   (+ Retry-After on a 429)
+  └─ _log_request  →  {"event":"request","status":401,"duration_ms":412.9, …}
+```
+
+The two things worth following there are the **commit inside the service** —
+without it the count is rolled back by the failure it is counting — and the
+**`Retry-After` header**, which `api_error_handler` derives from
+`extra["retry_after_seconds"]` rather than taking separately, so the header and
+the body cannot disagree.
+
+**How the request log learns who is asking.** The request id travels *down* on a
+`ContextVar`: a worker thread inherits a copy of the context, so every service's
+own `logger.info` joins the request that caused it without knowing requests
+exist. The user id has to travel *up*, from `get_authenticated_user` to the
+middleware, and a `ContextVar.set` inside a worker thread is invisible to its
+caller — so it goes in a plain dict on the ASGI scope, shared by reference.
+Those two directions needing two mechanisms is the single least obvious thing in
+`observability.py`.
+
+**A render error on a screen.**
+
+```
+IncidentDetailPage throws
+  └─ ErrorBoundary (AppShell, key={location.pathname})
+     ├─ getDerivedStateFromError → { error }
+     ├─ componentDidCatch → console.error with the component stack
+     └─ fallback: role="alert", the message, "Try again"
+          ├─ chunk-load error? → "Reload the page" instead
+          └─ navigate away → new key → new boundary instance → fallback gone
+   the sidebar, the app bar and the bottom bar never unmounted
+```
+
+**A keyboard user arriving on a screen.**
+
+```
+Tab 1   → "Skip to main content"   (fixed, off-screen until focused)
+Enter   → focus moves into <main id="main-content" tabIndex={-1}>
+  …or…
+Tab 2…n → brand link, search, account menu   (header landmark, white focus ring)
+        → report button, nav links           (nav "Main", aria-current on one)
+        → the screen's own controls          (3px primary focus ring)
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How many failures, in how long | `app/services/auth_service.py` | `MAX_FAILED_LOGIN_ATTEMPTS`, `LOGIN_LOCKOUT_WINDOW` |
+| Whether this address is locked right now | `app/services/auth_service.py` | `_require_not_locked_out` |
+| That a failure is counted and committed | `app/services/auth_service.py` | `_record_failed_login` |
+| That the count is exact under concurrency | `app/repositories/login_attempts.py` | `record_failure` — one `INSERT … ON CONFLICT DO UPDATE` |
+| That the window is fixed rather than sliding | `app/repositories/login_attempts.py` | `record_failure`'s `window_is_live` |
+| That the table cleans itself | `app/repositories/login_attempts.py` | `purge_expired` |
+| That an address with no account is counted too | `app/models/login_attempt.py` | the absence of a `ForeignKey` — asserted in `tests/integration/test_migration.py` |
+| What a 429 looks like | `app/errors.py` | `RateLimitError`, and `Retry-After` in `api_error_handler` |
+| What a log line contains | `app/observability.py` | `JsonFormatter.format` |
+| Which fields are never printed | `app/observability.py` | `SENSITIVE_KEY_PARTS`, `redact` |
+| Which request id is used | `app/observability.py` | `_resolve_request_id`, `SAFE_REQUEST_ID` |
+| What one request's line says | `app/observability.py` | `_log_request`, `_level_for` |
+| How a path becomes an aggregatable route | `app/observability.py` | `_route_template` |
+| Where logging is turned on | `app/observability.py` | `configure_logging`, called by `app/main.py::create_app` |
+| That a migration does not silence the container | `app/migrations.py` | `upgrade_to_head`; plus `disable_existing_loggers=False` in `alembic/env.py` |
+| Who may clear an escalation (authoritative) | `app/services/incident_service.py` | `may_clear_escalation` |
+| What an unknown client URL does | `frontend/src/App.tsx` | the `path="*"` route → `NotFoundPage` |
+| What a render error shows, and how to recover | `frontend/src/components/ErrorBoundary.tsx` | `ErrorBoundary`, `recovery` |
+| Which render errors need a reload rather than a retry | `frontend/src/components/staleBundle.ts` | `isChunkLoadError` |
+| Where the focus ring is defined | `frontend/src/theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| Which status colours were contrast-checked, and against what | `frontend/src/theme.ts` | `palette.info` / `warning` / `success` / `error`, with both ratios in the comment |
+| What the skip link points at | `frontend/src/layout/AppShell.tsx` | `MAIN_CONTENT_ID` |
+| Which navigation surface is which, to a screen reader | `frontend/src/layout/AppShell.tsx` | the two `<nav>` labels, "Main" and "Quick links" |
+| What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each |
+| What a stepper step says about its state | `features/incidents/WorkflowStepper.tsx` | `describeStepState` |
+| Which accessibility rules the build enforces | `frontend/e2e/accessibility.spec.ts` | `WCAG_AA` |
+| What "the screen has finished loading" means to an e2e test | `frontend/e2e/fixtures/test.ts` | `expectNothingLoading` |
+
+### 5. How to change it
+
+**To change the lockout threshold or window** — `MAX_FAILED_LOGIN_ATTEMPTS` and
+`LOGIN_LOCKOUT_WINDOW` in `app/services/auth_service.py`. Nothing else knows
+them; `tests/integration/test_login_lockout.py` reads them rather than repeating
+the numbers, so the suite follows the change.
+
+**To add a field to every log line** — add it in `JsonFormatter.format` if it is
+true of every record, or pass it as `extra={...}` at the call site if it is not.
+Anything in `extra` is promoted to a top-level JSON field automatically. Check
+its name does not contain a `SENSITIVE_KEY_PARTS` substring, or it will be
+redacted — which is the point, but it is confusing if unexpected.
+
+**To log something from a service** — `logger.info("what happened", extra={...})`.
+It will carry the request id without doing anything: the context variable is
+already set. Do not put an email address, a token or a password in either.
+
+**To add a screen to the accessibility suite** — one `test` in
+`e2e/accessibility.spec.ts` calling `expectNoViolations(page)`. Wait for the
+screen with `expectNothingLoading(page)` before scanning, not for a heading: a
+scan that runs while the screen is still a `QueryState` spinner passes without
+ever having looked at the markup the test names ([D24](DECISION-LOG.md#d24--a-heading-is-not-a-signal-that-the-data-arrived)).
+If the screen has a state that only appears after an interaction — a dialog, a
+drawer, a revealed section — scan that state too, and scope the assertion with
+the `include` argument so a failure elsewhere is not reported against it.
+
+**To add a chart** — give it `role="img"` and an `aria-label` from a `summarise`
+function, and a table twin behind the same `ToggleButtonGroup` the other two
+use. A chart without a table twin makes §1's claim about this dashboard false
+again.
+
+**To add a colour to the palette** — compute its contrast against **both**
+`#ffffff` and `background.default` (`#f4f6fa`), because an outlined chip sits on
+both, and record both numbers in the comment. 4.5:1 is the bar for anything
+below 24px.
+
+**To make a list of links or buttons** — wrap each in `<ListItem disablePadding>`.
+A `ListItemButton` renders an `<a>` or a `<button>`, and neither is a legal
+child of the `<ul>` that `List` produces.
+
+### 6. Gotchas
+
+**`logger.log(..., exc_info=False)` stores the literal `False`, not `None`.**
+`formatException(False)` raises inside the handler, `logging` swallows that to
+stderr, and the line is lost entirely. `JsonFormatter` tests truthiness for
+exactly this reason, and there is a regression test named after it.
+
+**Alembic silences the application when it runs in-process.** `alembic/env.py`
+calls `logging.config.fileConfig`, whose default `disable_existing_loggers=True`
+sets `disabled = True` on every logger that already exists — and it replaces the
+root handler with alembic's plain-text one. Both outlive the invocation, so one
+`migrate` ops action would have ended structured logging for the life of a warm
+container. Two countermeasures: `disable_existing_loggers=False` in `env.py`, and
+`upgrade_to_head` reapplying `configure_logging` after alembic has finished.
+`test_logging_survives_a_migration_run_in_the_same_process` is the guard.
+
+**`scope["route"].path` is not the whole path.** This FastAPI version mounts an
+included router as a child rather than flattening its routes, so that attribute
+reads `/auth/login` where the request was `/api/v1/auth/login` — and it would
+silently start reading the full path again if a future version flattened them.
+`_route_template` rebuilds the template by substituting `path_params` back into
+`scope["path"]`, which is correct in both.
+
+**A `ContextVar` set inside a FastAPI endpoint is invisible to the middleware
+above it.** Synchronous endpoints and dependencies run in a worker thread, and a
+thread gets a *copy* of the context. Values set before the call propagate down;
+values set during it do not propagate up. That is why the request id is a
+context variable and the user id is a dict on the scope.
+
+**A service that commits is normally a bug here, and twice it is not.**
+`rotate_session` and `_record_failed_login` both write a security response that
+has to outlive the request that failed. Everything else flushes and lets the
+router commit.
+
+**Material UI's `ButtonBase` sets `outline: 0`, and it beats a bare
+`:focus-visible`.** Same specificity, and Emotion injects component styles after
+`CssBaseline`'s. A focus ring written as `:focus-visible` is present in the
+theme and absent on every control. `body :focus-visible` wins.
+
+**Contrast has to be checked against two backgrounds.** A filled chip is white
+on the colour and an outlined chip is the colour on the surface — and the
+surface is `#ffffff` on a card and `#f4f6fa` on the page. `#0277bd` passes
+against one and fails against the other, which is how the first fix for this
+shipped and had to be fixed again.
+
+**`test.skip` inside a Playwright test still counts as a test.** The suite's
+totals read "N passed, M skipped" where the skips are the phone-only cases the
+desktop project declines, and vice versa. That is deliberate, not a gap.
+
+**Clicking the body does not reset the tab order.** Clicking a non-focusable
+element sets the browser's *sequential focus navigation starting point*, so the
+next Tab resumes from there rather than from the top of the document — which
+skips the skip link and makes a working application look broken. And `goto`
+resolves while the app is still showing "Restoring your session…", which has
+nothing focusable in it at all.
+
+**The 404 page returns HTTP 200.** CloudFront rewrites extension-less paths to
+`/index.html` so deep links survive a reload, so the server cannot know the path
+is not a route. Only the router can, and by then the response has been sent.
+
+**A heading is not a signal that the data arrived.** `PageHeader`,
+`PeriodScopeHeading` and `CurrentScopeHeading` are all mounted outside every
+`QueryState`, and the two scope headings render literal fallbacks ("the
+selected period", "now") until the server says otherwise — so on the admin
+dashboard **nine** busy loading regions are still on the page at the moment
+`getByRole('heading', { name: /Reported/ })` becomes visible, and `.first()`
+matches the static heading rather than the chart's. An e2e test that waits on
+a heading and then reads query-driven content is racing the network. Wait with
+`expectNothingLoading` from `e2e/fixtures/test.ts` instead. This cost the suite
+one run in three on one test before it was found.
+[D24](DECISION-LOG.md#d24--a-heading-is-not-a-signal-that-the-data-arrived).
+
+**`expect(await locator.count())` is not a Playwright assertion.** Awaiting the
+value first turns a web-first assertion, which retries until the `expect`
+timeout, into a plain comparison that gets exactly one chance. The suite's
+fifteen-second timeout does not apply to it. That single character of
+difference is what made D24's race a hard failure rather than a slow pass, and
+it is invisible on the page: write `await expect(locator).not.toHaveCount(0)`.
+The same trap applies to `isVisible()`, `count()`, `innerText()` and
+`boundingBox()` — none of them retry.
+
+**Not every `role="status"` is a loading state.** `@mui/x-charts` gives every
+chart a permanently-empty `role="status"` live region inside
+`MuiChartsSurface-root` to announce what a tooltip is pointing at, so five of
+them sit on the admin dashboard for as long as the charts do and a plain
+`getByRole('status')` count never reaches zero there. Our own two waiting
+states — `QueryState`'s pending branch and `FullPageProgress` — are the ones
+that also set `aria-busy`, which is why `expectNothingLoading` selects on it.
+
+**An axe scan that runs too early passes.** This is the quiet half of D24: a
+scan of a screen that is still a `QueryState` spinner finds nothing wrong,
+because a spinner is accessible. The test goes green while never having looked
+at the markup its own title names — the facilities tree, the ticket list, the
+charts. Seven scans in this file were in that state. A green axe run is only
+worth what the page under it was.
+
+**A negative assertion passes on an empty page — so it has to earn its
+emptiness.** `expect(x).not.toBeVisible()` and `expect(x).toHaveCount(0)` are
+true of a screen that has rendered nothing at all, which makes them the one
+assertion shape that can report a rule is enforced without ever consulting it.
+`assignment.spec.ts` asserted that a JUNIOR sees no "Pick up" or "Assign…"
+after waiting only on the ticket's own query, while both buttons live in
+`ActionsCard` behind a *second* `QueryState` on `allowed-transitions`
+(`IncidentDetailPage.tsx:206`). Delete the permission rule and the test still
+passed; the spinner satisfied it just as well as the rule did. The fix is the
+rule for every absence in this suite: **first wait for the thing that would
+show it** — here `getByRole('heading', { name: 'Actions' })`, which
+`ActionsCard` renders whatever it holds — and only then assert it is not there.
+`expectNothingLoading` belongs beside that wait, not instead of it: on its own
+it is also satisfied by a page that has not begun loading. When a screen draws
+one of two branches, waiting for the other branch's content does the same job —
+which is why the junior-home test in `dashboards.spec.ts` is sound and this one
+was not. [D25](DECISION-LOG.md#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it).
+
+### 7. Glossary
+
+**axe-core** — the accessibility rule engine behind most automated checkers. It
+runs inside the page and reports violations of rules it can decide
+mechanically. `@axe-core/playwright` is the adapter that runs it against a
+Playwright page.
+
+**WCAG 2.1 AA** — the Web Content Accessibility Guidelines at their middle
+conformance level: the usual legal and procurement bar. Expressed to axe as the
+tag filters `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`.
+
+**Contrast ratio** — how different two colours are in luminance, from 1:1
+(identical) to 21:1 (black on white). AA wants 4.5:1 for text under 24px and
+3:1 above it.
+
+**Landmark** — an element that names a region of the page for navigation:
+`<header>`, `<nav>`, `<main>`, `<footer>`, or an ARIA `role` equivalent. A
+screen reader can jump between them, which is why two of them must not share a
+name.
+
+**Skip link** — a link, first in the tab order, that jumps past the navigation
+to the content. Visually hidden until focused. Its target needs `tabIndex={-1}`
+or the browser scrolls there without moving focus.
+
+**`:focus-visible`** — the CSS pseudo-class matching focus the browser thinks
+should be shown: keyboard yes, mouse click no. It is what makes a focus ring
+possible without one appearing on every click.
+
+**`aria-current="page"` / `"step"`** — marks the one item in a set that is the
+current one. The only non-visual signal that a navigation item is the page you
+are on, or that a stepper step is where the ticket is.
+
+**Live region** — an element a screen reader watches and announces when its
+contents change, without moving focus. `aria-live="polite"` waits for a pause;
+`role="alert"` interrupts. Loading states are polite; failures are alerts.
+
+**Visually hidden** — off-screen but present in the accessibility tree
+(`@mui/utils`' `visuallyHidden`). Not `display: none`, which removes it from
+both.
+
+**`role="img"` on a chart** — makes the SVG subtree presentational and replaces
+several hundred unlabelled nodes with one `aria-label`.
+
+**Table twin** — this project's name for the text view beside a chart, giving
+the same numbers to a keyboard, a screen reader or a printout.
+
+**Error boundary** — a React class component that catches an error thrown while
+rendering its subtree and renders a fallback instead of unmounting the whole
+tree. There is no hook equivalent. It does not catch errors in event handlers,
+timers or rejected promises.
+
+**Chunk-load error** — the failure of a lazily imported bundle. It happens when
+a tab is left open across a deploy and asks for a filename that no longer
+exists; it is the one render error where retrying is useless, because only a
+reload fetches the new `index.html`.
+
+**Sequential focus navigation starting point** — where the browser resumes Tab
+from after a click. Clicking a non-focusable element sets it, which is why
+clicking the body before a keyboard test does not "reset" anything.
+
+**ASGI middleware (pure)** — a callable wrapping `(scope, receive, send)` and
+awaiting the app below it in the *same* task, so context variables propagate.
+Starlette's `BaseHTTPMiddleware` runs the app in a separate task, which breaks
+that and buffers the response.
+
+**`INSERT … ON CONFLICT DO UPDATE` (upsert)** — PostgreSQL's atomic
+insert-or-update. In the `SET` clause a bare column name means the *existing*
+row's value and `excluded.x` means the row that was being inserted. It takes a
+row lock for the statement, which is what makes the failure count exact when two
+requests race.
+
+**Fixed vs sliding window** — a fixed window expires a set time after it opened;
+a sliding one expires a set time after the last event in it. A sliding lockout
+can be held open indefinitely by an attacker, which is why this one is fixed.
+
+**`Retry-After`** — the standard HTTP response header saying how long to wait
+before retrying. Here it is derived from the body's `retry_after_seconds` so the
+two cannot disagree.
+
+**Structured logging** — writing each log line as one JSON object rather than
+prose, so a log service can index and query the fields. CloudWatch Logs Insights
+can filter on `status` and `duration_ms` only because of this.
+
+**Correlation id / request id** — one value shared by every line written while
+handling one request, so they can be pulled back together afterwards. Ours
+prefers the caller's `x-request-id`, then the Lambda request id — which is also
+what CloudWatch files the invocation under, so the two views join.
+
+## Phase S1 — In-app notifications
+
+*The brief asks "How effectively are employees being informed about ticket
+progress and outcomes?" It was the one business question in the requirements
+with a report measuring it — `/api/v1/reports/communication`, reading about 70%
+informed on the demo data — and nothing acting on it. It is also the only place
+`docs/full-stack.md`'s "Deliver real-time capabilities" gets touched. S1 builds
+the thing the report was measuring the absence of.*
+
+### 1. What was built
+
+**Backend.**
+
+| File | Responsibility |
+| --- | --- |
+| `app/notifications.py` | **New, and the point of the phase.** Who gets notified, when, and in what words — four `NotificationRule` rows as data. No database access at all. |
+| `app/models/notification.py` | **New.** One row per thing one person was told. |
+| `app/repositories/notifications.py` | **New.** Six statements, every one of them keyed on a `user_id` taken as an argument. |
+| `app/services/notification_service.py` | **New.** Turns a plan into rows, and answers the four questions the inbox screen asks. Deliberately thin. |
+| `app/routers/notifications.py` | **New.** `GET /notifications`, `GET /notifications/unread-count`, `POST /notifications/{id}/read`, `POST /notifications/read-all`. |
+| `app/schemas/notification.py` | **New.** `NotificationRead`, `UnreadCount`, `MarkAllReadResult`. |
+| `alembic/versions/0005_notifications.py` | **New.** The `notification_type` enum, the `notifications` table, its two indexes. Head moves `0004 → 0005`. |
+| `alembic/versions/0001_initial_schema.py` | Stops iterating `ENUM_TYPES` to decide which types to create. See [D28](DECISION-LOG.md#d28--revision-0001-was-not-frozen-and-0005-is-what-proved-it). |
+| `app/models/enums.py` | `NotificationType`, and a registry comment that is now true. |
+| `app/services/incident_service.py` | Two one-line calls: `STATUS_CHANGED` in `perform_transition`, `ESCALATION_CLEARED` in `clear_escalation`. Neither names a recipient. |
+| `app/services/assignment.py` | One line for `ASSIGNED` — and `incident.assignee = assignee` rather than only the id, which is a bug fixed before it shipped (§6). |
+| `app/services/notes.py` | One line for `NOTE_ADDED`, called for **every** note including INTERNAL ones. The rule is what refuses. |
+| `app/repositories/reports.py` | `notification_read_rate()`, the read-rate aggregate. |
+| `app/services/reporting.py`, `app/schemas/report.py` | Three new fields on `CommunicationReport`. |
+| `tests/factories.py` | `make_notification`, for report tests that need chosen timestamps. |
+
+**Frontend.**
+
+| File | Responsibility |
+| --- | --- |
+| `api/notifications.ts` | **New.** Four calls. `fetchUnreadCount` is deliberately separate from the list. |
+| `features/notifications/hooks.ts` | **New.** The polling query, the infinite inbox feed, the two mutations. |
+| `features/notifications/NotificationBell.tsx` | **New.** The app-bar bell, its badge, and its accessible name. |
+| `features/notifications/NotificationsPage.tsx` | **New.** The inbox: list, filter, mark one, mark all, load more. |
+| `features/dashboard/CommunicationPanel.tsx` | **New.** The brief's seventh business question, on screen for the first time: informed %, median time to first update, notification read rate, reopen rate. |
+| `features/dashboard/AdminDashboardPage.tsx` | Mounts that panel, and finally calls `useCommunicationReport` — a hook that had no caller since M7. |
+| `layout/AppShell.tsx` | The bell, at both widths. On a phone it takes the one slot beside the menu button. |
+| `api/types.ts`, `api/queryKeys.ts`, `routes.ts`, `App.tsx` | The new type, the new cache keys, `/notifications`, the route. |
+
+**Demo data.** `app/seed/demo.py` builds the demo world's inbox by replaying
+each ticket's planned history through `app/notifications.py` — the same rules
+the application uses, not a second implementation. A 60-incident world produces
+304 notifications across all four kinds and a 61.4% read rate, which is what the
+dashboard tile shows. `read_at` is invented, which is legitimate here and is
+exactly what a backfill of a *real* database could not honestly do (D31).
+
+**Tests.** `tests/unit/test_notifications.py` (45, no database),
+`tests/integration/test_notifications.py` (31), five more in
+`tests/integration/test_reports.py`, six more in
+`tests/integration/test_seed_demo.py`; `NotificationBell.test.tsx` (6),
+`NotificationsPage.test.tsx` (14) and two more in `AdminDashboardPage.test.tsx`;
+`e2e/notifications.spec.ts` (4 per viewport) and one more scan in
+`e2e/accessibility.spec.ts`.
+
+### 2. Why it is shaped this way
+
+**The rule table exists because four services would otherwise each carry a copy
+of it.** Notifications are created on a status change, an assignment, a public
+staff note and a cleared escalation — four events, four services, and the
+obvious implementation is four blocks of "and also tell the reporter, and the
+assignee unless they did it". That is four copies of "not the actor", four
+copies of "the reporter, and the assignee if there is one", and four wordings
+of the same sentence, with the fifth trigger somebody adds later being the one
+that forgets. So the audience is data, in `app/notifications.py`, exactly as
+the workflow is data in `app/workflow.py` — and the four call sites each name a
+`NotificationType` and never a recipient. The full argument, including why the
+audience list and the wording are one field rather than two, is
+[D26](DECISION-LOG.md#d26--who-gets-notified-is-a-rule-so-where-does-it-live).
+
+**The rule module touches no database, and that is load-bearing.** `plan()`
+takes an incident, a user and possibly a note, and returns a list of
+`PlannedNotification`. Every "does not get notified" case — your own action, an
+internal note, a stranger, an unassigned ticket — is therefore checkable in a
+unit test with no session, no fixtures and no transaction. Forty-five of them
+run in 0.13 seconds. The negative cases are the ones that matter here, because
+a notification that should not have been sent is visible only to the person who
+received it.
+
+**The message is stored, not rendered on read.** "Your ticket INC-000123 is now
+Resolved" was true when it was sent; re-rendering it from the ticket's current
+state would make an inbox that silently rewrites its own history. The row's
+`incident_status`, which *is* read live, is where the reader sees where the
+ticket stands now. And a NOTE_ADDED message names the author but never quotes
+the note — a note can be edited for fifteen minutes and deleted by an admin for
+ever, and a quotation in a table no visibility filter touches would outlive
+both. [D27](DECISION-LOG.md#d27--a-notification-stores-its-sentence-and-never-quotes-a-note).
+
+**Polling was not a choice.** A Lambda Function URL cannot hold a connection
+open, so websockets and SSE were never on the table. What was decided is what
+the poll costs: one integer, from an index-only scan over an index whose two
+columns are exactly the WHERE clause, and an interval that stops while the tab
+is unfocused — because Aurora runs at `min_capacity = 0` and a poll that never
+stopped is a standing instruction to keep the database awake.
+[D30](DECISION-LOG.md#d30--thirty-seconds-one-integer-and-a-database-that-sleeps).
+
+**The read rate is a second query, not a widened one.** `/reports/communication`
+now has two halves that count different rows — incidents created in the period,
+and notifications sent in it — and both obey the same rule: the window filters
+the `created_at` of the thing being counted. Folding them into one statement
+would need an outer join whose grain is neither.
+[D29](DECISION-LOG.md#d29--the-read-rate-whose-inbox-and-which-created_at-the-window-filters).
+
+**And the report is finally rendered.** `useCommunicationReport` had no caller
+from M7 until now, which is precisely why the brief's seventh business question
+counted as "measured and unacted on". `CommunicationPanel` puts all four
+figures on the admin dashboard. None of the tiles links anywhere, per
+`StatTile`'s own rule — a median and a percentage have no list behind them —
+and a `null` percentage renders as an em dash, never as `0%`, because the API
+distinguishes "nothing was resolved" from "nobody was informed" and the last
+mile is a poor place to lose that.
+
+**Rejected: a `notifications` projection built inside `repository.add_event`.**
+Every trigger except the note already writes an `incident_event`, so a hook
+there would have caught three of the four for free. Rejected on two counts. It
+puts policy in the repository layer, which is the one layer in this codebase
+that is allowed to know nothing; and notes write no event at all
+(`EventType.NOTE_ADDED` exists and only `seed/demo.py` has ever written one),
+so the fourth trigger would have been a special case beside a general
+mechanism — the worst of both.
+
+**Rejected: a `type TEXT` column, which is what BUILD-PLAN §3 sketched.** Three
+things have to agree on those four words: the rule table, the icon the inbox
+draws, and the report that could count them by kind. `TEXT` admits a typo that
+the database stores happily. The cost is real and is written into the
+migration: a fifth kind of notification needs `ALTER TYPE ... ADD VALUE` in a
+new revision, where `TEXT` would have needed nothing.
+
+### 3. How the pieces connect
+
+**An engineer resolves a ticket, and the reporter's badge turns red.**
+
+1. The engineer clicks **Resolve** in `TransitionDialog`, which was drawn from
+   `GET /incidents/{id}/allowed-transitions` and knows nothing about the
+   workflow itself.
+2. `api/incidents.ts` `performTransition` → Vite dev proxy → `POST
+   /api/v1/incidents/{id}/transitions`.
+3. `routers/incidents.py` validates the body into a `TransitionRequest`,
+   resolves the caller through `security/dependencies.get_current_user`, and
+   calls `services/incident_service.perform_transition`.
+4. That service asks `app/workflow.py` whether the move is legal for this
+   caller's actors, applies the effects, and writes an `incident_events` row.
+5. Then one line: `notification_service.record(session,
+   NotificationType.STATUS_CHANGED, incident=incident, actor=user)`.
+6. `services/notification_service.record` builds a `NotificationContext` and
+   calls `notifications.plan()`.
+7. `app/notifications.py` looks up the `STATUS_CHANGED` row, walks
+   `AUDIENCE_PRECEDENCE`, resolves REPORTER to `incident.reporter_id` and
+   ASSIGNEE to `incident.assignee_id`, **drops the engineer because they are
+   the actor**, and renders the reporter's sentence from the incident's
+   now-current status. One `PlannedNotification` comes back.
+8. `repositories/notifications.add` puts one row in the session.
+9. The **router** calls `session.commit()` — the same commit as the status
+   change and the event. There is no path that notifies somebody about a
+   status the database never reached.
+10. Within thirty seconds the reporter's tab polls `GET
+    /api/v1/notifications/unread-count`. `repositories/notifications.
+    unread_count` runs one scalar query, answered from
+    `ix_notifications_user_id_read_at` without touching the table.
+11. `useUnreadCount` updates, `NotificationBell` re-renders: the badge shows a
+    number and the link's accessible name becomes "Notifications, 1 unread".
+12. The reporter clicks it. `NotificationsPage` mounts,
+    `useNotificationFeed` fetches `GET /api/v1/notifications`, and
+    `inbox_query` joins each row to its incident (`load_only` on three columns,
+    because `incidents` carries a `tsvector` this screen has no use for).
+13. Clicking the row fires `markNotificationRead` and navigates to the ticket.
+    The mutation invalidates the whole `['notifications']` prefix, so the badge
+    and the list cannot disagree about how many are unread.
+
+**An engineer writes an INTERNAL note, and nothing happens.** Steps 1–5 are the
+same through `services/notes.add_note`, which calls `record` for *every* note.
+At step 7 the `NOTE_ADDED` row's `applies` precondition —
+`_is_a_public_staff_note` — returns False, `plan()` returns `[]`, and no row is
+written. The refusal is in the rule table, beside the audience it is
+protecting, rather than in an `if` at the call site.
+
+### 4. Where the rules live
+
+| Rule | Where |
+| --- | --- |
+| Which events produce a notification at all | `app/models/enums.py` `NotificationType` — four members, deliberately fewer than `EventType` |
+| Who hears about each, and in what words | `app/notifications.py` `RULES` — four `NotificationRule` rows |
+| Nobody is notified about their own action | `app/notifications.py` `plan()`, one line, applied to every rule |
+| One person, one notification | `app/notifications.py` `plan()` + `AUDIENCE_PRECEDENCE` |
+| An INTERNAL note notifies nobody | `app/notifications.py` `_is_a_public_staff_note`, the `applies` on the NOTE_ADDED row |
+| Which capacity a user holds on a ticket | `app/notifications.py` `user_in_capacity` — **not** `workflow.resolve_actors`, and §6 says why |
+| The wording of a status inside a stored message | `app/notifications.py` `STATUS_WORDING` — the only place the backend renders a domain value into English |
+| One inbox is unreachable from another session | `app/repositories/notifications.py` — every statement takes `user_id` as an argument |
+| Somebody else's notification is 404, not 403 | `app/services/notification_service.py` `mark_read` — and `app/repositories/notifications.py` `get_for_user`, which puts the `user_id` in the lookup rather than in a check afterwards |
+| How often the badge polls | `frontend/src/features/notifications/hooks.ts` `UNREAD_POLL_INTERVAL_MS` |
+| What the read rate counts | `app/repositories/reports.py` `notification_read_rate` |
+
+### 5. How to change it
+
+**To add a kind of notification** (five steps, in this order):
+
+1. Add a member to `NotificationType` in `app/models/enums.py`.
+2. Write a new Alembic revision containing
+   `op.execute("ALTER TYPE notification_type ADD VALUE 'YOUR_KIND'")`. This is
+   the cost of the enum over `TEXT`; it cannot be folded into 0005, which is
+   frozen.
+3. Add one `NotificationRule` row to `RULES` in `app/notifications.py`, with a
+   named message function per audience.
+4. Add one line at the service that performs the action, naming the type and
+   the actor. If it needs a condition — "only when the note is public" — that
+   condition is an `applies` on the row, not an `if` at the call site.
+5. Add an icon to `NOTIFICATION_ICONS` in `NotificationsPage.tsx`. It is a
+   `Record<NotificationType, …>`, so the compiler will already have told you —
+   which is the same trick `display/labels.ts` uses and the reason neither can
+   quietly render a blank.
+
+`tests/unit/test_notifications.py` parametrises over `RULES`, so steps 1 and 3
+without a test are impossible — several parametrised tests will fail until the
+row exists and is coherent. Then write the "does" and the "does not".
+
+**To change who hears about an existing kind**: edit that row's `messages`
+mapping. Nothing else. Adding `Audience.ASSIGNEE` to `NOTE_ADDED` is one line
+plus its sentence.
+
+**To change the polling interval**: `UNREAD_POLL_INTERVAL_MS`. `staleTime` is
+derived from it.
+
+**To add a field to the inbox row**: `NotificationRead` in
+`app/schemas/notification.py`, `_to_read` in `app/routers/notifications.py`, the
+`AppNotification` interface in `api/notifications.ts`, and `NotificationRow` in
+`NotificationsPage.tsx`. If it comes from the incident, add it to the
+`load_only` list in `repositories/notifications.inbox_query` or it will not be
+loaded.
+
+### 6. Gotchas
+
+**`incident.assignee = assignee`, not just `assignee_id`.** This is the bug
+that nearly shipped. `assignment.assign` set `incident.assignee_id` and
+flushed; the reporter's notification reads `incident.assignee.full_name`. On a
+**re**-assignment the relationship may already be loaded with the *previous*
+engineer, and SQLAlchemy does not expire it just because the foreign key
+changed — so the reporter would have been told their ticket went to the person
+who had just lost it. Setting the relationship sets the id too.
+`test_reassigning_names_the_new_engineer_not_the_previous_one` is the
+regression test; it assigns to Sam, then to Ada, and asserts the reporter was
+told "Ada Other".
+
+**A mutation's `onSuccess` does not run if its component has gone.** Opening a
+notification follows a link to the ticket, which unmounts `NotificationsPage`
+— and TanStack Query deliberately does not call a mutation's callbacks once the
+component that started it has unmounted. The invalidation that clears the badge
+therefore never ran, and the bell kept its old number until the next poll, up
+to thirty seconds after the user watched the row they had just read disappear.
+`useMarkNotificationRead` now decrements the cached count in `onMutate`, which
+fires synchronously before the navigation and so always runs; the invalidation
+stays as the correction for when it does. This is the one application bug the
+end-to-end tests found that the component tests could not — jsdom has no
+navigation to unmount anything. [D32](DECISION-LOG.md#d32--the-badge-that-stayed-behind-because-the-page-it-belonged-to-had-gone).
+
+**`user_in_capacity` is not `workflow.resolve_actors`, on purpose.** The
+workflow makes a LEAD engineer an ASSIGNEE on *any* ticket, because leads cover
+for their team when acting. Reusing that here would have sent every lead a
+notification about every ticket in the estate. Two functions answering "what is
+this user to this ticket?" differently looks like duplication and is a
+decision; `test_a_lead_is_not_an_audience_on_every_ticket` records it.
+
+**The rule module is called for every note, including INTERNAL ones.** If you
+are reading `services/notes.add_note` and wondering where the visibility check
+is: it is not there, deliberately. Moving it to the call site would be the
+first step back towards four services each carrying a copy of the policy, and
+D9–D11 are three entries about this class of leak arriving through a door
+nobody was watching.
+
+**A migration that reads a live application constant is not frozen.** Revision
+0001 created its enum types by iterating `ENUM_TYPES`, so adding
+`notification_type` to that registry changed what an already-applied revision
+did — and only on databases created *after* the change, which is exactly the
+test database and nothing else. See [D28](DECISION-LOG.md#d28--revision-0001-was-not-frozen-and-0005-is-what-proved-it).
+
+**`openInbox` in the e2e spec navigates rather than clicking the bell.** A test
+already on `/notifications` that clicks a link to `/notifications` navigates
+nowhere: React Router keeps the component mounted, nothing refetches, and the
+assertions that follow read a screen from a minute ago. Two tests failed
+exactly that way before the helper was changed to `page.goto`. That the bell is
+a working link is asserted once, separately.
+
+**The e2e accounts are worker-scoped**, so an inbox accumulates across the
+tests in a file. A test that asserts "two unread" is otherwise asserting about
+everything that ran before it; `clearInbox` is what turns that back into a
+statement about the test's own actions.
+
+**`listitem` counts more than you think.** The inbox puts `<Divider
+component="li" />` between rows for correct list markup, so
+`getByRole('listitem')` counts dividers too. Counts in the e2e spec are taken
+from the bell's accessible name, which is one number.
+
+**The badge is `aria-hidden`.** A badge is a number in a coloured circle; to a
+screen reader it is otherwise a stray "3" inside a control called
+"Notifications". The count lives in the control's accessible name instead —
+and `NotificationBell.test.tsx` asserts both halves, because removing either
+one looks fine in a screenshot.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Audience** | The capacity in which a user hears about one ticket — REPORTER or ASSIGNEE. Not a role: the same person is a different audience on a different ticket. The sibling of `workflow.Actor`, with one fewer member. |
+| **Index-only scan** | A PostgreSQL plan that answers a query from an index without reading the table at all, possible when every column the query needs is in the index. `EXPLAIN` confirms it with `Heap Fetches: 0`; the unread count is one. |
+| **Partial vs. composite index** | `ix_notifications_user_id_read_at` is composite — two columns in order. A *partial* index (`WHERE read_at IS NULL`) would be smaller still, and was not used: the composite one also serves "all of this user's read rows", and two indexes are already the write cost this table carries. |
+| **`clock_timestamp()`** | PostgreSQL's real wall clock, as opposed to `now()`, which is the time the *transaction* began. Rows written in one request all share `now()`; ordering them then falls back to comparing UUIDs. Revision 0003 moved `incident_events` and `incident_notes` to it, and `notifications` was created with it. |
+| **`refetchInterval` / `refetchIntervalInBackground`** | TanStack Query's polling. The interval does not run while the browser window is unfocused unless the second option is set, which is what stops an abandoned tab keeping Aurora awake. |
+| **`useInfiniteQuery`** | TanStack Query's accumulating fetch: pages are appended rather than replacing each other, which is what "Load more" needs. The same hook the ticket lists use on a phone. |
+| **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders the control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor. |
+| **Read rate** | Of the notifications sent to reporters inside the reporting period, the share that have been read at any time since. Depressed by recent activity, inherently — a notification sent an hour ago has had an hour. |

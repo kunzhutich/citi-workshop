@@ -60,6 +60,11 @@ export const apiClient = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
+  // FastAPI reads a repeatable query parameter as `status=OPEN&status=CLOSED`.
+  // Axios would otherwise send `status[]=OPEN&status[]=CLOSED`, which arrives
+  // as an unknown parameter and is silently ignored — a filter that appears to
+  // do nothing. `indexes: null` is the setting that repeats the bare key.
+  paramsSerializer: { indexes: null },
 });
 
 /** Return the current access token, or null when signed out. */

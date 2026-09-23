@@ -100,6 +100,30 @@ class ConflictError(ApiError):
         super().__init__(status.HTTP_409_CONFLICT, detail, code=code, field=field, extra=extra)
 
 
+class RateLimitError(ApiError):
+    """The caller has made too many attempts too quickly. Renders as 429.
+
+    Carries ``retry_after_seconds`` in ``extra``, which the handler also
+    renders as the standard ``Retry-After`` header — derived from the body
+    rather than passed separately, so the two cannot disagree.
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        code: str | None = None,
+        retry_after_seconds: int,
+    ) -> None:
+        """Create a 429 error saying how long the caller should wait."""
+        super().__init__(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail,
+            code=code,
+            extra={"retry_after_seconds": retry_after_seconds},
+        )
+
+
 async def api_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """Render an `ApiError` as the documented JSON error body."""
     del request
@@ -115,5 +139,11 @@ async def api_error_handler(request: Request, exc: Exception) -> JSONResponse:
         body["field"] = exc.field
     body.update(exc.extra)
 
-    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
-    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+    headers: dict[str, str] = {}
+    if exc.status_code == 401:
+        headers["WWW-Authenticate"] = "Bearer"
+    retry_after = exc.extra.get("retry_after_seconds")
+    if isinstance(retry_after, int):
+        headers["Retry-After"] = str(retry_after)
+
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers or None)

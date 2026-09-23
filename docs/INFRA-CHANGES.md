@@ -8,6 +8,16 @@
 >
 > If any of these is not permitted, say so and it will be reverted — items 2, 3
 > and 4 have workarounds; item 1 does not.
+>
+> **All four changes are now applied and deployed** (2026-09-23), and all four are
+> confirmed working in the cloud. Item 4 was proposed rather than applied when
+> this file was first written; it was approved and has since been enabled — see
+> the item and [`DECISION-LOG.md` D37](DECISION-LOG.md).
+>
+> **The deployment also revealed something about the IAM boundary itself** that
+> the organisers may want to know, and that is not a change this project made.
+> It is at the end of this file, under "What the deployment revealed about the
+> IAM boundary".
 
 Baseline for every diff is upstream commit `4b54f45`.
 
@@ -17,6 +27,12 @@ infra/lambda.tf     | 15 ++++++------
 infra/locals.tf     | 19 +++++++++++-
 3 files changed, 70 insertions(+), 14 deletions(-)
 ```
+
+⚠️ **This diffstat predates item 4.** It was taken before `compress = true` was
+approved and applied, so it undercounts `infra/cloudfront.tf` by the lines that
+change added. The set of *files* is still correct — three — and the change is a
+handful of lines. Regenerate with `git diff 4b54f45 -- infra/ --stat` before
+submitting this file.
 
 Untouched: `main.tf`, `provider.tf`, `variable.tf`, `data.tf`, `output.tf`,
 `s3.tf`, `rds.tf`, `documentdb.tf`, `eks.tf`, `policy.tftpl`, `helm/`.
@@ -76,13 +92,32 @@ refuses to start in a deployed environment if the secret is missing or weak
 (the IAM boundary permits `secretsmanager:*` on scoped ARNs) but would need a
 VPC endpoint, since the Lambdas have no outbound internet route.
 
-## 4. `cloudfront.tf` — enable `compress` *(proposed, not yet applied)*
+## 4. `cloudfront.tf` — enable `compress` *(approved and applied)*
 
-Setting `compress = true` on the cache behaviours.
+`compress = true` on the default behaviour and on the API behaviours.
 
-**Why.** CloudFront defaults compression to off. The frontend bundle is 790 kB
-raw versus 251 kB gzipped, paid on every cold visit — and it grows in the
-remaining phases, which add a data grid and a charting library.
+**Status.** Proposed here, **approved by the workshop organisers**, applied, and
+deployed on 2026-09-23. Recorded as [D37](DECISION-LOG.md).
+
+**Measured on the deployed distribution:**
+
+| | |
+| --- | --- |
+| JS bundle, raw | **994 kB** |
+| JS bundle, over the wire | **309 kB** gzipped |
+| Saving per cold visit | **~685 kB — a 3.2× reduction** |
+
+JSON API responses compress well too, which is why `compress` is set on the API
+behaviours and not only on the default one.
+
+**Why.** CloudFront defaults compression to off, and the penalty is paid on every
+cold visit.
+
+⚠️ **Three bundle figures appear across this repository**, because the bundle grew
+between each measurement: **790 kB** (when this item was written, at M5), **976
+kB** (D37, written before the final build), and **994 kB** — the current figure,
+measured against the live distribution. Where they disagree, **994 kB raw / 309
+kB gzipped** is the one to trust.
 
 The self-hosted fonts shipped alongside it are *not* part of this case: woff2
 is already compressed and CloudFront will not shrink it further. The saving is
@@ -90,10 +125,71 @@ on the JavaScript, CSS and HTML only.
 
 **Without it.** The app works, just slower on first load.
 
-**Assessment.** Optional. Held back pending this review precisely because it is
-a performance improvement rather than a correctness fix.
+**Assessment.** Optional, and approved. It was held back pending review precisely
+because it is a performance improvement rather than a correctness fix; it is
+additive and reversible, and reverting it costs one line.
 
 ---
+
+## What the deployment revealed about the IAM boundary
+
+**This is an observation, not a complaint, and not an accusation.** Nothing here
+was exploited, nothing outside this participant's own resources was touched, and
+no other participant's infrastructure was read, listed or modified. It is
+recorded because it is the kind of thing that is easier to hear from a
+participant than to discover later.
+
+**The finding.** `infra/policy.tftpl` scopes `s3`, `lambda`, `rds`, `sqs`,
+`logs`, `iam` and `secretsmanager` to ARNs matching `coding-workshop*<participant
+id>*` — tight, and exactly right. But its **first statement** grants a list of
+actions against `"Resource": "*"`, and `"cloudfront:*"` is in that list:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "acm:List*",
+    "cloudfront:*",
+    ...
+  ],
+  "Resource": "*"
+}
+```
+
+So CloudFront is **unrestricted** — every verb, every distribution — rather than
+scoped to the participant's own app id the way the other services are.
+
+**Why it matters here.** All participants share one AWS account —
+`332991882156`. CloudFront distributions are account-level resources. So every
+participant currently holds **technical write access to every other
+participant's distribution** in that account: update, disable or delete. A
+`cloudfront:DeleteDistribution` against the wrong id is an ordinary typo, not an
+attack, and it would take somebody else's application down with no obvious way
+for them to tell what happened.
+
+**Why it is probably this way.** CloudFront's ARN scoping is genuinely awkward —
+distribution ids are generated at create time, so a policy cannot name an ARN
+that does not exist yet, and the scaffold needs participants to be able to create
+one. An unrestricted grant is the path of least resistance and it is a
+*defensible* choice for a sandbox. We are not claiming it is wrong; we are
+claiming it is worth being a deliberate decision rather than an accident.
+
+**Options, roughly in order of effort:**
+
+1. **Leave it, and say so.** Document that the boundary is deliberately open on
+   CloudFront and that participants are trusted not to touch each other's
+   distributions. Costs nothing and removes the surprise.
+2. **Restrict the destructive verbs.** Keep `cloudfront:CreateDistribution` and
+   the read verbs unrestricted, and deny `DeleteDistribution`,
+   `UpdateDistribution` and `DeleteCachePolicy` except on resources carrying the
+   participant's tag. `aws:ResourceTag` conditions work on CloudFront and would
+   catch the typo case, which is the realistic one.
+3. **One account per participant.** The clean answer, and much the most work.
+
+**What this project did about it.** Nothing, beyond scoping every command we ran
+by our own participant id (`1bd1dfd7`) rather than listing distributions and
+acting on what came back. That is a convention, not a control — which is the
+point.
 
 ## Anything else we should know about?
 
@@ -102,6 +198,12 @@ Two scaffold behaviours were left alone deliberately, but are worth confirming:
 - **`backend/*/requirements.txt` auto-discovery.** Every matching directory
   becomes a Lambda with a public, unauthenticated Function URL. This project
   ships exactly one service (`backend/v1/`) to keep one public surface.
-- **Aurora `min_capacity = 0`.** The cluster sleeps when idle and takes roughly
-  15 seconds to wake, so the first request after a quiet period may time out.
-  Left as provided; worth knowing before a live demo.
+- **Aurora `min_capacity = 0`.** The cluster sleeps when idle. **Confirmed on the
+  deployed stack, 2026-09-23**, and it is slightly worse than "may time out": the
+  first `{"action":"migrate"}` invoke failed with `server closed the connection
+  unexpectedly` and succeeded on an immediate retry, and six seconds after a cold
+  sign-in the home screen still showed loading spinners. Left as provided.
+  Raising it to 0.5 would remove the wait but bills continuously on a shared
+  sandbox account, so we declined; the mitigation for a demonstration is to load
+  the page a minute beforehand. Worth knowing before a live demo — it makes a
+  working application look broken.

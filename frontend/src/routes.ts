@@ -13,8 +13,16 @@ export const paths = {
   /** The persona home page. Which screen that is depends on the role. */
   home: '/',
   report: '/report',
+  notifications: '/notifications',
   myTickets: '/tickets/mine',
   allTickets: '/tickets',
+  /**
+   * One ticket's detail page.
+   *
+   * A sibling of `/tickets/mine`, which is safe because React Router ranks a
+   * static segment above a dynamic one — `/tickets/mine` never matches this.
+   */
+  incidentDetail: '/tickets/:incidentId',
 
   myQueue: '/queue',
   unassigned: '/unassigned',
@@ -27,3 +35,8 @@ export const paths = {
 } as const;
 
 export type AppPath = (typeof paths)[keyof typeof paths];
+
+/** The URL of one ticket's detail page. */
+export function incidentPath(incidentId: string): string {
+  return `/tickets/${incidentId}`;
+}

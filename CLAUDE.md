@@ -66,6 +66,10 @@ Migrations and seeding run via direct Lambda invoke (see below), never from a la
 Aurora Serverless v2 has `min_capacity = 0.0`: it sleeps when idle and takes ~15s to
 wake. A hung first request after a quiet period is usually this, not a bug.
 
+**Confirmed deployed, and it can be worse than a hang:** the first `migrate` invoke failed
+with `server closed the connection unexpectedly` and succeeded on an immediate retry.
+**Retry once before investigating.** Before a demo, load the page about a minute ahead.
+
 ### Migrations and seeding
 `function.py` dispatches on a non-HTTP event shape so we need no second Lambda and no
 public endpoint:
@@ -81,7 +85,10 @@ def handler(event, context):
 ```
 
 Run with `aws lambda invoke --payload '{"action":"migrate"}'`. This is IAM-protected.
-Refuse `seed_demo` when the environment is production.
+Refuse `seed_demo` when the environment is production — **unless** the payload carries
+`"i_understand_this_publishes_demo_credentials": true`, the deliberate opt-in that lets a
+sandbox demo have real data. It was used once on the deployed database, which therefore
+holds 37 accounts sharing a password published in this repo. There is no `unseed_demo`.
 
 ## Local development
 
@@ -120,9 +127,17 @@ So: do not author a VPC, subnets, an API Gateway, or a Terraform state bucket. T
 security group are pre-provisioned and adopted by `infra/data.tf`; the state bucket already
 exists. Deployment is Lambda Function URLs behind CloudFront — there is no API Gateway.
 
+**Deployed and live (2026-09-23): <https://d3jo3ezb7ss05m.cloudfront.net>** — Lambda
+`coding-workshop-v1-1bd1dfd7`, Aurora `coding-workshop-rds-1bd1dfd7`, account `332991882156`
+(shared with other participants), `us-east-2`. The IAM boundary permits everything `infra/`
+asks for. See `docs/BUILD-STATUS.md` § "The AWS deployment" and `docs/DEPLOYMENT-CHECKLIST.md`,
+where 30 of 68 cloud checks now carry an observation and 36 do not.
+
 Permitted `infra/` edits, kept minimal and commented:
 - `lambda.tf` — raise `memory_size` from 128 (too small for FastAPI + SQLAlchemy) to 512.
 - `locals.tf` — add app env vars (e.g. `JWT_SECRET`) to `local.env_vars`.
+- `cloudfront.tf` — `compress = true` on the default and API behaviours. Approved by the
+  workshop organisers and applied; 994 kB raw against 309 kB gzipped. See D37.
 - `cloudfront.tf` — **must fix**: the distribution-wide `custom_error_response` maps 404 →
   200 `/index.html`, which would rewrite our API's 404s and directly violate the rubric.
   Replace it with a CloudFront Function on the default behavior that rewrites

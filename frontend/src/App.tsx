@@ -1,13 +1,22 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 
 import { RequireAuth } from './auth/RequireAuth';
 import { RequireRole } from './auth/RequireRole';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
 import { RegisterPage } from './features/auth/RegisterPage';
+import { CategoriesPage } from './features/categories/CategoriesPage';
+import { EngineersPage } from './features/engineers/EngineersPage';
+import { TeamPage } from './features/engineers/TeamPage';
+import { FacilitiesPage } from './features/facilities/FacilitiesPage';
 import { HomePage } from './features/home/HomePage';
-import { ComingSoonPage } from './features/placeholder/ComingSoonPage';
+import { IncidentDetailPage } from './features/incidents/IncidentDetailPage';
+import { IncidentsPage } from './features/incidents/IncidentsPage';
+import { ReportPage } from './features/incidents/ReportPage';
+import { NotificationsPage } from './features/notifications/NotificationsPage';
+import { NotFoundPage } from './features/placeholder/NotFoundPage';
 import { StatusPage } from './features/status/StatusPage';
+import { UsersPage } from './features/users/UsersPage';
 import { AppShell } from './layout/AppShell';
 import { paths } from './routes';
 
@@ -25,6 +34,13 @@ import { paths } from './routes';
  *
  * The guards are a courtesy to the user, never the enforcement: the API
  * refuses the same requests with 401 and 403 whatever the browser renders.
+ *
+ * The four ticket lists are one component with a different preset each. What
+ * separates My Queue from Unassigned is an API filter, not a screen.
+ *
+ * The catch-all sits in tier 3 rather than at the top level, so an unknown URL
+ * is explained by `NotFoundPage` inside the shell rather than silently
+ * redirected.
  */
 export default function App() {
   return (
@@ -41,122 +57,99 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route path={paths.home} element={<HomePage />} />
 
-          <Route
-            path={paths.report}
-            element={
-              <ComingSoonPage
-                title="Report an issue"
-                description="The guided questionnaire: what kind of problem, which one, where, what happened, and how urgent it is."
-                phase="M6"
-              />
-            }
-          />
+          <Route path={paths.report} element={<ReportPage />} />
+
+          {/* Everyone has an inbox, so this sits outside every `RequireRole`.
+              Reached from the bell in the app bar rather than a nav item: one
+              destination with two doors is one more thing to keep in step. */}
+          <Route path={paths.notifications} element={<NotificationsPage />} />
+
           <Route
             path={paths.myTickets}
             element={
-              <ComingSoonPage
+              <IncidentsPage
                 title="My tickets"
-                description="Everything you have reported, with its status, priority and last update."
-                phase="M6"
+                description="Everything you have reported, newest first."
+                preset={{ mine: 'reported' }}
+                emptyTitle="You have not reported anything yet"
+                emptyDescription="When something at work is not right, this is where it will be."
+                offerReport
               />
             }
           />
+
           <Route
             path={paths.allTickets}
             element={
-              <ComingSoonPage
+              <IncidentsPage
                 title="All tickets"
-                description="Every incident, searchable and filterable by status, priority, category and location."
-                phase="M6"
+                description="Every incident, so you can check whether yours is already reported."
+                emptyTitle="No tickets yet"
+                emptyDescription="Nothing has been reported in this workspace."
+                offerReport
               />
             }
           />
+
+          {/* Sibling of /tickets/mine, and safe: React Router ranks a static
+              segment above a dynamic one. */}
+          <Route path={paths.incidentDetail} element={<IncidentDetailPage />} />
 
           <Route element={<RequireRole roles={['ENGINEER']} />}>
             <Route
               path={paths.myQueue}
               element={
-                <ComingSoonPage
+                <IncidentsPage
                   title="My queue"
-                  description="The tickets assigned to you, filterable by status and priority."
-                  phase="M6"
+                  description="The tickets assigned to you."
+                  preset={{ mine: 'assigned' }}
+                  emptyTitle="Nothing is assigned to you"
+                  emptyDescription="Work assigned to you by a lead or an admin appears here."
                 />
               }
             />
           </Route>
 
-          <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['SENIOR', 'LEAD']} />}>
+          <Route
+            element={
+              <RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['SENIOR', 'LEAD']} />
+            }
+          >
             <Route
               path={paths.unassigned}
               element={
-                <ComingSoonPage
+                <IncidentsPage
                   title="Unassigned"
-                  description="Open tickets nobody has picked up, filtered to your specialties by default."
-                  phase="M6"
+                  description="Open tickets nobody has picked up yet."
+                  preset={{ assignee_id: 'unassigned', status: ['OPEN'] }}
+                  emptyTitle="Everything is picked up"
+                  emptyDescription="No open ticket is waiting for an owner."
                 />
               }
             />
           </Route>
 
           <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['LEAD']} />}>
-            <Route
-              path={paths.team}
-              element={
-                <ComingSoonPage
-                  title="Team"
-                  description="Your engineers with their level, availability and current load, and the dialog for assigning work."
-                  phase="M6"
-                />
-              }
-            />
+            <Route path={paths.team} element={<TeamPage />} />
           </Route>
 
           <Route element={<RequireRole roles={['FACILITY_ADMIN']} />}>
-            <Route
-              path={paths.engineers}
-              element={
-                <ComingSoonPage
-                  title="Engineers"
-                  description="Add engineers with a level and specialties, and manage the ones you have."
-                  phase="M6"
-                />
-              }
-            />
-            <Route
-              path={paths.facilities}
-              element={
-                <ComingSoonPage
-                  title="Facilities"
-                  description="Buildings, their floors, and the desks and meeting rooms on each floor."
-                  phase="M6"
-                />
-              }
-            />
-            <Route
-              path={paths.categories}
-              element={
-                <ComingSoonPage
-                  title="Categories"
-                  description="The groups and subcategories the report questionnaire is built from."
-                  phase="M6"
-                />
-              }
-            />
-            <Route
-              path={paths.users}
-              element={
-                <ComingSoonPage
-                  title="Users"
-                  description="Everyone with an account, their role, and whether it is still active."
-                  phase="M6"
-                />
-              }
-            />
+            <Route path={paths.engineers} element={<EngineersPage />} />
+            <Route path={paths.facilities} element={<FacilitiesPage />} />
+            <Route path={paths.categories} element={<CategoriesPage />} />
+            <Route path={paths.users} element={<UsersPage />} />
           </Route>
+
+          {/* Anything else, inside the shell so the navigation is still there
+              to leave by. Signed out this is unreachable — `RequireAuth`
+              redirects to the login screen first, which is the right answer:
+              the application is not browsable without a session, and after
+              signing in the bad URL resolves here where it can be explained.
+              Replaces a `<Navigate to="/">` that rewrote the address bar and
+              told the user nothing. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Route>
-
-      <Route path="*" element={<Navigate to={paths.home} replace />} />
     </Routes>
   );
 }

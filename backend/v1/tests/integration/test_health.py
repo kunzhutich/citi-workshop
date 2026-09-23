@@ -64,3 +64,30 @@ class _BrokenSession:
 
 def _unreachable_session() -> _BrokenSession:
     return _BrokenSession()
+
+
+def test_every_api_response_refuses_to_be_cached(client: TestClient) -> None:
+    """A browser must never reuse an API response it has already seen.
+
+    FastAPI sends no cache directives, and RFC 9111 section 4.2.2 lets a cache
+    invent a freshness lifetime when the server gave none. That is not
+    theoretical: after a password change the app signs the user in again and
+    re-reads `/auth/me`, and a browser answered that read from its own store
+    with the body from before the change. `must_change_password` was still true
+    in that stale copy, so the guard returned the user to the change-password
+    screen — with the correct new password, in a loop, forever.
+
+    It only appeared once deployed, because Vite's dev proxy does not cache.
+    See the decision log.
+
+    Asserted on an error as well as a success: the middleware is registered
+    outside the request logger so that responses raised before any router runs
+    carry the header too.
+    """
+    ok = client.get("/api/v1/health")
+    assert ok.status_code == 200
+    assert ok.headers["cache-control"] == "no-store"
+
+    unauthorised = client.get("/api/v1/auth/me")
+    assert unauthorised.status_code == 401
+    assert unauthorised.headers["cache-control"] == "no-store"

@@ -44,12 +44,25 @@ class UserRead(BaseModel):
 
 
 class CurrentUserRead(UserRead):
-    """The caller's own record, with their engineer profile when they have one."""
+    """The caller's own record, with their engineer profile when they have one.
+
+    The three `last_*_id` fields are on *this* model rather than on `UserRead`
+    deliberately. They exist so the report questionnaire can pre-fill where you
+    were the last time you reported something, which is only ever a question
+    about yourself; an admin listing accounts has no business being told where
+    each of them sits.
+    """
 
     engineer_profile: EngineerProfileRead | None = Field(
         default=None,
         description="Present only for ENGINEER users.",
     )
+    last_building_id: uuid.UUID | None = Field(
+        default=None,
+        description="Building of your most recent report, for pre-filling the next one.",
+    )
+    last_floor_id: uuid.UUID | None = Field(default=None, description="Floor of that report.")
+    last_seat_id: uuid.UUID | None = Field(default=None, description="Seat of that report.")
 
 
 class UserUpdate(BaseModel):

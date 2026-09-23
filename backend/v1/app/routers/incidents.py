@@ -337,7 +337,10 @@ def get_activity(
     """
     incident = incident_service.get_incident(session, incident_id)
     timeline = incident_service.load_activity(session, incident=incident, user=user)
-    return [_to_activity_entry(entry) for entry in timeline]
+    # ASSIGNED events record a user id, which is right for an audit row and
+    # unreadable on a screen. Resolved once for the whole timeline.
+    labels = incident_service.resolve_event_labels(session, timeline)
+    return [_to_activity_entry(entry, labels) for entry in timeline]
 
 
 # --- Response mapping --------------------------------------------------------
@@ -454,8 +457,14 @@ def _to_allowed_transition(transition: Transition) -> AllowedTransitionRead:
     )
 
 
-def _to_activity_entry(entry: IncidentEvent | IncidentNote) -> ActivityEntry:
-    """Render one timeline entry, whichever table it came from."""
+def _to_activity_entry(
+    entry: IncidentEvent | IncidentNote,
+    labels: dict[str, str],
+) -> ActivityEntry:
+    """Render one timeline entry, whichever table it came from.
+
+    `labels` maps a user id to a name, for the events that record one.
+    """
     if isinstance(entry, IncidentNote):
         return ActivityEntry(
             kind="note",
@@ -475,5 +484,7 @@ def _to_activity_entry(entry: IncidentEvent | IncidentNote) -> ActivityEntry:
         event_type=entry.event_type,
         from_value=entry.from_value,
         to_value=entry.to_value,
+        from_label=labels.get(entry.from_value or ""),
+        to_label=labels.get(entry.to_value or ""),
         reason=entry.reason,
     )

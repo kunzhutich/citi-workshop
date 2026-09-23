@@ -258,3 +258,6 @@ tfplan
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
+
+# Claude Code local settings (permissions, not project code)
+.claude/

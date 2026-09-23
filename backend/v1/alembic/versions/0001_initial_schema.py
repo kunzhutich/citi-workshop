@@ -10,11 +10,22 @@ matter and are spelled out rather than left to autogenerate:
 1. **Extensions first.** ``pgcrypto`` provides ``gen_random_uuid()``, which
    every primary key defaults to, and ``citext`` provides the case-insensitive
    type ``users.email`` uses. Both must exist before any table is created.
-2. **Enum types next**, created explicitly from ``app.models.enums.ENUM_TYPES``
-   so that the table definitions below can all use ``create_type=False``.
-   Letting SQLAlchemy create a type implicitly works only while exactly one
-   table references it; the moment a second one does, the migration fails with
-   "type already exists". Creating them up front removes that trap for good.
+2. **Enum types next**, created explicitly so that the table definitions below
+   can all use ``create_type=False``. Letting SQLAlchemy create a type
+   implicitly works only while exactly one table references it; the moment a
+   second one does, the migration fails with "type already exists". Creating
+   them up front removes that trap for good.
+
+   The names are listed in ``ENUM_TYPES_AT_0001`` rather than read out of
+   ``app.models.enums.ENUM_TYPES``, which is what this revision did until
+   revision 0005. A migration that iterates a live application constant is not
+   frozen: adding a twelfth enum to the registry would silently change what
+   *this* revision does, so a database created today would get a type that
+   every database created before it was given by a later revision. Revision
+   0005 hit exactly that — it creates ``notification_type``, and a fresh
+   database would have had 0001 create it first and 0005 fail on
+   "type already exists". The list below is the eleven types this revision has
+   always created, so it now does the same thing everywhere, for ever.
 3. **The ticket sequence**, because ``incidents.ticket_number`` defaults to
    ``nextval('incident_ticket_seq')``.
 4. **Tables**, parents before children.
@@ -41,16 +52,38 @@ depends_on: str | Sequence[str] | None = None
 TICKET_SEQUENCE = "incident_ticket_seq"
 
 
+#: The enum types **this revision** creates, frozen as a list of names.
+#:
+#: Deliberately not ``ENUM_TYPES.keys()``. See the module docstring: a revision
+#: that reads a live application constant changes meaning when the application
+#: does. The values still come from the registry, because changing a member of
+#: an existing enum is a different question and would need its own revision.
+ENUM_TYPES_AT_0001: tuple[str, ...] = (
+    "user_role",
+    "engineer_level",
+    "incident_status",
+    "incident_priority",
+    "blocked_reason_type",
+    "close_reason",
+    "note_visibility",
+    "availability_status",
+    "seat_type",
+    "location_detail",
+    "event_type",
+)
+
+
 def _create_enum_types() -> None:
-    """Create every PostgreSQL enum type used by the schema."""
-    for type_name, enum_cls in ENUM_TYPES.items():
+    """Create the PostgreSQL enum types this revision is responsible for."""
+    for type_name in ENUM_TYPES_AT_0001:
+        enum_cls = ENUM_TYPES[type_name]
         values = ", ".join(f"'{member.value}'" for member in enum_cls)
         op.execute(f"CREATE TYPE {type_name} AS ENUM ({values})")
 
 
 def _drop_enum_types() -> None:
     """Drop every enum type this revision created."""
-    for type_name in ENUM_TYPES:
+    for type_name in ENUM_TYPES_AT_0001:
         op.execute(f"DROP TYPE IF EXISTS {type_name}")
 
 
