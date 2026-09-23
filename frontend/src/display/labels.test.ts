@@ -74,7 +74,9 @@ describe('statusChipColor', () => {
   it('follows the palette from the build plan', () => {
     const expected: Record<IncidentStatus, string> = {
       OPEN: 'info',
-      IN_PROGRESS: 'primary',
+      // `workflow`, not `primary`: the brand went brown in the redesign and a
+      // ticket's progress did not follow it. See D51.
+      IN_PROGRESS: 'workflow',
       BLOCKED: 'warning',
       RESOLVED: 'success',
       CLOSED: 'default',

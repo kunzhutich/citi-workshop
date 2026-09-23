@@ -8193,14 +8193,17 @@ out to be the most useful sentence in it.*
 
 | File | What changed |
 | --- | --- |
-| `theme.ts` | The whole `palette` block: cream `background.default`, brown `primary`, a two-step ochre `secondary`, three re-derived status colours — and one `MuiToggleButton` override, which axe found and the unit test could not (D50). |
+| `theme.ts` | The whole `palette` block: cream `background.default`, brown `primary`, a two-step ochre `secondary`, three re-derived status colours, the `workflow` slot — and one `MuiToggleButton` override, which axe found and the unit test could not (D50). |
+| `display/statusColor.ts` | IN_PROGRESS moves from `primary` to `workflow`. |
+| `features/incidents/WorkflowStepper.tsx` | The stepper's reached steps and connectors take `workflow.main` instead of following the brand. |
 | `theme.test.ts` | **New block.** Every palette slot asserted against both surfaces a chip is drawn on, plus the focus ring against the page. The guard S6 never had. |
 | `features/dashboard/chartPalette.ts` | Both categorical slots and all four ramp steps, re-derived on the new third colour's hue. |
 | `playwright.config.ts`, `e2e/fixtures/api.ts` | Unrelated to the palette: the e2e admin credentials, committed so a bare `npx playwright test` works. |
 
 Decisions: [D48](DECISION-LOG.md#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it),
 [D49](DECISION-LOG.md#d49--what-the-new-palette-cost-blocked-and-in-progress-are-now-the-same-brown),
-[D50](DECISION-LOG.md#d50--the-colour-the-new-contrast-test-could-not-have-caught).
+[D50](DECISION-LOG.md#d50--the-colour-the-new-contrast-test-could-not-have-caught),
+[D51](DECISION-LOG.md#d51--the-brand-is-brown-the-workflow-is-blue).
 
 ### 2. Why it is shaped this way
 
@@ -8226,12 +8229,19 @@ the literal value for washes and hovers where nothing sits on top. The choice be
 ochre, clay and olive was decided on two measurements rather than taste — see D48's
 table.
 
-**The charts were re-derived, not recoloured.** The old blue/orange pair still passes
-every check; the card surface did not move. They changed for coherence, and the
-re-derivation is what caught three things a hand-tune would not have: the primary brown
-is below both the lightness band and the chroma floor and reads grey at bar size; two
-warm hues cannot carry a two-series chart through protanopia; and the ramp's lightest
-step is a 2:1 floor, not a preference — the first attempt failed at 1.80:1.
+**The charts were re-derived onto the new palette, and then put back.** R2 moved them to
+the ochre hue and every check passed; the owner reverted them, and the reason belongs in
+this guide rather than in a commit: *a chart is read by someone who has never seen this
+application before, and blue is a convention they already have while brown is a brand
+they do not.* No measurement decided it — both palettes are legal — so coherence with the
+interface lost to legibility to a stranger.
+
+The discarded derivation is still worth having done. It established three things a
+hand-tune would not have, all recorded in `chartPalette.ts`: the brand brown is below
+both the lightness band and the chroma floor and reads grey at bar size; two warm hues
+cannot carry a two-series chart through protanopia, which is what the blue-and-orange
+pair had quietly been getting right all along; and the ramp's lightest step is a 2:1
+floor, not a preference — the ochre attempt failed it at 1.80:1.
 
 ### 3. How the pieces connect
 
@@ -8293,12 +8303,19 @@ they were right on the day. Nothing recomputed them, so a single background chan
 three of them false and the suite stayed green. The numbers are asserted now, read off
 the theme rather than written down twice.
 
-**Blocked and In progress are closer than they were.** `#73362a` against `#a94e08` is
-OKLab ΔE 13.4, under the 15 floor; the old navy-against-orange was not close to it. It is
-not fixable by moving the warning colour — a colour that clears 4.5:1 on cream must be
-dark, dark warm hues cluster, and every degree of hue gained from the brown is lost to
-the green. The real fix is to stop IN_PROGRESS borrowing `primary`, which is one line in
-`display/statusColor.ts` and belongs with the chip work in section 3. See D49.
+**The brand and the workflow are two colours now, and confusing them is how this went
+wrong once already.** `primary` is the product speaking — app bar, call to action, focus
+ring. `workflow` is the ticket speaking — the IN_PROGRESS chip and the stepper. They were
+one slot until the redesign, which was invisible while `primary` was navy and obvious the
+moment it went brown: IN_PROGRESS landed at OKLab ΔE 13.4 from BLOCKED, two browns, under
+the 15 floor, on the pair an engineer scans a queue for. Against the navy it is 30.9. See
+D49 for the measurement and D51 for the fix.
+
+**A custom palette slot needs `augmentColor`.** Material UI fills in `light`, `dark` and
+`contrastText` for its own five slots and nothing else. `workflow: { main }` type-checks,
+renders, and produces a **grey** filled chip, because `Chip` reads a `contrastText` that
+is not there. 349 unit tests and the type-checker were all happy with the grey one; a
+screenshot was what caught it.
 
 **A unit test over "the colours we chose" cannot see a library default.** The axe run
 caught an unselected `ToggleButton` at 4.38:1 on the cream page — Material UI's

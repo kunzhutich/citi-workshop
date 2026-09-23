@@ -77,6 +77,28 @@ export function WorkflowStepper({
         orientation={isMobile ? 'vertical' : 'horizontal'}
         alternativeLabel={!isMobile}
         aria-label="Ticket progress"
+        /*
+         * Progress is `workflow` blue, not the brand.
+         *
+         * Material UI draws a stepper's reached steps in `primary.main`, which
+         * followed the brand to brown in the redesign. Brown is a brand; blue
+         * is the convention a reader already knows for "this is how far it has
+         * got". `theme.ts` keeps the two apart and this is the one instance
+         * that has to say so, because Material UI has no prop for it.
+         *
+         * `sx` rather than a `MuiStepIcon` override in `theme.ts`: there is one
+         * stepper in the application and this is a fact about it, not a global
+         * rule. The error state is untouched — a blocked step stays red, and
+         * red beats both of them.
+         */
+        sx={{
+          '& .MuiStepIcon-root.Mui-active, & .MuiStepIcon-root.Mui-completed': {
+            color: 'workflow.main',
+          },
+          '& .MuiStepIcon-root.Mui-error': { color: 'error.main' },
+          '& .MuiStepConnector-root.Mui-active .MuiStepConnector-line, & .MuiStepConnector-root.Mui-completed .MuiStepConnector-line':
+            { borderColor: 'workflow.main' },
+        }}
       >
         {STEPS.map((step, index) => {
           const isCurrent = index === activeStep;

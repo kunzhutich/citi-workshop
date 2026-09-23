@@ -88,6 +88,7 @@ describe('the status palette against the surfaces it is drawn on', () => {
   const slots = {
     primary: theme.palette.primary.main,
     secondary: theme.palette.secondary.main,
+    workflow: theme.palette.workflow.main,
     info: theme.palette.info.main,
     warning: theme.palette.warning.main,
     success: theme.palette.success.main,

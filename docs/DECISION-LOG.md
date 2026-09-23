@@ -2594,18 +2594,22 @@ the green:
 There is no warm step that clears both. The collision is a property of choosing a
 cream page and a brown primary, not a bad pick within that choice.
 
-**Chosen: accept it, and say so.** Two reasons. A chip is not a chart mark — it
-carries its own word, which is exactly the argument M7 recorded when it refused
-to colour the status chart by status ("the chips are unaffected: they carry a
-word, so their colour never has to stand alone"). And the real fix is not in the
-palette at all: the collision exists only because IN_PROGRESS borrows `primary`,
-so giving it a cool slot of its own is one line in
-`src/display/statusColor.ts` — a change to a **shared component**, which is
-section 3 of the brief, where the chips are being reworked anyway.
+**Proposed: accept it, and say so**, on the grounds that a chip carries its own
+word — the argument M7 recorded when it refused to colour the status chart by
+status — with the real fix noted as "stop IN_PROGRESS borrowing `primary`",
+one line in `src/display/statusColor.ts`.
 
-**Recorded rather than silently absorbed**, because the owner's acceptance of
-this theme was explicitly conditional on the chips still looking fine, and this
-is the one place where the honest answer is "one pair is worse than it was".
+**Superseded the same day.** The owner rejected the premise rather than the
+verdict: the ticket's progress should not have followed the brand in the first
+place. [D51](#d51--the-brand-is-brown-the-workflow-is-blue) does the one-line
+fix immediately instead of deferring it to section 3, and the collision is gone
+— IN_PROGRESS against BLOCKED is ΔE 30.9 against the navy, where it was 13.4
+against the brown.
+
+**Left in the log rather than deleted**, because the measurement is what made
+the owner's instinct actionable, and because "two warm colours on a cream page
+cannot be pulled apart" is a constraint the next palette change will meet
+again.
 
 ## D50 — The colour the new contrast test could not have caught
 
@@ -2643,3 +2647,58 @@ untouched.
 `action.*` alpha is in the same position and only a scan will find it. The
 accessibility suite covers fourteen screens and three open dialogs; a surface
 change should be taken as a reason to run all of it, not the unit tests alone.
+
+
+## D51 — The brand is brown, the workflow is blue
+
+**The owner, on seeing R2:** *"i like the main new colors, but i didnt want you
+to change the blue colors on chips and charts and progress bar of the ticket.
+that is because blue is intuitive but brown isnt."*
+
+That is a better statement of the problem than the one D49 was working on. The
+question is not which brown to use for IN_PROGRESS; it is that a ticket's
+progress was never the brand's to colour. It had been `primary` since M5 and
+nothing noticed, because `primary` was navy and navy is what progress looks
+like anyway. The redesign made the two diverge and the borrowing became visible.
+
+**Chosen.** A palette slot of our own, `workflow`, holding the old navy
+`#1f3a93`. It paints exactly two things:
+
+- the IN_PROGRESS chip (`display/statusColor.ts`)
+- the ticket's stepper (`features/incidents/WorkflowStepper.tsx`)
+
+The app bar, the drawer's call to action, the workflow buttons, the focus ring
+and every other use of `primary` stay brown. The product speaks in brown; the
+ticket speaks in blue.
+
+**And the charts go back to M7's values** — `#2a78d6` / `#eb6834`, the blue
+ramp. R2's ochre re-derivation passed every check and so does this; no
+measurement decided it. The owner's reason is the one that should be written
+down: *a chart is read by someone who has never seen this application before,
+and blue is a convention they already have while brown is a brand they do not.*
+Coherence with the interface lost to legibility to a stranger, which is the
+right way for that argument to go.
+
+**What it fixes for free.** D49's collision. Against the brown, IN_PROGRESS sat
+at OKLab ΔE 13.4 from BLOCKED — under the 15 floor, on the pair an engineer
+scans a queue for. Against the navy it is 30.9.
+
+**What it costs.** `workflow` is a custom palette slot, so it needs TypeScript
+module augmentation in `theme.ts` for `Palette`, `PaletteOptions` and
+`ChipPropsColorOverrides`. Without the last one `<Chip color="workflow">` does
+not type-check and the status palette would go back to hardcoded hexes at the
+point of use, which is the thing `statusColor.ts` exists to prevent.
+
+**A trap worth recording.** Material UI fills in `light`, `dark` and
+`contrastText` only for the five slots it knows about. `workflow: { main }`
+type-checks, renders, and produces a **grey** filled chip, because `Chip` reads
+a `contrastText` that is not there. It has to be
+`createTheme().palette.augmentColor({ color: { main }, name: 'workflow' })`.
+Caught by screenshotting the ticket page; the type-checker and 349 unit tests
+were all happy with the grey one.
+
+**One number to keep an eye on.** IN_PROGRESS navy against OPEN `#026da8` is
+ΔE 14.0, marginally under the 15 floor — two blues, adjacent. That pair is
+unchanged from what shipped through M7 and S6, it is not a regression, and both
+chips carry their word. Noted so that nobody rediscovers it and assumes D51
+introduced it.

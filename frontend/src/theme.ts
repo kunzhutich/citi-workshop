@@ -1,5 +1,29 @@
 import { createTheme } from '@mui/material/styles';
 
+/*
+ * `workflow` is a palette slot of our own, beside Material UI's five.
+ *
+ * The brand is brown and a ticket's progress is blue, and those are two
+ * different jobs that used to be one colour. Declaring the slot is what lets
+ * `<Chip color="workflow">` type-check; without the second declaration
+ * Material UI's `ChipProps['color']` is a closed union and the status palette
+ * would have to go back to hardcoded hexes at the point of use.
+ */
+declare module '@mui/material/styles' {
+  interface Palette {
+    workflow: Palette['primary'];
+  }
+  interface PaletteOptions {
+    workflow?: PaletteOptions['primary'];
+  }
+}
+
+declare module '@mui/material/Chip' {
+  interface ChipPropsColorOverrides {
+    workflow: true;
+  }
+}
+
 /**
  * The single source of global styling.
  *
@@ -11,6 +35,17 @@ import { createTheme } from '@mui/material/styles';
  * Component defaults carry their weight: setting `textTransform: 'none'` once
  * is what stops forty buttons from each needing an `sx` prop to look right.
  */
+/**
+ * A throwaway default theme, used only for `augmentColor`.
+ *
+ * Material UI fills in `light`, `dark` and `contrastText` for the five palette
+ * slots it knows about, and for nothing else. A custom slot declared as
+ * `{ main }` alone therefore has no `contrastText`, and a filled `Chip` using
+ * it renders grey — which is exactly what happened, and what a screenshot
+ * caught and the type-checker could not.
+ */
+const augment = createTheme().palette.augmentColor;
+
 export const theme = createTheme({
   palette: {
     mode: 'light',
@@ -68,6 +103,31 @@ export const theme = createTheme({
      * See D48 for the full derivation and what a different choice would cost.
      */
     secondary: { main: '#8b5f30', light: '#a9743a' },
+
+    /*
+     * The colour a ticket's *progress* is drawn in, which is not the brand.
+     *
+     * This is the old primary navy, kept. The brand went brown in the redesign
+     * and the workflow did not follow it, on the owner's call and for a reason
+     * worth writing down: brown is a brand, blue is a convention. A reader who
+     * has never seen this application still reads a blue step as "this is
+     * where it has got to"; nobody reads brown that way.
+     *
+     * It paints the IN_PROGRESS chip (`display/statusColor.ts`) and the
+     * ticket's stepper (`features/incidents/WorkflowStepper.tsx`), and nothing
+     * else. The app bar, the drawer's call to action and the workflow buttons
+     * stay `primary`, because those are the product speaking rather than the
+     * ticket.
+     *
+     * Separating the two also undid the one thing the new palette made worse.
+     * While IN_PROGRESS borrowed `primary`, it sat at OKLab ΔE 13.4 from the
+     * BLOCKED chip — two browns, under the 15 floor, on the pair an engineer
+     * scans a list for. Against the navy that distance is 30.9. See D49 and
+     * D51.
+     *
+     * 10.07:1 with white text, 8.39:1 outlined on the cream page.
+     */
+    workflow: augment({ color: { main: '#1f3a93' }, name: 'workflow' }),
 
     background: { default: '#f0eada', paper: '#ffffff' },
 

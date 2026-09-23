@@ -15,11 +15,17 @@ import type { IncidentStatus } from '../api/types';
  *
  * Colour is a second channel carrying the same information as the text, so a
  * dense list can be scanned without reading every row.
+ *
+ * IN_PROGRESS is `workflow`, not `primary`. It was `primary` until the brand
+ * went brown, and following the brand cost this palette the thing it exists
+ * for: brown-on-brown put IN_PROGRESS at OKLab ΔE 13.4 from BLOCKED, under the
+ * 15 floor, on exactly the pair somebody scans a queue for. `workflow` is the
+ * old navy kept for the job it was actually doing — see `theme.ts` and D51.
  */
 export function statusChipColor(status: IncidentStatus): ChipProps['color'] {
   const colors: Record<IncidentStatus, ChipProps['color']> = {
     OPEN: 'info',
-    IN_PROGRESS: 'primary',
+    IN_PROGRESS: 'workflow',
     BLOCKED: 'warning',
     RESOLVED: 'success',
     CLOSED: 'default',
