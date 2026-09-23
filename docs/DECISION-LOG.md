@@ -737,6 +737,41 @@ dashboard that names a statistic it is not showing.
   model draws took the main bundle from 406 kB gzipped to 301 kB for every
   employee and engineer.
 
+### What looking at the screens found
+
+Recorded because the count is the argument for doing it. Five defects came from
+taking screenshots at 1440px and 375px and reading them, and none of them would
+have failed a test that was not written specifically to catch it:
+
+1. Bar value labels centred **inside** the bars in dark ink — close to
+   unreadable on the darkest step of the priority ramp, and spilling past the
+   end of a short bar.
+2. Moving them outside then hid the **largest** number on every chart: a bar
+   that reaches the plot edge has nowhere to draw its label and Material UI
+   drops it silently. Fixed with 15% headroom on the value axis.
+3. The daily-flow axis labelled every second day in August and every day in
+   September — the library thinning whichever labels happened to collide — and
+   clipped its last tick to "Se…".
+4. The Needs attention panel rendered all 26 unassigned and 16 escalated rows,
+   making the dashboard 12,000 pixels tall on a phone and burying the
+   blocked-by-reason panel beneath them.
+5. **The daily-flow axis was a whole day early.** `per_day[].day` is a bare
+   `YYYY-MM-DD`, which ECMAScript parses as UTC midnight and
+   `toLocaleDateString` then renders in the reader's zone, so west of Greenwich
+   every label lost a day. The axis read "Sep 15" under a heading reading
+   "Counted over Sep 16". It was wrong on the demo data too and invisible there
+   because the heading sat far enough up the page; it only became obvious after
+   `.env` was restored to the sparse dev database and a seven-day range put the
+   two within one screen of each other.
+
+A sixth came from a test rather than an eye, and is worth the same note: the
+chart `sx` blocks were written against `MuiBarElement-root` and
+`MuiBarLabel-root`. The library's classes are `MuiBarChart-element` and
+`MuiBarChart-label`, so the selectors matched nothing and the styling was a
+silent no-op — the bars never took their pointer cursor and the labels never
+took their ink. A Playwright assertion that a bar element is present is what
+surfaced it. **If you style a chart, assert on the element you styled.**
+
 **Reversible.** All five, independently. The scope headings are one component;
 the two parameter types are one file; the four relabelled tiles are four
 strings.

@@ -66,9 +66,9 @@ Safe to run twice (second run is a no-op) but not a top-up — documented in the
 return payload and the guide. 683 backend tests (666 + 17), ruff clean.
 
 **M7 pass 3 verified:** the three persona dashboards from BUILD-PLAN section 10,
-replacing M5's placeholders on `/`. 267 frontend tests (211 + 56), 32 Playwright
+replacing M5's placeholders on `/`. 271 frontend tests (211 + 60), 32 Playwright
 cases across two viewports of which 25 run and 7 are deliberate viewport skips
-(12 before), eslint + `tsc -b` + `vite build` clean. **No backend file changed
+(14 cases and 12 runs before), eslint + `tsc -b` + `vite build` clean. **No backend file changed
 in this pass**, so the 683-test suite is untouched and was not re-run for it.
 
 The load-bearing decision is [D14](DECISION-LOG.md) §1: the admin dashboard puts
@@ -80,12 +80,15 @@ and the screen says which is which rather than picking one. `api/reports.ts`
 enforces the same split in its parameter types, so a screen that tried to window
 a present-tense report would not compile.
 
-Four defects were found by taking screenshots at 1440px and 375px and looking at
+Five defects were found by taking screenshots at 1440px and 375px and looking at
 them: bar labels centred in dark ink on saturated fills, the largest bar's label
 dropped for want of axis headroom, an uneven day axis with a clipped last tick,
-and an uncapped attention panel that made the phone page 12,000px tall. A fifth
-— chart `sx` written against class names that do not exist, so the styling was a
-silent no-op — was found by a Playwright assertion that a bar element is present.
+an uncapped attention panel that made the phone page 12,000px tall, and — only
+visible once the app was pointed back at the sparse dev database — a daily-flow
+axis a whole day early, because a bare `YYYY-MM-DD` parses as UTC midnight and
+renders as the previous day anywhere west of Greenwich. A sixth, chart `sx`
+written against class names that do not exist so the styling was a silent no-op,
+was found by a Playwright assertion that a bar element is present.
 
 Also split the admin dashboard into its own bundle chunk: it is the only screen
 importing `@mui/x-charts` and `RequireRole` already keeps everyone else off it,

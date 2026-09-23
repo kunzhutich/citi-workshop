@@ -4904,8 +4904,9 @@ database with ninety days of plausible ACME so those endpoints return something 
 drawing. This pass draws it: the employee home, the engineer home and the admin
 dashboard, replacing the three placeholders M5 wired to `/`.
 
-**Verified.** 267 frontend tests (up from 211), 21 Playwright tests across two viewports
-(up from 12), eslint + `tsc -b` + `vite build` clean. Backend untouched — no server file
+**Verified.** 271 frontend tests (up from 211), 32 Playwright cases across two viewports
+of which 25 run and 7 are deliberate viewport skips (up from 14 and 12), eslint +
+`tsc -b` + `vite build` clean. Backend untouched — no server file
 changed in this pass, so the 683-test suite is unaffected and was not re-run for it.
 The screens were developed and screenshotted against `acme_demo`; `backend/v1/.env` is
 restored to `POSTGRES_NAME=acme_incidents_dev`.
@@ -5033,6 +5034,23 @@ All of it is in `chartPalette.ts` with the numbers written down, so the next per
 touch a hex knows what the old one was holding up. `chartPalette.test.ts` guards the
 structure — the ramp stays monotone and one hue, the two slots stay far apart — without
 re-deriving OKLab, which would only be testing its own arithmetic.
+
+#### A calendar day is not an instant
+
+`summary.per_day[].day` is a bare `YYYY-MM-DD`. ECMAScript parses that as **UTC
+midnight**, and `toLocaleDateString` then renders it in the reader's zone, so in any zone
+west of Greenwich every label on the daily-flow axis came out a day early: the axis began
+"Sep 15" under a heading reading "Counted over Sep 16, 2026 – Sep 23, 2026". It looks like
+an off-by-one in the data and is one in the parse.
+
+`parseCalendarDay` in `display/time.ts` appends a time, so the same string parses as
+**local** midnight — which is what a row the server grouped by date means. A full ISO
+timestamp is passed through untouched: it carries a zone and must keep it.
+
+This was wrong against the demo database too, where the axis began "Aug 23" for a window
+starting Aug 24, and it went unnoticed there because the heading was far enough up the
+page to compare against. It was only obvious once the app was pointed back at the sparse
+dev database and a seven-day range put the two within a screen of each other.
 
 #### Why every bar's value is drawn outside the bar
 
@@ -5173,6 +5191,8 @@ answered.
 
 ### 6. Gotchas
 
+- **A bare `YYYY-MM-DD` from the API is not a `new Date()` argument.** Use
+  `parseCalendarDay`. See the section above; this is the subtlest bug in the phase.
 - **`useDashboardFilters` freezes `now` at mount, and must.** A fresh `new Date()` on
   every render puts a new instant in every query key; TanStack Query sees eight new
   queries per pass, each answer triggers the next render, and the page refetches itself
