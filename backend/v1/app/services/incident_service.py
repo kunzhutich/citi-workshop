@@ -295,9 +295,14 @@ def can_escalate(incident: Incident, user: User) -> bool:
     return not incident.is_escalated and may_escalate(incident, user)
 
 
+def may_clear_escalation(user: User) -> bool:
+    """Return whether this user could clear an escalation if there were one."""
+    return user.role == UserRole.FACILITY_ADMIN
+
+
 def can_clear_escalation(incident: Incident, user: User) -> bool:
-    """Return whether this user may clear the current escalation."""
-    return incident.is_escalated and user.role == UserRole.FACILITY_ADMIN
+    """Return whether this user may clear the current escalation right now."""
+    return incident.is_escalated and may_clear_escalation(user)
 
 
 # --- Creation ----------------------------------------------------------------
@@ -880,7 +885,19 @@ def clear_escalation(
     admin who does not says so in the note. Either way the reporter sees an
     answer rather than a flag that quietly disappeared.
     """
-    if not can_clear_escalation(incident, admin):
+    # Two separate refusals rather than one, because they are two different
+    # answers: the wrong caller is a 403 and a ticket with nothing to clear is
+    # a 409. Asking `can_clear_escalation` alone would answer both with "this
+    # ticket is not escalated", which is only ever seen as correct because the
+    # route requires `AdminUser` and makes the other branch unreachable. This
+    # mirrors `escalate` above, which splits `may_escalate` from the
+    # already-escalated conflict for the same reason.
+    if not may_clear_escalation(admin):
+        raise AuthorizationError(
+            "Only a facility admin can clear an escalation.",
+            code="CLEAR_ESCALATION_NOT_PERMITTED",
+        )
+    if not incident.is_escalated:
         raise ConflictError(
             "This ticket is not escalated.",
             code="NOT_ESCALATED",
