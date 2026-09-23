@@ -88,6 +88,60 @@ test.describe('layout', () => {
     expect(await horizontalOverflow(employeePage)).toBeLessThanOrEqual(1);
   });
 
+  test('the ticket list does not scroll sideways at any width', async ({ employeePage }) => {
+    // The test above measures at this project's viewport, and this file has
+    // two of them: 375 and 1440. That is what let a real overflow ship.
+    //
+    // The list screen's filter bar used to lay itself out behind Material
+    // UI's `md` breakpoint, which asks how wide the *window* is — while the
+    // bar sits inside `<main>`, 248px of permanent drawer and 48px of padding
+    // narrower than that. Between roughly 900px and 1300px the six columns
+    // switched on into a box that could not hold them, and the document
+    // scrolled sideways by up to 333px. Neither 375 nor 1440 is in that band,
+    // so every assertion in this file passed while every list screen in the
+    // application was broken for anyone on a laptop.
+    //
+    // The lesson is not "add 1024 to the list". It is that a layout rule with
+    // a threshold in it has to be measured on both sides of the threshold and
+    // in between, so this sweeps rather than samples. The widths below step
+    // through both switches the shell has: the 900px navigation change, and
+    // every point at which the bar gains or loses a column.
+    const widths = [360, 400, 480, 600, 768, 840, 900, 960, 1024, 1100, 1200, 1280, 1366, 1440, 1600];
+
+    const reference = await reportIssue(employeePage, {
+      group: 'Hardware',
+      subcategory: 'Monitor',
+      title: 'The second monitor wakes up black every morning',
+      description: 'Unplugging the cable and plugging it back in fixes it until the next day.',
+      priority: 'Low',
+    });
+
+    for (const width of widths) {
+      await employeePage.setViewportSize({ width, height: 900 });
+      await employeePage.goto('/tickets');
+      // A rendered row rather than a heading: the filter bar and the table
+      // are the wide things, and a screen still fetching is narrow enough to
+      // satisfy any assertion about width. See D25.
+      await expect(employeePage.getByText(reference).first()).toBeVisible();
+      await expectNothingLoading(employeePage);
+
+      expect(await horizontalOverflow(employeePage), `at ${width}px`).toBeLessThanOrEqual(1);
+
+      // Below 900px the filter controls are not on the page at all — they are
+      // in a drawer behind one button — so measuring the list alone would be
+      // measuring the wrong thing. A negative assertion has to earn its
+      // emptiness.
+      if (width < 900) {
+        await employeePage.getByRole('button', { name: 'Search and filter' }).click();
+        await expect(employeePage.getByRole('button', { name: 'Show results' })).toBeVisible();
+        expect(
+          await horizontalOverflow(employeePage),
+          `with the filter drawer open at ${width}px`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
   test('the workflow stepper runs across on desktop and down on a phone', async ({
     employeePage,
   }) => {

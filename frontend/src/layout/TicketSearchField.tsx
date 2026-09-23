@@ -57,7 +57,13 @@ export function TicketSearchField() {
             backgroundColor: 'rgba(255, 255, 255, 0.12)',
             '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.3)' },
             '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.5)' },
-            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.contrastText },
+            // Focus is drawn by the ring `theme.ts` puts around this field,
+            // not by the border. Material UI's default would take the border
+            // to 2px of `primary.main` — navy on navy — and the earlier
+            // override took it to solid white, which sat a second white line
+            // 2px inside the ring. The field keeps its hover edge instead, so
+            // there is exactly one focus indicator.
+            '&.Mui-focused fieldset': { borderColor: 'rgba(255, 255, 255, 0.5)' },
           },
           '& .MuiOutlinedInput-input::placeholder': {
             color: theme.palette.primary.contrastText,

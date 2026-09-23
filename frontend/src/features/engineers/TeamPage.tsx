@@ -11,6 +11,7 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from '../incidents/backTarget';
 import { AssignButton } from '../incidents/AssignButton';
 import { useIncidents } from '../incidents/hooks';
 import { useCategoryTree } from '../categories/hooks';
@@ -30,6 +31,7 @@ import { useEngineers } from './hooks';
  * to live.
  */
 export function TeamPage() {
+  const ticketLinkState = useTicketLinkState();
   const engineers = useEngineers({ page_size: 100 });
   const categories = useCategoryTree();
   const unassigned = useIncidents({
@@ -95,6 +97,7 @@ export function TeamPage() {
                     <Link
                       component={RouterLink}
                       to={incidentPath(incident.id)}
+                      state={ticketLinkState}
                       variant="subtitle2"
                       underline="hover"
                     >

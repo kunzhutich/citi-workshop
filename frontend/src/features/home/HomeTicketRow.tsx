@@ -12,6 +12,7 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from '../incidents/backTarget';
 
 export interface HomeTicketRowProps {
   incident: IncidentListItem;
@@ -36,6 +37,8 @@ export interface HomeTicketRowProps {
  * structural rather than cosmetic.
  */
 export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps) {
+  const ticketLinkState = useTicketLinkState();
+
   return (
     <Card>
       <CardContent
@@ -52,6 +55,7 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
             <Link
               component={RouterLink}
               to={incidentPath(incident.id)}
+              state={ticketLinkState}
               variant="subtitle1"
               underline="hover"
               sx={{ fontWeight: 600 }}
@@ -67,6 +71,7 @@ export function HomeTicketRow({ incident, actions, detail }: HomeTicketRowProps)
             <Link
               component={RouterLink}
               to={incidentPath(incident.id)}
+              state={ticketLinkState}
               underline="hover"
               color="inherit"
             >

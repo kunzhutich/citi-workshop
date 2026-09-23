@@ -2208,3 +2208,45 @@ the focus ring against production CSS. **"Deployed" is not "verified."** The
 checklist marks each item with what was actually seen, and ends with a
 prioritised list of what to walk next, precisely so that this entry cannot be
 read as a finish line.
+
+## D40 — A test that passed all morning and failed all evening
+
+**Found by CI**, not by any local run. Run #23 went red on a documentation-only
+commit; runs at 12:38 PM had been green. Same code, different time of day.
+
+**The defect.** `test_summary_reports_created_and_closed_for_every_day_in_the_window`
+asserted that I8 — created three days ago and closed six hours later — appeared
+in a single `per_day` row. The fixture anchors to `utc_now()`, so six hours after
+the current wall-clock time crosses midnight whenever the suite runs after
+18:00 UTC. The test was correct for roughly three-quarters of the day.
+
+Every "826 passed" reported during this build was a run that happened to fall in
+the passing window.
+
+**Two fixes were tried and are wrong. Both are recorded in the code.**
+
+1. **Anchor the whole fixture to midday.** Broke the blocked-and-escalated tests:
+   that report is current-state and reads the *live* clock to compute an age, so
+   moving the fixture away from `now` turned 24.0 hours into 31.71. The fixture
+   and that report must share one clock.
+2. **Pin only I8 to 06:00.** Broke `test_engineer_workload_scopes_output_to_the_window`,
+   which narrows to three days — 06:00 three days ago falls before a window
+   starting at the current time three days ago. The constraint is genuinely
+   unsatisfiable at some hours: I8 must be *after* `now - 3 days` and *early
+   enough in its day* for six hours not to cross midnight.
+
+**The fix.** The fixture was never the problem. The test asserted "created and
+closed on the same day" when what it means is "a closure is bucketed by
+`closed_at`, not by the day the ticket was reported — the two series are
+independent." That is true whether or not the six hours cross midnight. The
+assertion now reads the timestamps the fixture actually produced.
+
+**The fifth defect of this shape in this project**, after M4's colliding fixture
+names, D24's heading-as-a-load-signal, D25's permission-asserted-as-an-absence
+and D35's count-asserted-as-a-property. Each asserted something *adjacent* to its
+intent, and each was true most of the time. The first two attempts here repeated
+the error one level down: fixing the arithmetic rather than the claim, which is
+why each broke something else.
+
+**Worth saying plainly:** CI caught what six days of local runs did not, because
+CI ran at an hour nobody had.
