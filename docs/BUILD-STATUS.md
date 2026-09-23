@@ -103,6 +103,19 @@ the UI at both desktop and phone widths — M6's acceptance criterion.
 `m6-persona-screens` is committed locally but NOT pushed. Everything else
 continues; the owner needs to push, or grant the permission.
 
+## M7 verified independently (2026-09-23)
+
+Backend **683** pytest · frontend **271** vitest · e2e **25 Playwright passed,
+7 deliberate viewport skips** · ruff check + ruff format clean · eslint, tsc -b
+and vite build clean · backend confirmed untouched by pass 3 (`git diff` shows
+nothing outside `frontend/` and `docs/`) · `backend/v1/.env` restored to
+`POSTGRES_NAME=acme_incidents_dev`.
+
+Report figures were checked against live seeded data, not only fixtures:
+response-time medians are monotonic across priority (CRITICAL 0.49 h assign /
+7.98 h resolve → LOW 17.37 h / 124.48 h), which is the evidence the backdated
+events in `seed_demo` are real rather than stamped at seed time.
+
 ## Branch stack
 
 Each phase branches off the one below. Nothing merges to `main` until the owner
