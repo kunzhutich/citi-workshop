@@ -2259,7 +2259,7 @@ phase delivering it, which is deliberate: it means the navigation, the guards an
 layout switch are all exercisable now, at every width and in every role, rather than
 waiting on M6.
 
-**Verified against local PostgreSQL only.** 101 frontend tests, 606 backend tests, and
+**Verified against local PostgreSQL only.** 112 frontend tests, 606 backend tests, and
 one end-to-end pass over HTTP through the Vite dev proxy against a scratch database —
 register, login, the forced password change, and logout. What still needs the cloud is
 in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
@@ -2357,7 +2357,8 @@ Both cookies now answer 401.
 | [layout/AppShell.tsx](../frontend/src/layout/AppShell.tsx) | App bar, drawer or bottom bar, the content slot, and the mobile report FAB. |
 | [layout/navigation.ts](../frontend/src/layout/navigation.ts) | `navItemsFor(user)` — who sees which item — and `activeNavPath`, which decides what is highlighted. |
 | [layout/UserMenu.tsx](../frontend/src/layout/UserMenu.tsx) | The avatar menu: who you are, change password, log out. |
-| [layout/roleLabels.ts](../frontend/src/layout/roleLabels.ts) | Plain-language names for the role and level enums. Users never see `FACILITY_ADMIN`. |
+| [layout/roleLabels.ts](../frontend/src/layout/roleLabels.ts) | How a user is presented: role wording, and avatar initials. Users never see `FACILITY_ADMIN`. |
+| [layout/DrawerAccountSection.tsx](../frontend/src/layout/DrawerAccountSection.tsx) | The account identity and its two actions, at the foot of the mobile drawer. |
 
 #### The screens — `src/features/`
 
@@ -2377,6 +2378,7 @@ Both cookies now answer 401.
 | File | Responsibility |
 | --- | --- |
 | [src/routes.ts](../frontend/src/routes.ts) | Every path in the application, named once. |
+| [src/fonts.ts](../frontend/src/fonts.ts) | Four `@font-face` imports. The only reason the theme's typeface is the one that renders. |
 | [src/App.tsx](../frontend/src/App.tsx) | The route table: open routes, the gate-exempt route, and the guarded routes inside the shell. |
 | [src/theme.ts](../frontend/src/theme.ts) | Grown from M1's palette into the component defaults the whole app inherits. |
 | [src/components/FullPageProgress.tsx](../frontend/src/components/FullPageProgress.tsx) | The whole-page waiting state, used while the session is restored. |
@@ -2392,8 +2394,9 @@ Both cookies now answer 401.
 | `auth/RequireAuth.test.tsx` | 6 | Loading, redirect to login, the password gate, and the exemption. |
 | `auth/RequireRole.test.tsx` | 12 | The role and level matrix, including admins passing every level check. |
 | `layout/navigation.test.ts` | 11 | Each role's items, the bottom-bar bound, and longest-prefix highlighting. |
-| `layout/AppShell.test.tsx` | 13 | The 900 px switch from both sides, 375 / 768 / 1440, drawer overflow, the account menu. |
+| `layout/AppShell.test.tsx` | 20 | The 900 px switch from both sides, 375 / 768 / 1440, drawer overflow, the two drawer halves and their divider, and which control holds the trailing corner at each width. |
 | `features/auth/*.test.tsx` | 24 | Validation, the domain rule, field-error mapping, and where each screen lands. |
+| `theme.test.ts` | 4 | That the stack leads with the self-hosted family, ends generic, prefers Arial to Helvetica, and names no weight the bundle lacks. |
 | `features/status`, `hooks` | 6 | Unchanged from M1. |
 
 Added to `package.json`: `react-hook-form`, `zod`, `@hookform/resolvers` — the form stack
@@ -2553,6 +2556,22 @@ section 10. An admin has six. Rather than hide two screens from anyone on a phon
 bar carries a menu button that opens the full list in a temporary drawer, so the bar is a
 shortcut rather than a ceiling.
 
+**The mobile app bar has exactly one trailing control, and it is the drawer button.** The
+avatar menu is not there at all. A phone's top-right corner is the one a right thumb
+reaches without regripping, and the drawer is opened far more often than the account menu
+— so reach wins over the convention that puts an avatar in that corner. Desktop is
+unchanged: reach is not a constraint with a mouse, and the avatar keeps its usual place.
+
+**The mobile drawer therefore has two halves, separated by a `Divider`.** Work navigation
+above, the account below: who you are, change password, log out. They are different
+questions — "which tickets am I looking at" and "who am I signed in as" — and one
+undifferentiated list makes both slower to scan. The work half is the one that scrolls, so
+the account stays pinned to the bottom however long the navigation grows.
+
+The desktop drawer deliberately has no account half. The top bar already holds those three
+things, and giving one action two homes on the same screen is how the two copies start
+disagreeing.
+
 #### zod mirrors the API's rules, and says so
 
 ```ts
@@ -2594,6 +2613,47 @@ redirects and tests all reference the same entry, so a path can be renamed witho
 something quietly continuing to point at the old one — which, in a router, fails silently
 by rendering the catch-all rather than loudly by crashing.
 
+#### The typeface is self-hosted, and that is a correctness fix
+
+M5 shipped a theme that asked for `Inter, Roboto, Helvetica, Arial, sans-serif` and
+installed none of them. Naming a font does not load one, so every browser fell through to
+Helvetica — which on this build machine resolves to **Nimbus Sans**, and Nimbus is
+unusually lopsided: its `hhea` ascent is 0.729em against a 0.718em cap height, so the
+capitals almost touch the top of its own content box while the descent below stays a full
+0.271em.
+
+The consequence is visible in anything with a fixed height, measured here from MUI's real
+box model rather than by eye:
+
+| Container | Space above the capitals | Space below the baseline | Lean |
+| --- | --- | --- | --- |
+| Button (14px/1.75, 6px padding) | 11.40px | 15.04px | 3.64px high |
+| Nav row (16px/1.5, 8px padding) | 12.18px | 16.34px | 4.16px high |
+| Outlined input (16px, 16.5px padding) | 20.18px | 24.34px | 4.16px high |
+
+Every label sat high in its container, with visibly more room underneath it than above.
+
+Inter fixes it outright rather than trading one lean for another: its typographic
+metrics are symmetric, so the midpoint of the capitals lands exactly on the centre of the
+line box — 13.16px above and below in a button, 14.18px in a nav row, 0.00px of lean in
+all three. That is not a lucky number; Inter sets `USE_TYPO_METRICS`, which tells the
+browser to read its `OS/2` typo values, and those are chosen to centre.
+
+**Rejected:** a Google Fonts `<link>`. It is a request to a third party on every cold
+load, it fails closed in a locked-down network, and it puts a dependency outside the
+distribution that serves everything else. `@fontsource` bundles the same files through
+Vite, so they are emitted into `dist/assets/` with content hashes and served from the same
+CloudFront distribution as the JavaScript — 96 kB of woff2 across four weights, and no
+external origin in the built output at all.
+
+**Rejected:** bundling Roboto as well. It is second in the stack, so it can only render if
+Inter fails to load, and shipping a second 96 kB for that case is not a trade worth making.
+
+The fallback order changed too, on the same evidence. `Arial` now precedes `Helvetica`,
+because Arial resolves to metrics that centre to within 0.02em on every platform while
+Helvetica is the one that resolves to Nimbus. It only matters if the webfont fails — but
+if it fails, it should fail onto the better of the two.
+
 #### No `.css` files
 
 Per CLAUDE.md: `sx` for one-off layout, `theme.ts` for anything global. M5 grew the theme
@@ -2601,7 +2661,12 @@ from M1's palette into component defaults — `textTransform: 'none'` on buttons
 `fullWidth` on text fields, `variant="outlined"` on cards. Each of those is a line that
 forty components no longer carry.
 
-No exceptions were needed this phase. No `@keyframes`, no third-party stylesheet.
+One exception was taken, and CLAUDE.md anticipates exactly this one: "a third-party
+library that ships or demands a stylesheet". [src/fonts.ts](../frontend/src/fonts.ts) is
+four `@fontsource` CSS imports and nothing else. Each is a single `@font-face` rule for
+one weight of one subset — the narrowest form the package offers — and they are confined
+to that one module so the exception is easy to find and easy to reverse. No `@keyframes`,
+no other stylesheet.
 
 ### 3. How the pieces connect
 
@@ -2727,6 +2792,8 @@ The `NO_RETRY_PATHS` check is why a wrong password does not trigger a refresh: a
 | Which route is guarded by what | [src/App.tsx](../frontend/src/App.tsx) |
 | Global styling, colours, component defaults | [src/theme.ts](../frontend/src/theme.ts) |
 | How a role or level is worded for humans | [layout/roleLabels.ts](../frontend/src/layout/roleLabels.ts) |
+| Which typeface is actually loaded, and in which weights | [src/fonts.ts](../frontend/src/fonts.ts) |
+| Which typeface is *asked for*, and its fallbacks | [src/theme.ts](../frontend/src/theme.ts) |
 
 ### 5. How to change it
 
@@ -2818,12 +2885,21 @@ than anything about icons. Relatedly, `@mui/icons-material` declares `SvgIconCom
 but does not export it, so `navigation.ts` names the shape itself as
 `ComponentType<SvgIconProps>`.
 
+**A font named in a theme is not a font that is loaded.** This is worth stating plainly
+because it failed silently for a whole phase: MUI renders, nothing warns, and the page
+looks approximately right — it just leans. If a family is added to
+[theme.ts](../frontend/src/theme.ts), it needs a matching import in
+[fonts.ts](../frontend/src/fonts.ts) or it will never render. The same applies to
+**weights**: `fonts.ts` bundles 400, 500, 600 and 700, and a theme asking for 300 or 800
+gets a browser-synthesised approximation — smeared or mechanically emboldened — rather than
+an error. `theme.test.ts` pins both halves of that contract.
+
 **`package-lock.json` is gitignored by the scaffold** (`.gitignore` line 204). M5 added
 three dependencies, and a fresh `npm install` will resolve them within their caret ranges
 rather than to the versions tested here. Not ours to change mid-build, but worth knowing
 if CI ever disagrees with a laptop.
 
-**The bundle is 788 kB, 251 kB gzipped**, almost all of it Material UI. It is served
+**The bundle is 790 kB of JavaScript, 251 kB gzipped**, plus 96 kB of woff2 across four font weights. The JavaScript is almost all Material UI. It is served
 compressed by CloudFront and is not a problem yet, but M6 adds `@mui/x-data-grid` and M7
 adds `@mui/x-charts`. If it needs attention, route-level `React.lazy` splitting is the
 lever, and the admin screens are the natural split point.
@@ -2833,7 +2909,7 @@ lever, and the admin screens are the natural split point.
 screens). It is typed and exported from `LoginPage.tsx` so both writers and the reader
 agree; a bare object literal would drift the day someone renames a key.
 
-**There is still no real-browser end-to-end test.** The 101 frontend tests run in jsdom,
+**There is still no real-browser end-to-end test.** The 112 frontend tests run in jsdom,
 which has no layout engine — `useBreakpoint` is exercised against a stubbed `matchMedia`,
 so the tests prove the *decision* at 375/768/1440 px, not that the result looks right. The
 HTTP path was verified with curl through the Vite proxy rather than with a browser.
@@ -2914,6 +2990,36 @@ re-renders as little as possible. `register('email')` wires an input to it.
 **Media query / breakpoint** — a CSS condition on the viewport (`max-width: 899px`) and
 the width at which a layout changes. MUI calls 900 px `md`; `useBreakpoint` is pinned to
 899 so `react-responsive` and MUI's own responsive props always agree.
+
+**`@font-face`** — the CSS rule that names a font family and says where to download it.
+Without one, naming a family in CSS only asks for whatever the operating system already
+has.
+
+**woff2** — the compressed font format browsers use on the web. Already compressed, so
+gzip at the CDN adds nothing to it.
+
+**Self-hosting a font** — serving the font files from your own origin instead of linking
+to a third party such as Google Fonts. One fewer external dependency, and nothing to
+resolve at load time beyond the origin already serving the page.
+
+**Line box** — the strip of vertical space one line of text occupies, its height set by
+`line-height`. The glyphs sit inside it according to the font's own ascent and descent,
+which is why two fonts at the same size can sit at different heights in the same box.
+
+**Cap height** — the height of a capital letter above the baseline. Optical centring is
+judged on this rather than on the full ascent-to-descent span, because that span includes
+room for accents and descenders that most labels never use.
+
+**Half-leading** — the leftover space when a line box is taller than the font's content
+area, split equally above and below. Because it is equal on both sides, it never fixes an
+asymmetry the font itself has.
+
+**`USE_TYPO_METRICS`** — a flag in a font's `OS/2` table telling browsers to use its
+typographic ascent and descent rather than the legacy `hhea` ones. Inter sets it, and its
+typo values are the ones that centre.
+
+**`font-display: swap`** — render text immediately in the fallback font, then swap when
+the web font arrives. The alternative is invisible text while the font downloads.
 
 **`sx` prop** — MUI's inline styling prop, with access to theme values: `sx={{ p: 2 }}` is
 two theme spacing units of padding, not two pixels.

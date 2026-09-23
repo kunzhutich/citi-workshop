@@ -93,8 +93,9 @@ The app opens at the sign-in screen. Two ways in:
   `must_change_password`, so the first sign-in goes straight to a change-password screen
   and offers no way past it. That is the gate working, not a fault.
 
-`npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod` and
-`@hookform/resolvers`.
+`npm install` again after pulling this phase: M5 adds `react-hook-form`, `zod`,
+`@hookform/resolvers` and `@fontsource/inter` (the typeface is self-hosted and bundled,
+not fetched from a CDN).
 
 ### 5. Run the checks
 
@@ -107,7 +108,7 @@ cd ../frontend
 npm run lint && npm test
 ```
 
-As of M5: **606 backend tests** and **101 frontend tests**, all passing. The backend
+As of M5: **606 backend tests** and **112 frontend tests**, all passing. The backend
 suite takes about five minutes, most of it bcrypt hashing at cost 12.
 
 The backend suite needs the same PostgreSQL server. It creates its own database
