@@ -19,7 +19,12 @@ export const theme = createTheme({
     background: { default: '#f4f6fa', paper: '#ffffff' },
   },
   typography: {
-    fontFamily: ['Inter', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'].join(','),
+    // Inter is self-hosted in `fonts.ts`, so it is what actually renders; the
+    // rest is the degraded case if that request fails. Arial precedes
+    // Helvetica deliberately: Arial resolves to metrics that centre almost
+    // evenly (0.02em of lean), while Helvetica resolves to Nimbus Sans on
+    // Linux, which leans 0.26em — the very fault self-hosting fixes.
+    fontFamily: ['Inter', 'Roboto', 'Arial', 'Helvetica', 'sans-serif'].join(','),
     h1: { fontSize: '1.9rem', fontWeight: 600 },
     h2: { fontSize: '1.35rem', fontWeight: 600 },
     h3: { fontSize: '1.1rem', fontWeight: 600 },
