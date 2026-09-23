@@ -91,6 +91,7 @@ from tests.factories import (
     make_floor,
     make_incident,
     make_note,
+    make_notification,
     make_seat,
     make_user,
 )
@@ -1161,6 +1162,142 @@ def test_communication_is_null_rather_than_zero_when_nothing_resolved(
     assert body["informed_pct"] is None
     assert body["reopen_rate_pct"] is None
     assert body["median_first_public_note_hours"] is None
+
+
+def test_communication_reports_no_read_rate_when_nothing_was_sent(
+    client: TestClient, dataset: Dataset, admin_headers: dict[str, str]
+) -> None:
+    """The dataset has no notifications, and "nothing sent" is not "0% read"."""
+    body = get_report(client, "/communication", admin_headers, window_params(dataset))
+
+    assert body["notifications_total"] == 0
+    assert body["notifications_read_total"] == 0
+    assert body["notification_read_rate_pct"] is None
+
+
+def test_communication_counts_what_reporters_have_read(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """Four notifications to reporters inside the window, three of them read.
+
+    I4 and I9 belong to `employee_one`, I5 and I8 to `employee_two` — one from
+    each building, so the building filter below has something to separate.
+    """
+    for key, read in (("I4", True), ("I9", True), ("I5", True), ("I8", False)):
+        incident = dataset.incidents[key]
+        reporter = db_session.get(User, incident.reporter_id)
+        assert reporter is not None
+        make_notification(
+            db_session,
+            user=reporter,
+            incident=incident,
+            created_at=incident.created_at + _hours(12),
+            read_at=incident.created_at + _hours(30) if read else None,
+        )
+
+    body = get_report(client, "/communication", admin_headers, window_params(dataset))
+
+    assert body["notifications_total"] == 4
+    assert body["notifications_read_total"] == 3
+    assert body["notification_read_rate_pct"] == 75.0
+
+
+def test_communication_read_rate_ignores_notifications_to_the_engineer(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """Every other number here is about the reporter, and so is this one.
+
+    I4 is assigned to Nina. A notification addressed to her is a real
+    notification and is not counted: "are employees being informed" is not a
+    question about engineers' inboxes.
+    """
+    i4 = dataset.incidents["I4"]
+    make_notification(
+        db_session,
+        user=dataset.nina,
+        incident=i4,
+        created_at=i4.created_at + _hours(12),
+        read_at=None,
+    )
+    make_notification(
+        db_session,
+        user=dataset.employee_one,
+        incident=i4,
+        created_at=i4.created_at + _hours(12),
+        read_at=i4.created_at + _hours(13),
+    )
+
+    body = get_report(client, "/communication", admin_headers, window_params(dataset))
+
+    assert body["notifications_total"] == 1
+    assert body["notification_read_rate_pct"] == 100.0
+
+
+def test_communication_read_rate_windows_on_the_notification_not_the_ticket(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """D5's rule on a row that is a notification rather than an incident.
+
+    I10 was reported 45 days ago and is outside the window — `total` proves it,
+    staying at 9. A notification sent about it *yesterday* is activity inside
+    the window and is counted. The mirror case is asserted too: a notification
+    sent 40 days ago about a ticket that is inside the window is not.
+    """
+    i10 = dataset.incidents["I10"]
+    i4 = dataset.incidents["I4"]
+    make_notification(
+        db_session,
+        user=db_session.get(User, i10.reporter_id),
+        incident=i10,
+        created_at=dataset.now - timedelta(days=1),
+        read_at=dataset.now,
+    )
+    make_notification(
+        db_session,
+        user=db_session.get(User, i4.reporter_id),
+        incident=i4,
+        created_at=dataset.now - timedelta(days=40),
+        read_at=dataset.now - timedelta(days=39),
+    )
+
+    body = get_report(client, "/communication", admin_headers, window_params(dataset))
+
+    assert body["total"] == 9
+    assert body["notifications_total"] == 1
+    assert body["notifications_read_total"] == 1
+
+
+def test_communication_read_rate_respects_the_building_filter(
+    client: TestClient,
+    db_session: Session,
+    dataset: Dataset,
+    admin_headers: dict[str, str],
+) -> None:
+    """The building belongs to the ticket, which is why the query joins."""
+    for key in ("I4", "I8"):
+        incident = dataset.incidents[key]
+        make_notification(
+            db_session,
+            user=db_session.get(User, incident.reporter_id),
+            incident=incident,
+            created_at=incident.created_at + _hours(12),
+            read_at=None,
+        )
+
+    params = window_params(dataset, building_id=dataset.building_a.id)
+    body = get_report(client, "/communication", admin_headers, params)
+
+    # I4 is in building A; I8 is in building B and drops out.
+    assert body["notifications_total"] == 1
 
 
 # --- /reports/me -------------------------------------------------------------

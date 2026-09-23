@@ -74,6 +74,7 @@ from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.schemas.report import (
@@ -681,6 +682,52 @@ def communication(session: Session, window: ReportWindow) -> Row[Any]:
         ).select_from(Incident),
         window,
     )
+    return session.execute(statement).one()
+
+
+def notification_read_rate(session: Session, window: ReportWindow) -> Row[Any]:
+    """Return how much of what we sent reporters in the period they have read.
+
+    **Reporters only.** Every other number on this report is about the
+    reporter's experience — were they told anything before their ticket was
+    resolved, how long did the first note take, did they have to reopen it —
+    and a read rate that folded in engineers' inboxes would answer a different
+    question standing next to the ones it does not. The join is what restricts
+    it: `Notification.user_id == Incident.reporter_id`.
+
+    **The window filters `notifications.created_at`, not the incident's.** That
+    is D5's rule unchanged — the window filters the `created_at` of the thing
+    being counted — applied to a row that is a notification rather than a
+    ticket. Windowing on the incident instead would ask "how much of what we
+    sent about tickets raised in March has been read", which is a question
+    nobody has.
+
+    **A recent notification depresses the rate**, because it has had less time
+    to be read. That is inherent in the metric rather than a defect, and it is
+    why `notifications_total` is reported beside the percentage rather than
+    only the percentage.
+    """
+    was_read = Notification.read_at.is_not(None)
+    read_total = func.count().filter(was_read)
+
+    statement = (
+        select(
+            func.count().label("notifications_total"),
+            read_total.label("notifications_read_total"),
+            _percentage(read_total, func.count()).label("notification_read_rate_pct"),
+        )
+        .select_from(Notification)
+        .join(Incident, Incident.id == Notification.incident_id)
+        .where(
+            Notification.user_id == Incident.reporter_id,
+            Notification.created_at >= window.date_from,
+            Notification.created_at <= window.date_to,
+        )
+    )
+    if window.building_id is not None:
+        # The building belongs to the ticket, not to the notification, which
+        # is the other half of why this query joins at all.
+        statement = statement.where(Incident.building_id == window.building_id)
     return session.execute(statement).one()
 
 

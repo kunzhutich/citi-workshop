@@ -327,6 +327,15 @@ class CommunicationReport(BaseModel):
     engineer or an admin exists on it and was written **before** it was
     resolved. A public note added after the fact is a resolution summary, not
     keeping someone posted.
+
+    **Two halves, and they count different things.** The first seven fields
+    count *incidents* created in the period. The last three count
+    *notifications* sent in the period, which is why they can move while the
+    others do not: telling somebody about a ticket raised in February is
+    activity in March. Both obey the same rule — the window filters the
+    `created_at` of the row being counted (decision D5) — and the read rate is
+    restricted to notifications addressed to the ticket's own reporter, so the
+    whole report stays about one person's experience.
     """
 
     window: ReportWindow
@@ -337,6 +346,14 @@ class CommunicationReport(BaseModel):
     median_first_public_note_hours: float | None
     reopened_total: int
     reopen_rate_pct: float | None = Field(description="None when nothing was created.")
+
+    notifications_total: int = Field(
+        description="In-app notifications sent to reporters about their own tickets in the period."
+    )
+    notifications_read_total: int = Field(description="Of those, the ones that have been read.")
+    notification_read_rate_pct: float | None = Field(
+        description="None when nothing was sent in the period."
+    )
 
 
 class PersonalCounts(BaseModel):

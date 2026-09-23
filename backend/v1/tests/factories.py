@@ -25,6 +25,7 @@ from app.models.enums import (
     IncidentStatus,
     LocationDetail,
     NoteVisibility,
+    NotificationType,
     SeatType,
     UserRole,
 )
@@ -32,6 +33,7 @@ from app.models.event import IncidentEvent
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
+from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.security.passwords import hash_password
@@ -311,6 +313,37 @@ def make_note(
     session.flush()
     session.refresh(note)
     return note
+
+
+def make_notification(
+    session: Session,
+    *,
+    user: User,
+    incident: Incident,
+    notification_type: NotificationType = NotificationType.STATUS_CHANGED,
+    message: str = "Your ticket is now Resolved.",
+    created_at: datetime | None = None,
+    read_at: datetime | None = None,
+) -> Notification:
+    """Insert a notification directly.
+
+    Bypasses `app/notifications.py` on purpose: the rules decide *whether* a
+    row exists, and a test of the report needs rows with chosen timestamps —
+    including ones outside the window and ones read long after they arrived.
+    """
+    notification = Notification(
+        user_id=user.id,
+        incident_id=incident.id,
+        type=notification_type,
+        message=message,
+        read_at=read_at,
+    )
+    if created_at is not None:
+        notification.created_at = created_at
+    session.add(notification)
+    session.flush()
+    session.refresh(notification)
+    return notification
 
 
 def login(client: TestClient, email: str, password: str = DEFAULT_PASSWORD) -> str:

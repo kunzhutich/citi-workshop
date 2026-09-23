@@ -367,8 +367,14 @@ def blocked_escalated(session: Session, scope: ReportScope) -> BlockedEscalatedR
 
 
 def communication(session: Session, window: ReportWindow) -> CommunicationReport:
-    """Build `/reports/communication`."""
+    """Build `/reports/communication`.
+
+    Two queries rather than one, because the two halves count different rows:
+    the first aggregates incidents, the second aggregates notifications. Folding
+    them together would need an outer join whose grain is neither.
+    """
     row = repository.communication(session, window)
+    notified = repository.notification_read_rate(session, window)
     return CommunicationReport(
         window=window,
         total=row.total,
@@ -378,6 +384,9 @@ def communication(session: Session, window: ReportWindow) -> CommunicationReport
         median_first_public_note_hours=_as_float(row.median_first_public_note_hours),
         reopened_total=row.reopened_total,
         reopen_rate_pct=_as_float(row.reopen_rate_pct),
+        notifications_total=notified.notifications_total,
+        notifications_read_total=notified.notifications_read_total,
+        notification_read_rate_pct=_as_float(notified.notification_read_rate_pct),
     )
 
 
