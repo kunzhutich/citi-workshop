@@ -15,11 +15,12 @@ import { theme } from './theme';
 const families = theme.typography.fontFamily?.split(',').map((name) => name.trim()) ?? [];
 
 describe('the font stack', () => {
-  it('leads with the family that is actually self-hosted', () => {
-    // `src/fonts.ts` bundles Inter and nothing else, so anything ahead of it
-    // here would be a family the app hopes the operating system happens to
-    // have — which is how the original fault arose.
-    expect(families[0]).toBe('Inter');
+  it('leads with the families that are actually self-hosted', () => {
+    // `src/fonts.ts` bundles Inter and Roboto, so anything ahead of them here
+    // would be a family the app hopes the operating system happens to have —
+    // which is how the original fault arose. Inter is first, so it is the one
+    // that renders; Roboto is fetched only if Inter's files cannot be.
+    expect(families.slice(0, 2)).toEqual(['Inter', 'Roboto']);
   });
 
   it('ends at a generic family, so there is always something to render', () => {
@@ -34,9 +35,9 @@ describe('the font stack', () => {
   });
 
   it('asks only for weights the bundled font provides', () => {
-    // `fonts.ts` imports 400, 500, 600 and 700. A weight named here but not
-    // imported there is synthesised by the browser, which smears the nearest
-    // one and undoes the reason for self-hosting.
+    // `fonts.ts` imports 400, 500, 600 and 700 of both families. A weight
+    // named here but not imported there is synthesised by the browser, which
+    // smears the nearest one and undoes the reason for self-hosting.
     const bundled = [400, 500, 600, 700];
     const declared = [
       theme.typography.h1.fontWeight,

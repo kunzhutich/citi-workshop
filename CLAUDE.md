@@ -144,8 +144,9 @@ functions, early returns, no deeply nested comprehensions.
 PropTypes guidance; keep the camelCase/PascalCase and Airbnb-style conventions. Material
 UI for components, `react-responsive` for layout switching.
 
-**Styling — no `.css` files.** Build the UI out of Material UI components and style them
-in place:
+**Styling — no component stylesheets.** What this rules out is the `Catalog.tsx` +
+`Catalog.css` pattern: a hand-written stylesheet shadowing a component, so the styling
+for one thing lives in two files. Style components *in place* instead:
 
 - `sx={{ ... }}` for one-off layout, spacing and colour on a specific instance.
 - `styled()` when the same treatment is reused, or when a plain element needs theming.
@@ -156,10 +157,15 @@ Hand-written stylesheets, CSS modules and utility-class frameworks are out. Pref
 tokens (`theme.palette.*`, `theme.spacing()`) over literal values so the look stays
 consistent.
 
-Exceptions exist — `@keyframes`, a third-party library that ships or demands a
-stylesheet, a `<style>` block that genuinely has no MUI equivalent. **Judging those is
-Claude's call:** take the exception when it is clearly right, keep it as small and local
-as possible, and note it in the phase summary rather than stopping to ask.
+This is a rule about *our* styling, not a ban on the string `.css`. Importing a
+stylesheet a third-party package ships — `@fontsource/inter/latin-400.css`, say — is
+ordinary use of that package and needs no justification: it is not a stylesheet shadowing
+a component of ours. Keep such imports together in one module so they are easy to find.
+
+Genuine exceptions do exist — `@keyframes`, a `<style>` block with no MUI equivalent.
+**Judging those is Claude's call:** take the exception when it is clearly right, keep it
+as small and local as possible, and note it in the phase summary rather than stopping to
+ask.
 
 **Terraform** — snake_case, comment every resource we add, `terraform validate` before
 committing.
