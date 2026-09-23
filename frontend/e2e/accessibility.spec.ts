@@ -150,6 +150,13 @@ test.describe('axe: every screen', () => {
       priority: 'Medium',
     });
     await expect(employeePage.getByRole('list', { name: 'Ticket progress' })).toBeVisible();
+    // The stepper comes from the ticket's own query, and this page has three.
+    // The actions card and the activity timeline are behind `QueryState`s of
+    // their own, and "no violations" is an absence: a region that is still a
+    // spinner contributes no markup to scan and so cannot fail. The timeline
+    // is a list, which is where the `list` violation §1 records was found in
+    // the first place. See D25.
+    await expectNothingLoading(employeePage);
 
     await expectNoViolations(employeePage);
   });
@@ -228,6 +235,12 @@ test.describe('axe: the states a resting page does not show', () => {
     await expect(assign).toBeVisible();
     await assign.click();
     await expect(adminPage.getByRole('dialog')).toBeVisible();
+    // The roster is a query of its own (`AssignDialog.tsx:103`), so the dialog
+    // is on screen with a spinner where the list of people goes. Scanning then
+    // scans everything except the list this test is named after — and finds no
+    // violations, because the markup it is looking for is not there yet. See
+    // D25.
+    await expectNothingLoading(adminPage);
 
     await expectNoViolations(adminPage, '[role="dialog"]');
   });

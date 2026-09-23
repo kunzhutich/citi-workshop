@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/test';
+import { expect, expectNothingLoading, test } from './fixtures/test';
 import { expectStatus, openTicket, reportIssue, runTransition } from './fixtures/ticket';
 
 /**
@@ -39,6 +39,19 @@ test.describe('work that is given rather than taken', () => {
 
     // --- A junior engineer may not take it ---------------------------------
     await openTicket(juniorPage, reference);
+    // Both assertions below are absences, and an absence is only evidence once
+    // the thing that would show it has rendered. `openTicket` waits on the
+    // ticket's own query; the buttons live in `ActionsCard`, which the detail
+    // page keeps behind a *second* `QueryState` on `allowed-transitions`
+    // (`IncidentDetailPage.tsx:206`) — so until that query lands the whole card
+    // is a spinner and "no Pick up button" is true of every ticket in the
+    // application. Waiting for the card's own heading is what makes the two
+    // counts below a statement about the permission rule rather than about the
+    // network; `expectNothingLoading` adds that no sibling query is still in
+    // flight either. Without this wait the test passed with the JUNIOR
+    // restriction removed. See D25.
+    await expect(juniorPage.getByRole('heading', { name: 'Actions' })).toBeVisible();
+    await expectNothingLoading(juniorPage);
     await expect(juniorPage.getByRole('button', { name: 'Pick up', exact: true })).toHaveCount(0);
     await expect(juniorPage.getByRole('button', { name: 'Assign…' })).toHaveCount(0);
 

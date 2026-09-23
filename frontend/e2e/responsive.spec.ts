@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-import { expect, test } from './fixtures/test';
+import { expect, expectNothingLoading, test } from './fixtures/test';
 import { reportIssue } from './fixtures/ticket';
 
 /**
@@ -69,7 +69,14 @@ test.describe('layout', () => {
     });
     expect(reference).toMatch(/^INC-\d+$/);
 
-    // Already on the detail page, having just reported it.
+    // Already on the detail page, having just reported it. Measured only once
+    // the page has finished arriving: "does not scroll sideways" is an absence,
+    // and a screen whose two-column grid is still a pair of spinners is narrow
+    // enough to satisfy it whatever the laid-out page would do. The other two
+    // measurements below are each preceded by a wait for the widest thing on
+    // that screen — the category grid, and a row of the eight-column table —
+    // so they already stand on a rendered page. See D25.
+    await expectNothingLoading(employeePage);
     expect(await horizontalOverflow(employeePage)).toBeLessThanOrEqual(1);
 
     await employeePage.goto('/report');
