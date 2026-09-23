@@ -149,3 +149,23 @@ def test_models_and_migration_do_not_drift() -> None:
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == [], f"models and migrations disagree: {differences}"
+
+
+def test_every_timestamp_column_is_timezone_aware(_migrated_database: Engine) -> None:
+    """A naive timestamp beside an aware one is a silent wrong answer, not an error.
+
+    Revision 0002 converted the seven lifecycle columns revision 0001 left
+    naive. This guards the property rather than those seven names, so a new
+    `Mapped[datetime]` written without `DateTime(timezone=True)` fails here.
+    """
+    with _migrated_database.connect() as connection:
+        naive = connection.execute(
+            text(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "AND data_type = 'timestamp without time zone' "
+                "ORDER BY table_name, column_name"
+            )
+        ).all()
+
+    assert naive == [], f"naive timestamp columns: {naive}"

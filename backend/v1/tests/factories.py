@@ -5,25 +5,31 @@ factory library, so a test reads as ordinary Python and nothing is hidden.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.clock import utc_now
 from app.models.building import Building
 from app.models.category import Category
 from app.models.engineer_profile import EngineerProfile
 from app.models.enums import (
     AvailabilityStatus,
     BlockedReasonType,
+    CloseReason,
     EngineerLevel,
+    IncidentPriority,
     IncidentStatus,
     LocationDetail,
+    NoteVisibility,
     SeatType,
     UserRole,
 )
 from app.models.floor import Floor
 from app.models.incident import Incident
+from app.models.note import IncidentNote
 from app.models.seat import Seat
 from app.models.user import User
 from app.security.passwords import hash_password
@@ -183,18 +189,28 @@ def make_incident(
     seat: Seat | None = None,
     assignee: User | None = None,
     status: IncidentStatus = IncidentStatus.OPEN,
+    priority: IncidentPriority = IncidentPriority.MEDIUM,
     title: str = "Something is broken",
     description: str = "It stopped working this morning and has not recovered.",
+    is_escalated: bool = False,
+    escalation_reason: str | None = None,
+    assigned_at: datetime | None = None,
+    acknowledged_at: datetime | None = None,
+    resolved_at: datetime | None = None,
+    closed_at: datetime | None = None,
+    close_reason: CloseReason | None = None,
+    reopen_count: int = 0,
 ) -> Incident:
-    """Insert an incident.
+    """Insert an incident in whatever state the test needs it to start in.
 
-    Only the columns the M3 tests care about are exposed — enough to make a
-    facility or category "referenced", and enough to give an engineer an active
-    ticket count. The full creation path arrives with the incident service in M4.
+    Everything is a keyword with a sensible default, so a test about the reopen
+    window says `closed_at=...` and nothing else, and a test about assignment
+    says `assignee=...` and nothing else.
 
     A BLOCKED incident is given a reason automatically: the table's CHECK
     constraint requires one, and a test about workload counts should not have
-    to know that.
+    to know that. An escalated one is given a reason and a timestamp for the
+    same reason — the columns are meant to travel together.
     """
     incident = Incident(
         title=title,
@@ -206,13 +222,51 @@ def make_incident(
         reporter_id=reporter.id,
         assignee_id=assignee.id if assignee is not None else None,
         status=status,
+        priority=priority,
         blocked_reason_type=(
             BlockedReasonType.WAITING_ON_PARTS if status == IncidentStatus.BLOCKED else None
         ),
+        is_escalated=is_escalated,
+        escalation_reason=(
+            escalation_reason or ("Nobody has looked at this" if is_escalated else None)
+        ),
+        escalated_at=utc_now() if is_escalated else None,
+        escalated_by=reporter.id if is_escalated else None,
+        assigned_at=assigned_at or (utc_now() if assignee is not None else None),
+        acknowledged_at=acknowledged_at,
+        resolved_at=resolved_at,
+        closed_at=closed_at,
+        close_reason=close_reason,
+        reopen_count=reopen_count,
     )
     session.add(incident)
     session.flush()
+    session.refresh(incident)
     return incident
+
+
+def make_note(
+    session: Session,
+    *,
+    incident: Incident,
+    author: User,
+    body: str = "Taking a look at this now.",
+    visibility: NoteVisibility = NoteVisibility.PUBLIC,
+    created_at: datetime | None = None,
+) -> IncidentNote:
+    """Insert a note. `created_at` is settable so edit-window tests can age one."""
+    note = IncidentNote(
+        incident_id=incident.id,
+        author_id=author.id,
+        body=body,
+        visibility=visibility,
+    )
+    if created_at is not None:
+        note.created_at = created_at
+    session.add(note)
+    session.flush()
+    session.refresh(note)
+    return note
 
 
 def login(client: TestClient, email: str, password: str = DEFAULT_PASSWORD) -> str:

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Index, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,14 +43,24 @@ class IncidentNote(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         index=True,
     )
+    # Overrides TimestampMixin's `now()` default. The activity timeline merges
+    # this table with `incident_events` and orders the result by `created_at`,
+    # so both have to be stamped from the same per-row clock — `now()` is the
+    # transaction start time and would interleave them wrongly. See revision
+    # 0003. `updated_at` keeps the inherited default; nothing orders by it.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.clock_timestamp(),
+    )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     visibility: Mapped[NoteVisibility] = mapped_column(
         pg_enum(NoteVisibility, "note_visibility"),
         nullable=False,
         server_default=text("'PUBLIC'"),
     )
-    edited_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     incident: Mapped["Incident"] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship()

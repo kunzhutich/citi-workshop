@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import (
     CheckConstraint,
     Computed,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -129,7 +130,10 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # --- Escalation -----------------------------------------------------------
     is_escalated: Mapped[bool] = mapped_column(nullable=False, server_default=false(), index=True)
     escalation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    escalated_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    escalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     escalated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -158,12 +162,19 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # --- Lifecycle timestamps -------------------------------------------------
     # assigned_at and acknowledged_at are set once and never overwritten;
-    # resolved_at and closed_at are cleared on reopen. The workflow service
-    # owns those rules.
-    assigned_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    acknowledged_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    closed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # resolved_at and closed_at are cleared on reopen. `app/workflow.py` and
+    # `services/incident_service.py` own those rules.
+    #
+    # `timezone=True` on every one of them is not decoration: the reopen window
+    # subtracts `closed_at` from an aware `now`, which is a TypeError against a
+    # naive column. Revision 0002 converted them.
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- Search ---------------------------------------------------------------
     search_vector: Mapped[Any] = mapped_column(
@@ -179,6 +190,10 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     seat: Mapped["Seat | None"] = relationship()
     reporter: Mapped["User"] = relationship(foreign_keys=[reporter_id])
     assignee: Mapped["User | None"] = relationship(foreign_keys=[assignee_id])
+    # Named `escalator` rather than `escalated_by`, which is the column. Three
+    # relationships point at `users` from this table, so each one has to name
+    # its foreign key explicitly.
+    escalator: Mapped["User | None"] = relationship(foreign_keys=[escalated_by])
     duplicate_of: Mapped["Incident | None"] = relationship(
         remote_side="Incident.id",
         foreign_keys=[duplicate_of_id],

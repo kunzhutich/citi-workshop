@@ -1336,3 +1336,910 @@ which is what distinguishes "leave this alone" from "set this to null" in a PATC
 
 **RFC 7518 §3.2** — the JWT specification's rule that an HMAC key must be at least as
 long as the hash output: 32 bytes for HS256.
+
+---
+
+## Phase M4 — Incidents and workflow
+
+M3 filled in everything an incident needs before it can exist: somewhere it happened,
+what kind of problem it is, and who can be given it. M4 builds the incident itself —
+reporting one, finding it again, moving it through its lifecycle, assigning it,
+escalating it, and talking about it.
+
+Fifteen endpoints, and one file that matters more than the other twenty:
+[app/workflow.py](../backend/v1/app/workflow.py). The workflow is written as **data**, and
+three things read that data instead of restating it — the transitions endpoint, the
+allowed-transitions endpoint the frontend will draw its buttons from, and the tests.
+
+Still no frontend; the React shell arrives in M5. **Everything here was verified against
+local PostgreSQL only** — through the 605-test suite, and once end to end over HTTP
+against the real development database, walking one ticket from report through pick-up,
+block, escalate, clear, resolve, confirm and reopen with three accounts. What remains
+unproven in the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+This section starts with a carry-over from M2 that had to be fixed before any of it
+would work.
+
+### 0. The carry-over: seven naive timestamps
+
+Revision 0001 declared the lifecycle timestamps as bare `Mapped[datetime]`:
+
+```python
+assigned_at: Mapped[datetime | None] = mapped_column(nullable=True)
+```
+
+SQLAlchemy renders that as `TIMESTAMP WITHOUT TIME ZONE`. Every *other* timestamp in the
+schema carries an explicit `DateTime(timezone=True)`, because `TimestampMixin` says so —
+so `incidents.created_at` was `timestamptz` and `incidents.closed_at`, two columns below
+it, was not. Seven columns ended up naive:
+
+```
+incidents.assigned_at  acknowledged_at  resolved_at  closed_at  escalated_at
+incident_notes.edited_at  deleted_at
+```
+
+Those are exactly M4's working set, and all three ways the mismatch goes wrong are
+load-bearing here:
+
+1. **Python raises.** The seven-day reopen window computes `now - incident.closed_at`.
+   An aware `now` minus a naive `closed_at` is a `TypeError`, not a wrong answer — the
+   endpoint would 500.
+2. **Clients silently mis-render.** A naive value serialises without a `Z`, so a browser
+   reads `14:03` as local time. A ticket resolved an hour ago displays as resolved eight
+   hours from now.
+3. **SQL silently skews.** M7's timing metrics subtract these columns from `created_at`.
+   PostgreSQL casts the naive side using the session's `TimeZone`, so the same report
+   returns different numbers depending on who runs it.
+
+[Revision 0002](../backend/v1/alembic/versions/0002_timestamptz_lifecycle_columns.py)
+converts all seven with `USING <column> AT TIME ZONE 'UTC'`, which *reinterprets* the
+stored wall time as UTC rather than shifting it — correct because every value written so
+far came from a UTC clock.
+
+The test that guards it asserts the property rather than the seven names, so a future
+`Mapped[datetime]` written without `DateTime(timezone=True)` fails immediately:
+
+```python
+# tests/integration/test_migration.py
+naive = connection.execute(text(
+    "SELECT table_name, column_name FROM information_schema.columns "
+    "WHERE table_schema = 'public' AND data_type = 'timestamp without time zone'"
+)).all()
+assert naive == [], f"naive timestamp columns: {naive}"
+```
+
+Worth noting why M2's existing drift test did not catch this. `test_models_and_migration_do_not_drift`
+runs Alembic's `compare_metadata` with `compare_type: True` — but the models and the
+migration *agreed*. Both were naive. A drift test proves the schema matches the code; it
+cannot tell you the code is wrong.
+
+### 1. What was built
+
+#### The workflow — `app/workflow.py`
+
+The state machine, as eleven `Transition` rows plus four functions that read them.
+Nothing else in the application contains a status comparison chain.
+
+| Name | What it is |
+| --- | --- |
+| `Actor` | REPORTER, ASSIGNEE, FACILITY_ADMIN — the capacity someone acts in on *one* ticket, not a role. |
+| `Transition` | Frozen dataclass: from, to, allowed actors, required fields, button label, optional guard, the close reasons it may record, and whether it is a reopen. |
+| `TRANSITIONS` | The eleven rows. The build plan's §6 table and this tuple are the same thing, one in prose and one executable. |
+| `ACTOR_PRECEDENCE` | Which row wins when a caller matches several. |
+| `REOPEN_WINDOW` | `timedelta(days=7)`. |
+| `resolve_actors` | Incident + user → the set of capacities they hold on it. |
+| `select_transition` | (from, to, actors) → the row they would use, or None. |
+| `check_guard` | Whether a row's precondition holds right now. |
+| `available_transitions` | Everything a caller can do to a ticket at this moment, one entry per reachable status. |
+
+#### Schemas — `app/schemas/`
+
+| File | Responsibility |
+| --- | --- |
+| [incident.py](../backend/v1/app/schemas/incident.py) | Create, update and read models; `TransitionRequest`; `AllowedTransitionRead`; `AssignRequest`/`AssignResult`; the escalation bodies; the nested `UserSummary` / `CategorySummary` / `LocationSummary`; and the two query models below. |
+| [note.py](../backend/v1/app/schemas/note.py) | `NoteCreate`, `NoteUpdate`, `NoteRead` (with `can_edit`). |
+| [event.py](../backend/v1/app/schemas/event.py) | `IncidentEventRead` and `ActivityEntry`, the merged timeline entry discriminated by `kind`. |
+
+`IncidentQuery` and `IncidentFilters` are deliberately two models. The first is the query
+string exactly as it arrives, including the two shortcuts whose meaning depends on who is
+asking — `mine=reported|assigned` and `specialty=true`. The second is what the repository
+applies, with every value already concrete.
+`incident_service.resolve_filters` is the one function that turns one into the other, so
+the repository never needs to know who is calling it.
+
+#### Repository — `app/repositories/incidents.py`
+
+Every statement the incident endpoints run: the filtered, sorted, eager-loaded list
+query; the two search modes; the detail read; the audit-log append and read; and the note
+queries. Two functions hand out a *base* statement rather than a result —
+`notes_query()` and `list_incidents(visible=...)` — so that the visibility filter cannot
+be skipped by a caller who writes their own `select(Incident)`.
+
+#### Services — `app/services/`
+
+| File | The rules it owns |
+| --- | --- |
+| [visibility.py](../backend/v1/app/services/visibility.py) | Who may see which rows. Two functions, both narrowing a `Select`. |
+| [incident_service.py](../backend/v1/app/services/incident_service.py) | The questionnaire rules, per-field edit permissions, transition execution and side effects, escalation, and the activity feed. |
+| [assignment.py](../backend/v1/app/services/assignment.py) | Who may give a ticket to whom, and the capacity warnings that do not refuse. |
+| [notes.py](../backend/v1/app/services/notes.py) | Who may write, who may write INTERNAL, and the fifteen-minute edit window. |
+
+#### Routers — `app/routers/`
+
+[incidents.py](../backend/v1/app/routers/incidents.py) — eleven routes, plus the
+response mappers that resolve an incident's four foreign keys into names and a rendered
+path. [notes.py](../backend/v1/app/routers/notes.py) — four, under two path shapes:
+`/incidents/{id}/notes` for creating and listing, `/notes/{id}` for editing and deleting.
+
+```
+GET    /api/v1/incidents                         list, search and filter
+POST   /api/v1/incidents                         report
+GET    /api/v1/incidents/{id}                    detail, with can_* flags
+PATCH  /api/v1/incidents/{id}                    edit, permissioned per field group
+GET    /api/v1/incidents/{id}/allowed-transitions  what you may do now
+POST   /api/v1/incidents/{id}/transitions        do it
+POST   /api/v1/incidents/{id}/assign             assign, or unassign with null
+POST   /api/v1/incidents/{id}/pick-up            self-assign
+POST   /api/v1/incidents/{id}/escalate           flag, with a reason
+POST   /api/v1/incidents/{id}/clear-escalation   answer it, optionally re-prioritising
+GET    /api/v1/incidents/{id}/activity           events + readable notes, merged
+GET    /api/v1/incidents/{id}/notes              list
+POST   /api/v1/incidents/{id}/notes              add
+PATCH  /api/v1/notes/{id}                        edit, within the window
+DELETE /api/v1/notes/{id}                        soft-delete
+```
+
+#### Shared plumbing
+
+- [app/clock.py](../backend/v1/app/clock.py) — `utc_now()`. The one place the application
+  asks what time it is, so every time-sensitive rule can take `now` as a parameter.
+- [app/errors.py](../backend/v1/app/errors.py) — `ConflictError` gained `extra`, which is
+  how a refused transition returns `allowed_transitions` in the same response.
+- [app/models/incident.py](../backend/v1/app/models/incident.py) — an `escalator`
+  relationship for `escalated_by` (no column change; three relationships now point at
+  `users` from this table, so each names its foreign key explicitly).
+- [app/db.py](../backend/v1/app/db.py) — `build_connect_args()`, which pins the session
+  time zone to UTC. See §2.
+- Migrations [0002](../backend/v1/alembic/versions/0002_timestamptz_lifecycle_columns.py)
+  and [0003](../backend/v1/alembic/versions/0003_event_clock_timestamp.py). No new tables:
+  M2 created `incidents`, `incident_notes` and `incident_events` up front.
+
+#### Tests
+
+| File | Covers |
+| --- | --- |
+| [tests/unit/test_workflow.py](../backend/v1/tests/unit/test_workflow.py) | 121 tests, almost all parametrised over `TRANSITIONS` itself. Table consistency, actor admission and refusal, guards, the reopen boundary, actor resolution, precedence. No database. |
+| [tests/integration/test_incidents.py](../backend/v1/tests/integration/test_incidents.py) | 48. Reporting, the questionnaire's 422s, per-field edit permissions, both search modes, every filter, sorting, paging. |
+| [tests/integration/test_transitions.py](../backend/v1/tests/integration/test_transitions.py) | 89. The full matrix, every timestamp side effect, the reopen window at its boundary, duplicates, and the endpoints. |
+| [tests/integration/test_assignment.py](../backend/v1/tests/integration/test_assignment.py) | 28. The level matrix, who may receive work, warnings-not-refusals, `assigned_at`, pick-up, and escalation. |
+| [tests/integration/test_notes.py](../backend/v1/tests/integration/test_notes.py) | 24. Who may write, INTERNAL notes from both reading paths, the edit window, soft deletion, the merged timeline. |
+
+### 2. Why it is shaped this way
+
+#### The workflow is data, and only data
+
+The obvious way to write a state machine is a function with branches:
+
+```python
+# What app/workflow.py exists to avoid
+def transition(incident, user, to_status):
+    if incident.status == OPEN and to_status == IN_PROGRESS:
+        if user.role != FACILITY_ADMIN and incident.assignee_id != user.id:
+            raise AuthorizationError(...)
+        ...
+```
+
+Three things go wrong with that, and all three are visible in the brief.
+
+**The frontend has to know the same rules.** The incident detail page draws a button per
+available action and a dialog with exactly the right fields. If the rules live in
+branches, the React code grows a second copy of them and the two drift. With a table,
+`GET /incidents/{id}/allowed-transitions` can *return* the rules, and the UI renders from
+the response. That is why `Transition` carries `action_label` (the button text) and
+`required_fields` (the dialog's inputs) rather than only the mechanics.
+
+**The tests have to restate them.** `tests/unit/test_workflow.py` and
+`tests/integration/test_transitions.py` parametrise over `TRANSITIONS` and ask the table
+what should happen:
+
+```python
+expected = workflow.select_transition(transition.from_status, transition.to_status, actors)
+
+if expected is None:
+    with pytest.raises(ApiError) as refused:
+        incident_service.perform_transition(...)
+    assert refused.value.status_code == 409
+    return
+
+updated = incident_service.perform_transition(..., payload=payload_for(expected))
+assert updated.status == transition.to_status
+```
+
+The allowed and denied halves of the matrix come from the same source the application
+uses, so they cannot fall out of step, and a row added without a rule change fails on the
+next run.
+
+**Adding a transition stays small.** As branches, a new move means editing a function
+that several other moves also run through, and re-reading all of them to be sure nothing
+shifted. As a row, it is a row — plus one test for whatever is specific to it. §5 has the
+recipe.
+
+#### Several rows can share a move, separated by actor
+
+`OPEN → CLOSED` means two different things. To the person who reported the ticket it is
+"cancel my ticket", with no input and `CANCELLED_BY_REPORTER` recorded. To an admin it is
+"close this", with a required `close_reason` chosen from `{DUPLICATE, INVALID,
+ADMIN_CLOSED}` and a duplicate target when they pick the first. Same pair of statuses,
+different label, different input, different record.
+
+So a (from, to) pair can have several rows, separated by `allowed_actors`. That creates
+one question the build plan does not answer: **a single person can be more than one
+actor.** An admin who reported their own ticket is both REPORTER and FACILITY_ADMIN.
+
+`ACTOR_PRECEDENCE` settles it, ordered widest-powers-first:
+
+```python
+ACTOR_PRECEDENCE: tuple[Actor, ...] = (Actor.FACILITY_ADMIN, Actor.ASSIGNEE, Actor.REPORTER)
+```
+
+The principle is that *being the reporter must never cost an admin an option*. The
+alternative ordering — reporter first, on the grounds that it records the truer reason —
+would mean an admin who happened to report a ticket could no longer close it as a
+duplicate, because the reporter's row has no `close_reason` field at all. Losing a
+capability is worse than recording `ADMIN_CLOSED` where `CONFIRMED_FIXED` would have been
+slightly more precise.
+
+The same decision let the build plan's one ambiguous row be split. §6 says
+`RESOLVED → CLOSED` records "`CLOSED_BY_ENGINEER` **or** `ADMIN_CLOSED`" — depending on
+who acted, with no caller input to disambiguate. Rather than a conditional in the service,
+that is three rows here, one per actor:
+
+| Actor | Label | Records |
+| --- | --- | --- |
+| REPORTER | Confirm fixed | `CONFIRMED_FIXED` |
+| ASSIGNEE | Close ticket | `CLOSED_BY_ENGINEER` |
+| FACILITY_ADMIN | Close ticket | `ADMIN_CLOSED` |
+
+That keeps the recorded reason a property of the table rather than of a branch, and it
+reduces the whole thing to one rule the service can apply without knowing which move it
+is handling: one member in `close_reasons` means the service writes it; more than one
+means the caller picks, and `close_reason` is then in `required_fields`. That invariant
+is itself a test, parametrised over every row.
+
+#### Guards take `now` instead of reading the clock
+
+Two rules are conditions on the *incident* rather than on caller input: a ticket needs an
+assignee before work can start, and a closed ticket can be reopened for seven days. Both
+are `guard` functions on the row, with the signature
+`(incident, now) -> str | None` — None when the move is allowed, the message to show when
+it is not.
+
+Taking `now` as an argument rather than calling `datetime.now()` inside is what makes the
+window testable. [app/clock.py](../backend/v1/app/clock.py) holds the one real clock, and
+every service that needs it follows the same shape:
+
+```python
+def perform_transition(..., *, now: datetime | None = None) -> Incident:
+    moment = now or utc_now()
+```
+
+So the boundary is asserted rather than approximated — at exactly seven days, a second
+past, and a month later — without sleeping, freezing a global clock, or monkeypatching a
+module the test does not own. The 15-minute note edit window works the same way.
+
+`utc_now()` rather than `datetime.utcnow()`: the latter returns a *naive* datetime whose
+value happens to be UTC, which compares wrongly against every aware value in the schema.
+It is deprecated in Python 3.12+ for exactly that reason, and §0 is what happens when
+naive and aware meet.
+
+#### Side effects are keyed on the status being entered
+
+`_apply_transition_effects` is written as "what it means to *be* in this status", not as
+one branch per transition:
+
+```python
+if transition.to_status == IncidentStatus.IN_PROGRESS:
+    incident.acknowledged_at = incident.acknowledged_at or now
+    incident.resolved_at = None
+    incident.closed_at = None
+    incident.close_reason = None
+    incident.duplicate_of_id = None
+```
+
+Three different rows lead to IN_PROGRESS — starting work, resuming after a block, and
+both reopens — and they all need the same thing to be true afterwards. Written per
+transition, "reopening clears `closed_at`" is a rule that has to be remembered twice and
+will eventually be remembered once. Written per status, a reopened ticket cannot keep a
+`closed_at` that the reports would then count as a closure.
+
+`acknowledged_at` is set with `or`, never overwritten: it answers "how long until someone
+looked at this?", which resuming from a block does not change.
+
+#### Visibility is a query filter, and it is the seam even where it does nothing
+
+[services/visibility.py](../backend/v1/app/services/visibility.py) has two functions, both
+taking a `Select` and returning a narrower one. `apply_note_visibility` is the one that
+does work today: employees see PUBLIC only, and soft-deleted notes are excluded for
+everyone in the same call, so no query can remember one exclusion and forget the other.
+
+`apply_incident_visibility` returns the statement unchanged. That is deliberate and
+documented in the function: the brief asks employees to be able to check whether a
+problem is already reported, which only works if "All Tickets" really is all of them.
+What an employee cannot do is *act* on someone else's ticket, and that is a permission
+question answered by the `can_*` flags, not a visibility one.
+
+It exists anyway, and every incident query goes through it, because the day that stops
+being true — per-building admin scoping is already a listed known limitation — it is a
+change to one function rather than an audit of every query in the application. The
+repository reinforces it by having no `select(Incident)` to start from:
+
+```python
+def list_incidents(session, *, visible: Select[Any], filters, limit, offset):
+```
+
+The caller must hand in a statement, and the only thing that builds one is the service,
+which builds it through the filter.
+
+Filtering in a *serializer* is the specific bug this shape prevents. The row would still
+travel out of the database, `total` would count it, paging would skip over it, and one
+forgotten call site would leak it.
+
+#### Two clocks, and a timeline that was in the wrong order
+
+The activity feed merges `incident_events` and `incident_notes` into one stream ordered
+by `created_at`. Both defaulted to `now()` — and PostgreSQL's `now()` is the **transaction**
+start time, identical for every row one transaction writes. That produced two wrong
+orderings:
+
+1. Two events from one request — `ESCALATION_CLEARED` plus `PRIORITY_CHANGED` from a
+   single clear-escalation call, `STATUS_CHANGED` plus `MARKED_DUPLICATE` from closing as
+   a duplicate — carried the same timestamp, and the `(created_at, id)` tiebreak fell back
+   to comparing random UUIDs.
+2. Anything writing a note and an event under one transaction interleaved them by
+   transaction start rather than by when each happened.
+
+[Revision 0003](../backend/v1/alembic/versions/0003_event_clock_timestamp.py) switches
+both columns to `clock_timestamp()`, which is read per row at insert time. Everything
+else keeps `now()`, where a per-transaction timestamp is the more useful of the two.
+
+The second ordering also explains why the *test suite* found this. Every request in the
+suite runs inside one outer transaction that is rolled back afterwards, so under `now()`
+the whole test shared a single timestamp — which is not how production behaves, and is
+exactly the kind of difference that makes a passing suite mean less than it looks.
+
+#### A stale relationship the test harness was hiding
+
+`assignment.assign()` sets `incident.assignee_id`. It does not set `incident.assignee`,
+which is a relationship that was loaded — as `None` — when the route read the incident.
+`repositories/incidents.reload()` re-queries, but SQLAlchemy finds the object already in
+the session's identity map and hands it back untouched, relationships included. The
+response said `"assignee": null` immediately after a successful assignment.
+
+The suite did not catch it, because `tests/conftest.py` built its session with the default
+`expire_on_commit=True` while [app/db.py](../backend/v1/app/db.py) uses `False`. Committing
+in the test expired every attribute, so the response was rebuilt from a fresh read and
+looked right. The bug only appeared when the API was driven over HTTP against the
+development database.
+
+Both halves are fixed. The fixture now matches the application:
+
+```python
+session = Session(
+    bind=connection,
+    join_transaction_mode="create_savepoint",
+    expire_on_commit=False,
+)
+```
+
+which made three tests fail — assignee twice, `escalated_by` once — and `reload()` forces
+a real refresh:
+
+```python
+statement = (
+    select(Incident)
+    .where(Incident.id == incident.id)
+    .options(*_detail_loaders())
+    .execution_options(populate_existing=True)
+)
+```
+
+The general lesson is worth keeping: **a fixture that differs from production in a
+behavioural setting will hide the class of bug that setting governs.** `expire_on_commit`
+is one of those settings.
+
+#### The database session is pinned to UTC
+
+A `timestamptz` is rendered in the session's time zone, which defaults to the server's:
+UTC on the Lambda, and whatever the VDI is set to locally. The same `resolved_at` came
+back as `...-04:00` in development and would come back as `...+00:00` deployed — the same
+instant, but a difference that only shows up after a deploy.
+`build_connect_args()` sets `-c timezone=UTC`, and the test fixtures call the same
+function so the suite sees what the application sees.
+
+#### Two search modes behind one box
+
+Users type both "INC-000482" and "flickering light" into the same field, so
+`GET /incidents?q=` decides which they meant. `TICKET_NUMBER_PATTERN` matches `482`,
+`INC482` and `inc-000482`; anything else is full-text.
+
+`websearch_to_tsquery` rather than `to_tsquery`. It accepts what people actually type —
+quoted phrases, `or`, a leading `-` to exclude — and, importantly, never raises a syntax
+error on stray punctuation. `to_tsquery('english', '&&!')` raises, which would turn a typo
+into a 500.
+
+Ordering: a text search with no explicit `sort` is ranked by `ts_rank`, then newest first.
+An explicit `sort` always wins, because a caller who asked for "most urgent first" meant
+it whether or not they were also searching.
+
+Priority sorting needs no `CASE` expression. The PostgreSQL enum's declared order is
+`LOW < MEDIUM < HIGH < CRITICAL`, so `ORDER BY priority DESC` really is "most urgent
+first". That is a property of `ENUM_TYPES` in `app/models/enums.py` being written in
+ascending order — worth knowing before anyone reorders it.
+
+#### Filters do not join to `categories`
+
+Filtering by group, or by an engineer's specialties, is expressed as a subquery:
+
+```python
+statement.where(Incident.category_id.in_(select(Category.id).where(Category.parent_id == group_id)))
+```
+
+rather than a join. It keeps `ix_incidents_category_id` usable and keeps the eager-loading
+options independent of which filters happen to be applied — a join added for a filter can
+change how `selectinload` batches.
+
+#### Capacity warns, it does not refuse
+
+Assigning to someone who is at their `max_active_tickets` or marked OFF_DUTY succeeds and
+returns `warnings` for the UI to show. A lead looking at their team knows things the
+system does not, and a hard limit would simply be worked around by raising
+`max_active_tickets` — which would then be wrong permanently instead of noisy once.
+
+#### No `NOTE_ADDED` event
+
+`EventType.NOTE_ADDED` exists in the enum (M2 created the database type) and nothing
+writes it. The activity feed merges events *and notes*, so the note row already is the
+timeline entry; emitting an event beside it would show every comment twice. M7's
+communication report — "% of resolved tickets with a public staff note before resolution"
+— reads `incident_notes` directly and does not need it either.
+
+Removing the enum value would mean a migration for no benefit, so it stays, unused and
+documented.
+
+#### 404 for a note, 403 for an incident
+
+An incident the caller may not act on returns 403: this API does not hide that tickets
+exist, and M3 set the precedent that a role failure is never disguised as a missing row.
+
+An INTERNAL note addressed directly returns **404**. The difference is that the existence
+of an internal note is itself staff-only information, and a 403 would confirm it.
+
+### 3. How the pieces connect
+
+**An engineer resolving a ticket**, hop by hop. This is the request the whole phase is
+built around:
+
+```
+POST /api/v1/incidents/{id}/transitions
+     {"to_status": "RESOLVED", "resolution_summary": "Replaced the ballast and both tubes."}
+  │
+  ├─ main.py                       router mounted at /api/v1; CloudFront forwards the
+  │                                full path, so it matches as written
+  ├─ routers/incidents.py          create_transition
+  │      user: CurrentUser  →  security/dependencies.py
+  │        get_current_user          → password-change gate
+  │          get_authenticated_user   → bearer token → decode_access_token
+  │            repositories/users.py get_by_id   (role read from the DB, not the token)
+  ├─ schemas/incident.py           TransitionRequest — shapes and lengths only; which
+  │                                fields are *required* is the workflow's business
+  ├─ services/incident_service.py  get_incident → 404 if unknown
+  └─ services/incident_service.py  perform_transition(now=utc_now())
+         │
+         ├─ workflow.resolve_actors(incident, user)
+         │      assignee_id == user.id            → {ASSIGNEE}
+         │      (a LEAD would get ASSIGNEE on any ticket)
+         │
+         ├─ workflow.select_transition(IN_PROGRESS, RESOLVED, {ASSIGNEE})
+         │      one matching row → Transition(required_fields=("resolution_summary",),
+         │                                    action_label="Resolve")
+         │      no match → 409 TRANSITION_NOT_ALLOWED, carrying available_transitions()
+         │
+         ├─ workflow.check_guard(...)        → None; this row has no guard
+         ├─ _require_transition_fields(...)  → resolution_summary present, else 422 + field
+         ├─ _resolve_close_reason(...)       → None; not a closing move
+         ├─ _apply_transition_effects(...)   → status = RESOLVED
+         │                                     resolved_at = now
+         │                                     resolution_summary = payload's
+         │                                     blocked_* cleared (not entering BLOCKED)
+         ├─ repositories/incidents.add_event(STATUS_CHANGED, IN_PROGRESS → RESOLVED)
+         │      created_at from clock_timestamp(), so it sorts after everything before it
+         └─ repositories/incidents.reload(session, incident)
+                re-reads with the detail loaders and populate_existing, so the
+                relationships are refreshed rather than served from the identity map
+  │
+  ├─ routers/incidents.py          session.commit()
+  └─ _to_read(incident, user)      IncidentRead + the can_* flags for *this* caller
+         can_edit            → incident_service.can_edit_content
+         can_assign          → assignment.can_assign
+         can_add_note        → notes.can_add_note
+```
+
+The shape to notice: the router decides nothing, the schema checks shapes, the *table*
+decides legality, and the service does the work the table implies. The 409 path is worth
+following too — `ConflictError` carries `extra={"allowed_transitions": [...]}`, so a
+client that asked for an impossible move is told what *is* possible in the same response
+instead of making a second request to find out.
+
+**The reverse direction** — the page that draws the buttons:
+
+```
+GET /api/v1/incidents/{id}/allowed-transitions
+  → incident_service.allowed_transitions(incident, user, now=utc_now())
+    → workflow.resolve_actors
+    → workflow.available_transitions
+        for each status reachable from incident.status (in table order):
+          select_transition(...)            → resolves precedence, one row per status
+          check_guard(...)                  → blocked moves are left out, not offered
+  → routers/incidents.py _to_allowed_transition
+      [{"to_status": "CLOSED", "action_label": "Close ticket",
+        "required_fields": ["close_reason"],
+        "close_reason_choices": ["ADMIN_CLOSED", "DUPLICATE", "INVALID"]}]
+```
+
+That response is everything the UI needs: the button text, which dialog fields to
+collect, and what to put in the `close_reason` select. `available_transitions` returns one
+entry per reachable status precisely so two rows for the same pair never become two
+buttons that do different things, and it resolves precedence with the same
+`select_transition` the POST will use — so the button drawn is the move that executes.
+
+**A search**, which is where visibility and the repository meet:
+
+```
+GET /api/v1/incidents?q=flickering&status=OPEN&mine=reported&sort=-priority
+  ├─ routers/incidents.py get_incident_query   sixteen query parameters → IncidentQuery
+  │      _parse_assignee_filter   "unassigned" → the sentinel, else a UUID, else 422
+  ├─ services/incident_service.py list_incidents
+  │      resolve_filters(query, user)   mine=reported → reporter_id = user.id
+  │                                     specialty=true → the caller's own groups
+  │      apply_incident_visibility(select(Incident), user)   ← the seam
+  └─ repositories/incidents.list_incidents(visible=..., filters=...)
+         _apply_filters    status IN (...), reporter_id = ...
+         _apply_search     "flickering" is not a ticket number →
+                           search_vector @@ websearch_to_tsquery('english', ...)
+         count             SELECT count(*) FROM (the same filtered statement)
+         _order_by         explicit sort wins over ts_rank → priority DESC, ticket_number DESC
+         _list_loaders     selectinload category→parent, building, floor, seat,
+                           reporter, assignee
+  → routers/incidents.py _to_list_item per row
+         _location_summary   "SFO-1 > Level 3 > 3-A-01", from already-loaded relationships
+```
+
+**Nine statements for a page of any size**, measured rather than estimated: one count,
+one for the page itself, and seven `selectin` follow-ups — building, category, seat,
+floor, reporter, assignee, and the category's parent group, which is a second hop off the
+first. Lazily loaded, a page of 25 would cost 1 + 25 x 7 = 176.
+
+### 4. Where the rules live
+
+| Rule | File | Detail |
+| --- | --- | --- |
+| Which status changes exist at all | [workflow.py](../backend/v1/app/workflow.py) | `TRANSITIONS` |
+| Who may make each one | [workflow.py](../backend/v1/app/workflow.py) | `Transition.allowed_actors` |
+| What a dialog must collect | [workflow.py](../backend/v1/app/workflow.py) | `Transition.required_fields` |
+| What a button says | [workflow.py](../backend/v1/app/workflow.py) | `Transition.action_label` |
+| Which close reason is recorded | [workflow.py](../backend/v1/app/workflow.py) | `Transition.close_reasons` |
+| Who counts as REPORTER / ASSIGNEE / admin | [workflow.py](../backend/v1/app/workflow.py) | `resolve_actors` (a LEAD is ASSIGNEE anywhere) |
+| Which row wins for a caller with two roles | [workflow.py](../backend/v1/app/workflow.py) | `ACTOR_PRECEDENCE` |
+| A ticket needs an assignee before work starts | [workflow.py](../backend/v1/app/workflow.py) | `_requires_an_assignee` |
+| Seven days to reopen | [workflow.py](../backend/v1/app/workflow.py) | `REOPEN_WINDOW`, `_within_the_reopen_window` |
+| Timestamps and fields a transition writes | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `_apply_transition_effects` |
+| A duplicate needs a real, other ticket | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `_resolve_duplicate_target` |
+| Incidents are filed against subcategories | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `_require_reportable_subcategory` |
+| How precise a location must be | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `REQUIRED_LOCATION_FIELDS`, `_require_location_precision` |
+| Floor in building, seat on floor | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `_require_floor_in_building`, `_require_seat_on_floor` |
+| Who may edit content | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `can_edit_content`, `CONTENT_FIELDS` |
+| When the questionnaire rules are re-checked | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `CLASSIFICATION_FIELDS` |
+| Who may change priority | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `can_change_priority` |
+| Who may escalate, and when | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `may_escalate`, `ESCALATABLE_STATUSES` |
+| Who may clear an escalation | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `can_clear_escalation` |
+| What `mine` and `specialty` mean | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `resolve_filters`, `_resolve_specialties` |
+| Where the next report form is pre-filled from | [services/incident_service.py](../backend/v1/app/services/incident_service.py) | `_remember_location` |
+| Who may assign, by level | [services/assignment.py](../backend/v1/app/services/assignment.py) | `_require_permission`, `_require_self_pick_up` |
+| Who may receive work | [services/assignment.py](../backend/v1/app/services/assignment.py) | `_require_assignable_engineer` |
+| Capacity and availability warnings | [services/assignment.py](../backend/v1/app/services/assignment.py) | `_capacity_warnings`, `UNAVAILABLE_STATES` |
+| `assigned_at` is set once | [services/assignment.py](../backend/v1/app/services/assignment.py) | `assign` |
+| Who may write a note | [services/notes.py](../backend/v1/app/services/notes.py) | `can_add_note` |
+| Who may write an INTERNAL note | [services/notes.py](../backend/v1/app/services/notes.py) | `can_add_internal_note` |
+| The fifteen-minute edit window | [services/notes.py](../backend/v1/app/services/notes.py) | `EDIT_WINDOW`, `_require_modify_permission` |
+| Who sees INTERNAL notes | [services/visibility.py](../backend/v1/app/services/visibility.py) | `apply_note_visibility` |
+| Who sees which incidents | [services/visibility.py](../backend/v1/app/services/visibility.py) | `apply_incident_visibility` |
+| What a ticket-number search looks like | [repositories/incidents.py](../backend/v1/app/repositories/incidents.py) | `TICKET_NUMBER_PATTERN` |
+| Search language and parser | [repositories/incidents.py](../backend/v1/app/repositories/incidents.py) | `SEARCH_CONFIG`, `_tsquery` |
+| Sort orders and the relevance default | [repositories/incidents.py](../backend/v1/app/repositories/incidents.py) | `_SORT_TERMS`, `_order_by` |
+| What `?assignee_id=unassigned` means | [schemas/incident.py](../backend/v1/app/schemas/incident.py) | `UNASSIGNED`, `AssigneeFilter` |
+| Title and description limits | [schemas/incident.py](../backend/v1/app/schemas/incident.py) | `IncidentTitle`, `IncidentDescription` |
+| What time it is | [clock.py](../backend/v1/app/clock.py) | `utc_now` |
+| The session time zone | [db.py](../backend/v1/app/db.py) | `SESSION_TIME_ZONE`, `build_connect_args` |
+
+### 5. How to change it
+
+**Add a workflow transition.** One row and one test.
+
+```python
+# app/workflow.py — inside TRANSITIONS
+Transition(
+    from_status=IncidentStatus.BLOCKED,
+    to_status=IncidentStatus.CLOSED,
+    allowed_actors=frozenset({Actor.FACILITY_ADMIN}),
+    required_fields=("close_reason",),
+    action_label="Abandon ticket",
+    close_reasons=frozenset({CloseReason.INVALID, CloseReason.ADMIN_CLOSED}),
+),
+```
+
+Then nothing else. The transitions endpoint will execute it, allowed-transitions will
+offer it, and `_apply_transition_effects` already knows what entering CLOSED means.
+
+Both test files pick it up on the next run without being edited — `test_workflow.py` and
+the matrix in `test_transitions.py` parametrise over `TRANSITIONS`, so the new row is
+immediately checked for table consistency, actor admission and refusal, its audit event,
+and that each of its required fields really is required. Add a test by hand only for
+behaviour specific to the row, such as a side effect no other transition has.
+
+Two things the table will enforce on you: a row reaching CLOSED must carry at least one
+close reason, and more than one means `close_reason` has to be in `required_fields`. Both
+are asserted per row.
+
+If the new move needs a condition on the incident, write a guard beside
+`_within_the_reopen_window` and reference it — do not put an `if` in the service.
+
+**Add a field to an incident.** Five files, in this order:
+1. `app/models/incident.py` — the column. If it is a timestamp, write
+   `mapped_column(DateTime(timezone=True), ...)`; §0 is what happens otherwise.
+2. `alembic/versions/` — a migration.
+3. `app/schemas/incident.py` — add it to `IncidentCreate` / `IncidentUpdate` /
+   `IncidentListItem` or `IncidentRead`. Leaving it out of `IncidentUpdate` is how a
+   field is made write-once.
+4. `app/routers/incidents.py` — `_to_list_item` or `_to_read` if it is not on the base
+   model already.
+5. `tests/integration/test_incidents.py` — that it round-trips, and that a PATCH without
+   it leaves it alone.
+
+If the field takes part in the questionnaire rules, it belongs in `CONTENT_FIELDS`, and
+in `CLASSIFICATION_FIELDS` too if changing it should re-run `_require_valid_location`.
+
+**Add a list filter.** Three edits: the parameter on `get_incident_query` in
+`app/routers/incidents.py`, the field on both `IncidentQuery` and `IncidentFilters` in
+`app/schemas/incident.py` (pass it through in `resolve_filters`), and a clause in
+`_apply_filters`. A filter whose meaning depends on the caller is resolved in
+`resolve_filters`, never in the repository — that is the line between the two models.
+
+**Add an event type.** Add it to `EventType` in `app/models/enums.py`, write a migration
+(`ALTER TYPE event_type ADD VALUE ...`), and call `repository.add_event` where it
+happens. The activity feed will carry it without changes; the frontend picks the timeline
+icon from `event_type`.
+
+**Change the reopen window or the edit window.** `REOPEN_WINDOW` in `app/workflow.py`,
+`EDIT_WINDOW` in `app/services/notes.py`. Both are `timedelta`s and both have boundary
+tests that read the constant, so the tests follow the change rather than failing on it.
+
+**Change who may assign.** `_require_permission` in `app/services/assignment.py`, plus
+`can_assign` beside it, which drives whether the button appears at all. They are two
+functions on purpose: `can_assign` is the broad "could this person touch the assignee
+field", `_require_permission` is the specific "may they make *this* assignment".
+
+**Let an engineer report a ticket on someone's behalf.** Add `reporter_id` to
+`IncidentCreate`, gate it on `user.is_staff` in `create_incident`, and leave
+`_remember_location` pointed at the *caller* rather than the reporter — the pre-fill is a
+convenience for whoever fills in the form.
+
+**Scope visibility to a building.** One function:
+
+```python
+def apply_incident_visibility(statement, user):
+    if user.role == UserRole.FACILITY_ADMIN and user.building_scope_id:
+        return statement.where(Incident.building_id == user.building_scope_id)
+    return statement
+```
+
+Every incident list and detail read already goes through it.
+
+**Run one ticket's whole life locally.** With uvicorn on :8000 and an admin account:
+report → `pick-up` as a senior engineer → `transitions` to IN_PROGRESS → BLOCKED with a
+reason → back to IN_PROGRESS → RESOLVED with a summary → `transitions` to CLOSED as the
+reporter → `transitions` back to IN_PROGRESS with a reason. Check `allowed-transitions`
+as each persona between steps; it is the fastest way to see the table working.
+
+### 6. Gotchas
+
+**An admin who reported a ticket is treated as an admin.** `ACTOR_PRECEDENCE` puts
+FACILITY_ADMIN first, so closing a ticket you reported *and* administer records
+`ADMIN_CLOSED`, not `CONFIRMED_FIXED`. That is the deliberate trade (see §2) and it
+matters for M7's reports: "confirmed fixed by the reporter" will not count tickets an
+admin reported themselves. In real use the personas are distinct; in demo data made by
+one account they may not be.
+
+**A LEAD engineer is ASSIGNEE on every ticket.** `resolve_actors` grants it whether or
+not the ticket is theirs, so a lead can start, block, resolve and close anything. It is
+in the build plan and it is what lets a team cover for someone on leave, but it means
+"the assignee did this" in the audit log does not imply "the person the ticket was
+assigned to".
+
+**`available_transitions` hides blocked moves rather than greying them out.** A ticket
+with no assignee simply does not offer "Start work", and a ticket closed eight days ago
+offers nothing at all. The frontend gets an empty list, not a list with reasons. If the
+UI ever needs to explain *why* an action is missing, the guard messages exist — they are
+returned by the POST — but the GET does not carry them.
+
+**A ticket closed more than seven days ago is finished.** `available_transitions` returns
+`[]` for everyone, including admins. The only way forward is a new ticket. This is
+intentional, and it is the single hardest thing to discover by clicking around, because
+the page simply has no buttons.
+
+**`incident_events.created_at` and `incident_notes.created_at` use `clock_timestamp()`,
+not `now()`.** Anything else that ends up on the timeline must too, or it will sort by
+transaction start and interleave wrongly. Everything else in the schema keeps `now()`.
+
+**`expire_on_commit=False` in the test fixture is load-bearing.** It matches `app/db.py`.
+Setting it back to the default would make three currently-passing tests pass for the
+wrong reason and hide any future stale-relationship bug (§2).
+
+**After writing to an incident, use `repositories.incidents.reload()`.** A plain re-query
+returns the identity-mapped object with its old relationships. `reload()` passes
+`populate_existing=True`; a hand-rolled `select()` will not.
+
+**A BLOCKED incident needs a blocked reason, even in tests.** Unchanged from M3 —
+`CHECK (status <> 'BLOCKED' OR blocked_reason_type IS NOT NULL)`. `_apply_transition_effects`
+clears both blocked fields whenever the target is not BLOCKED, which is what keeps the
+constraint satisfied on the way out.
+
+**The resolution summary survives a reopen.** "Still broken" clears `resolved_at` but
+leaves `resolution_summary` standing, so the engineer's previous claim is still visible
+while the ticket is worked again. A second resolve overwrites it; the events keep both.
+
+**`priority` sorting depends on the enum's declared order.** `LOW, MEDIUM, HIGH, CRITICAL`
+in `app/models/enums.py`, created in that order by revision 0001. Reordering those
+members without a migration would silently invert `sort=-priority`.
+
+**`specialty=true` with no specialties matches nothing.** An engineer whose
+`specialty_group_ids` is empty gets an empty list, not everything. That is the honest
+answer, and it is visible immediately — unlike the alternative, where a misconfigured
+profile looks like a working one.
+
+**`?assignee_id=unassigned` is parsed by hand.** It is not a UUID, so
+`_parse_assignee_filter` in the router accepts either and returns a 422 with
+`INVALID_ASSIGNEE_FILTER` for anything else. A new filter that wants a sentinel needs the
+same treatment; FastAPI will not do it from the type alone.
+
+**Date filters need URL encoding.** `created_from=2026-09-23T12:00:00+00:00` loses its
+`+` to form decoding and fails to parse. Clients must percent-encode it (`%2B`), which
+axios and `httpx`'s `params=` do automatically and hand-built query strings do not.
+
+**Notes cannot change visibility after creation.** `NoteUpdate` has only `body`. Flipping
+PUBLIC to INTERNAL after the reporter has read it hides nothing, and the other way
+publishes something written on the understanding it was private. Deleting and rewriting is
+the intended path.
+
+**Deleting a note is soft, and `DeleteResult` says `deactivated: true`.** The shape is
+shared with facilities and categories, where deactivation is a real state. For a note it
+means "gone from every reading of the ticket, still a row".
+
+**The activity feed is not paginated.** It is one ticket's history and only coherent read
+whole. A ticket with hundreds of events would return all of them; if that becomes real,
+the place to fix it is `load_activity`, not the two queries beneath it.
+
+**A test fixture must not name a category after a seeded group.**
+`tests/integration/test_ops_actions.py` runs the real `migrate` action through
+`function.handler`, which owns its own session and genuinely **commits** — so the five
+seeded groups (Hardware, Software, Network & Access, Meeting Rooms, Building &
+Facilities) exist for every test that runs after that file alphabetically. A fixture that
+creates a group with one of those names hits
+`uq_categories_parent_id_name`, and only in a full run: the file passes on its own. M4's
+fixtures let `make_category` generate a unique name and assert against
+`subcategory.parent.name` rather than a literal. M2 solved the same problem differently in
+`test_seed_categories.py`, with an autouse fixture that empties the table first; either
+works, but a hard-coded seeded name does not.
+
+**Two suites cannot share a database, and the failure does not look like one.**
+`tests/conftest.py` drops and recreates `acme_incidents_test` with `WITH (FORCE)` at
+session start, which terminates every other connection to it. A second `pytest` — another
+terminal, a watcher, a forgotten run from hours ago that is still holding a transaction
+open — therefore pulls the schema out from under the first. The symptom is
+`psycopg.errors.AdminShutdown: terminating connection due to administrator command`
+raised from a *fixture*, scattered across whichever file happened to be running, which
+reads like a broken test rather than a broken environment. This happened three times
+while M4 was being built.
+
+Check before blaming the code:
+
+```sh
+ps -eo pid,etime,cmd | grep '[p]ytest'
+psql -h localhost -U postgres -c \
+  "select pid, datname, state from pg_stat_activity where datname like 'acme%'"
+```
+
+`state = idle in transaction` on a connection older than your run is the tell. Give your
+run its own database rather than killing someone else's:
+
+```sh
+POSTGRES_TEST_NAME=acme_incidents_mine .venv/bin/pytest
+```
+
+### 7. Glossary
+
+**State machine** — a set of allowed states and the moves between them. Here the states
+are `incident_status` values and the moves are `TRANSITIONS`.
+
+**Transition table** — the same thing expressed as data rather than control flow, so it
+can be read, returned to a client and iterated over by tests.
+
+**Actor** — the capacity someone acts in on one particular incident: REPORTER, ASSIGNEE
+or FACILITY_ADMIN. Not the same as their role; the same person is a different actor on a
+different ticket.
+
+**Guard** — a precondition attached to a transition that depends on the incident rather
+than on what the caller sent. "Has an assignee", "was closed less than seven days ago".
+
+**Frozen dataclass** — `@dataclass(frozen=True)`: a small value object whose fields cannot
+be reassigned after construction, which is what makes a module-level table safe to share.
+
+**`frozenset`** — an immutable set. Used for `allowed_actors` and `close_reasons` so the
+rows cannot be mutated by the code reading them.
+
+**Audit log / append-only** — `incident_events` rows are written and never updated or
+deleted. It is what makes "who changed this, and when" answerable, and why note deletion
+is soft.
+
+**`tsvector`** — PostgreSQL's parsed, normalised form of a document: words reduced to
+stems with positions and weights. `incidents.search_vector` is a *generated stored*
+column, so the database maintains it and it can never drift from `title` and
+`description`.
+
+**`tsquery` / `websearch_to_tsquery`** — the parsed form of a search. `websearch_to_tsquery`
+accepts the syntax people type into search boxes (quoted phrases, `or`, leading `-`) and
+never raises on punctuation, unlike `to_tsquery`.
+
+**`ts_rank`** — how well a `tsvector` matches a `tsquery`, used to order results by
+relevance. The `setweight(..., 'A')` on the title is why a title match outranks a body
+match.
+
+**GIN index** — Generalised Inverted Index: maps each word to the rows containing it, which
+is what makes `search_vector @@ query` fast. `ix_incidents_search_vector` is one.
+
+**Stemming** — reducing words to a common root so "flicker", "flickers" and "flickering"
+all match. A property of the `english` text-search configuration.
+
+**`now()` vs `clock_timestamp()`** — both PostgreSQL time functions. `now()` (and
+`CURRENT_TIMESTAMP`) returns the *transaction* start time and is constant for the whole
+transaction; `clock_timestamp()` reads the actual clock each time it is called.
+
+**`timestamptz`** — `TIMESTAMP WITH TIME ZONE`: an absolute instant, stored in UTC and
+rendered in the session's zone. `TIMESTAMP WITHOUT TIME ZONE` stores a wall-clock reading
+with no zone attached, and the two do not compare.
+
+**Naive vs aware datetime** — a Python datetime with no `tzinfo` versus one with. Python
+raises `TypeError` rather than guessing when you subtract one from the other.
+
+**Identity map** — SQLAlchemy's per-session cache of loaded objects by primary key. It is
+why a second query for the same row returns the *same* Python object, and why
+`populate_existing` exists.
+
+**`populate_existing`** — an execution option telling SQLAlchemy to overwrite an
+already-loaded object's attributes and relationships with what the new query returned,
+rather than handing back the cached version.
+
+**`expire_on_commit`** — a session setting: when true, every loaded object is marked stale
+on commit and reloaded on next access. The application sets it false; the test fixtures
+now match.
+
+**Sentinel value** — a reserved value of a normal parameter that means something other
+than a normal value. `?assignee_id=unassigned` is one.
+
+**Soft delete** — marking a row deleted (`deleted_at`) instead of removing it, so
+everything that points at it still makes sense.
+
+**Optimistic vs advisory checks** — capacity and availability here are *advisory*: the
+operation succeeds and returns `warnings`. Contrast the questionnaire rules, which refuse.
+
+**Correlated subquery** — see M3's glossary; `active_ticket_count` is still the example,
+and `assignment.py` reads it through `engineer_repository.count_active_tickets`.
