@@ -346,8 +346,8 @@ Two minutes of setup that make the whole pass better:
 
 **Ordered by where defects are most likely, not by what was built last.** The
 newest feature (S1, notifications) is fourth, not first, because it is the most
-heavily tested thing in the build. The admin screens are first because **three of
-them have no component tests at all**.
+heavily tested thing in the build. The admin screens are first because **not one
+of them has a component test**.
 
 ### Pass 1 — the thin ice: the admin screens and `/team` · 35 min
 
@@ -369,7 +369,10 @@ message on any of these screens has ever been exercised by an automated test of
 any kind. Their APIs are covered by backend integration tests; their screens are
 not.
 
-`/team` is worse: it is LEAD-only, and no test has ever loaded it.
+`/team` is worse: **no test of any kind has ever loaded it** — not a component
+test, not an axe scan, not a single `goto`. It is also the only screen here that
+two different roles reach by two different means, which is the second reason it
+is first on the list.
 
 **Sign in as `demo.admin@acme.inc` on `acme_demo`** and work through:
 
@@ -403,8 +406,9 @@ not.
 
 **What to look for:** empty states, error states, a form that accepts something it
 should not, a dialog that does not close, a list that does not refresh after a
-change, and anything that looks visually unlike the rest of the app. These screens
-were built in M3 and have had the least attention since.
+change, and anything that looks visually unlike the rest of the app. The four
+admin screens were built in M3 and have had the least attention of anything since;
+`/team` came with M6's persona screens and has had none.
 
 ### Pass 2 — the phone · 20 min
 
