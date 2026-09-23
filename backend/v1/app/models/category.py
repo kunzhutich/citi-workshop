@@ -1,7 +1,6 @@
 """The two-level category tree used by the report questionnaire."""
 
 import uuid
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, ForeignKey, Integer, Text, UniqueConstraint, text, true
 from sqlalchemy.dialects.postgresql import UUID
@@ -9,9 +8,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, pg_enum
 from app.models.enums import LocationDetail
-
-if TYPE_CHECKING:
-    pass
 
 
 class Category(UUIDPrimaryKeyMixin, TimestampMixin, Base):
