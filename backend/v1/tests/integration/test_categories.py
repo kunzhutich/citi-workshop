@@ -38,16 +38,22 @@ def employee_headers(client: TestClient, db_session: Session) -> dict[str, str]:
 def test_tree_nests_subcategories_under_their_group(
     client: TestClient, db_session: Session, employee_headers: dict[str, str]
 ) -> None:
-    group = make_category(db_session, name="Hardware", sort_order=1)
+    # The group takes `make_category`'s generated name rather than a seeded one
+    # such as "Hardware": `test_ops_actions.py` really commits the five seeded
+    # groups, so a fixture naming itself after one collides with
+    # `uq_categories_parent_id_name` — but only in runs where that file goes
+    # first. The child names are safe as literals because uniqueness is scoped
+    # to the parent, and this parent is new.
+    group = make_category(db_session, sort_order=1)
     make_category(db_session, name="Monitor", parent=group)
     make_category(db_session, name="Laptop", parent=group)
 
     response = client.get("/api/v1/categories", headers=employee_headers)
 
     assert response.status_code == 200, response.text
-    hardware = next(g for g in response.json()["groups"] if g["name"] == "Hardware")
-    assert {child["name"] for child in hardware["children"]} == {"Monitor", "Laptop"}
-    assert all(child["parent_id"] == hardware["id"] for child in hardware["children"])
+    created = next(g for g in response.json()["groups"] if g["name"] == group.name)
+    assert {child["name"] for child in created["children"]} == {"Monitor", "Laptop"}
+    assert all(child["parent_id"] == created["id"] for child in created["children"])
 
 
 def test_groups_are_ordered_by_sort_order(
@@ -261,12 +267,17 @@ def test_a_subcategory_can_still_be_renamed_and_reordered(
 def test_two_groups_cannot_share_a_name(
     client: TestClient, db_session: Session, admin_headers: dict[str, str]
 ) -> None:
-    """NULL parent ids must still collide — the whole point of NULLS NOT DISTINCT."""
-    make_category(db_session, name="Hardware")
+    """NULL parent ids must still collide — the whole point of NULLS NOT DISTINCT.
+
+    The name is generated rather than a seeded one, so the collision under test
+    is the one this test creates and not a leftover from the seeded tree.
+    """
+    existing = make_category(db_session)
 
     response = client.post(
         "/api/v1/categories",
-        json={"name": "hardware"},
+        # Re-cased, so this also proves the comparison ignores case.
+        json={"name": existing.name.upper()},
         headers=admin_headers,
     )
 

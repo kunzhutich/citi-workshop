@@ -317,22 +317,25 @@ def test_filter_by_availability(
 def test_filter_by_specialty_group(
     client: TestClient, db_session: Session, admin_headers: dict[str, str]
 ) -> None:
-    network = make_category(db_session, name="Network")
-    hardware = make_category(db_session, name="Hardware")
+    # Both groups take generated names. A fixture named after a seeded group
+    # ("Hardware", "Network & Access", ...) collides with the rows
+    # `test_ops_actions.py` commits, in whichever runs that file goes first.
+    speciality = make_category(db_session)
+    other_group = make_category(db_session)
     created = client.post(
         "/api/v1/engineers",
         json={
             "email": "network.specialist@acme.inc",
             "full_name": "Network Specialist",
-            "specialty_group_ids": [str(network.id)],
+            "specialty_group_ids": [str(speciality.id)],
         },
         headers=admin_headers,
     )
     assert created.status_code == 201, created.text
     make_engineer(db_session, full_name="Generalist")
 
-    matching = client.get(f"/api/v1/engineers?group_id={network.id}", headers=admin_headers)
-    other = client.get(f"/api/v1/engineers?group_id={hardware.id}", headers=admin_headers)
+    matching = client.get(f"/api/v1/engineers?group_id={speciality.id}", headers=admin_headers)
+    other = client.get(f"/api/v1/engineers?group_id={other_group.id}", headers=admin_headers)
 
     assert [item["full_name"] for item in matching.json()["items"]] == ["Network Specialist"]
     assert other.json()["total"] == 0
