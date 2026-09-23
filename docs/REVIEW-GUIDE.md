@@ -24,10 +24,16 @@ Nothing further is planned.
 
 Read this section. It is ninety seconds and it changes what you look for.
 
-**Every phase of this build had its most valuable defect found by looking at a
-screen, not by running a test.** That is not a general truth about software; it is
-this project's specific, repeated track record, and it is the reason this guide
-exists:
+**Every phase of this build from M5 onward had its most valuable defect found by
+looking at a screen, not by running a test.** That is not a general truth about
+software; it is this project's specific, repeated track record — the decision log
+keeps its own score and reached *"the fifth phase in a row where the most valuable
+defect was found by looking"* ([D31](DECISION-LOG.md)). Across the build, **at
+least sixteen defects were found by eye or by driving a browser. The unit suites
+found none of them.** D14 puts the reason plainly: none *"would have failed a test
+that was not written specifically to catch it."*
+
+That is the reason this guide exists:
 
 - **M5** shipped a font that was never loaded. `theme.ts` asked for Roboto;
   nothing imported the `@fontsource` CSS. The browser fell back to a different
@@ -55,6 +61,25 @@ exists:
   INC-000455 is now In progress." rendered directly above a green **Resolved**
   chip. Both facts were true and the pair read as a contradiction. **Every
   assertion about that row passed.**
+- **M6 is the one worth reading if you only read one.** Three defects, three
+  different kinds:
+  - A **snackbar sat on top of the button it was confirming**. On a phone, the
+    shell's bottom navigation is 56 px, the ticket's sticky action bar sits at
+    `bottom: 56px`, and the snackbar was anchored at `bottom: 72px` — so "You have
+    picked this ticket up" covered "Start work". Playwright found it with
+    `<div class="MuiSnackbarContent-root"> intercepts pointer events`. **Every
+    jsdom test passed, and always would: jsdom has no layout, so nothing can
+    overlap anything.**
+  - The activity timeline **printed a UUID at a person** — "Assigned:
+    f6ac2cf4-0330-…". The stored value was correct and `GET /activity` had been
+    returning it verbatim since M4. Nothing noticed **because until M6 nothing
+    rendered it.**
+  - The workflow **button colours were wrong twice.** Version one drew a large
+    blue "Cancel ticket" in an employee's actions card, so cancel read as the
+    recommendation. Version two coloured by outcome, which drew "Confirm fixed"
+    grey and "Still broken" blue — it had traded one mis-emphasis for its mirror
+    image. Both versions were functionally perfect. **No test can decide whether a
+    colour recommends the wrong action.**
 
 There is a fifth story that is about the tests themselves. In S6, fixing one flaky
 test ([D24](DECISION-LOG.md)) revealed that **seven axe scans had been passing
@@ -64,7 +89,7 @@ reported a privilege boundary was enforced **without ever checking it**: it pass
 just as happily with the rule deleted. Nothing in `src/` or `backend/` was wrong
 either time. The application was right; the tests were silent about it.
 
-### The four things a passing suite cannot tell you
+### The six things a passing suite cannot tell you
 
 Carry these as you click. They are the shapes every defect above belonged to:
 
@@ -73,11 +98,22 @@ Carry these as you click. They are the shapes every defect above belonged to:
 2. **Two true things side by side that read as a lie.** The inbox message and the
    status chip. The two Escalated figures on the dashboard. Each value is correct;
    the pair misleads. Only a reader notices this.
-3. **Correct in UTC, wrong on your screen.** Dates, axis ticks, "today". The M7
+3. **Something on top of something else.** Overlap needs layout, and jsdom has
+   none, so all 312 component tests are structurally incapable of seeing it. It is
+   almost always a phone-width defect.
+4. **Correct in UTC, wrong on your screen.** Dates, axis ticks, "today". The M7
    axis bug was invisible to anyone testing at GMT and wrong for everybody else.
-4. **It passes its own check because the check is vacuous.** A scan of a spinner,
+5. **A right answer that never reached a human.** A UUID where a name belongs; a
+   field written on every request that no client can read; a report with no screen.
+   The data is correct, so every backend assertion passes, and the defect lives at
+   the layer nothing was calling yet.
+6. **It passes its own check because the check is vacuous.** A scan of a spinner,
    an absence asserted before the thing that would show it has loaded. Green means
    the assertion ran, not that it meant anything.
+
+The emphasis one — is this colour, this order, this wording *recommending the right
+thing?* — has no automated form at all. That judgement is the whole reason you are
+doing this pass rather than reading a test report.
 
 ---
 
@@ -238,11 +274,19 @@ about ten seconds a switch.
 | End-to-end, Playwright | **82 passed, 10 skipped** | 6 spec files across 2 viewports (1440×900 and 375×812). Real browser, real HTTP, real database |
 | Accessibility | part of the e2e run | axe-core at WCAG 2.1 AA over every screen, at both viewports, with dialogs and drawers **open** |
 
-**The 10 skips are deliberate and expected.** Every one is a viewport guard — four
-desktop-only tests skipped in the mobile project, four mobile-only skipped in
-desktop, plus a describe-level skip in `assignment.spec.ts`. A skip count other
-than 10 is worth investigating; a skip count of 0 means the project filter is not
-being applied.
+**The 10 skips are deliberate and expected.** Every one is a viewport guard:
+
+- **4 mobile-only tests skipped in the desktop project** — the two phone drawers and
+  the keyboard path into one of them (`accessibility.spec.ts`), and the sticky
+  action bar (`responsive.spec.ts`).
+- **5 desktop-only tests skipped in the mobile project** — all in
+  `dashboards.spec.ts`, where a list pages differently on a phone or the gesture is
+  a pointer one.
+- **1 describe-level skip** in `assignment.spec.ts`, whose permission branches do
+  not vary by width.
+
+4 + 5 + 1 = 10. A skip count other than 10 is worth investigating; a skip count of
+0 means the project filter is not being applied.
 
 ### Not verified
 
@@ -380,6 +424,12 @@ Resize to **375×812** and redo the tour. Specifically:
   eyes over it.
 - Open the navigation drawer and the filter drawer. Close them. Check focus goes
   back where it came from.
+- **Watch for one thing sitting on top of another**, which is defect shape 3 and
+  the exact defect M6 shipped: the bottom of a phone screen here holds the bottom
+  navigation (56 px), the ticket's sticky action bar, *and* the snackbar, and they
+  have collided before. **Do an action that raises a snackbar — pick up a ticket,
+  add a note — and check the confirmation does not cover the buttons it is
+  confirming.**
 - Redo pass 1's admin screens at this width — they are untested at *both* widths,
   and a tree or a wide table is where a phone layout gives up.
 
@@ -413,6 +463,16 @@ either reads clearly or does not — and only a reader can say which.
 - **The table twin.** Each chart has a text version beside it. Check the numbers
   agree with the picture.
 
+> **The trick that found the axis bug: look at the dashboard against *both*
+> databases.** These screens were designed and screenshotted against `acme_demo`
+> and its 318 incidents. The day-early axis defect only became visible when the
+> app was pointed **back at the sparse dev database**, where a handful of days with
+> gaps between them makes each label individually readable — against 90 dense days
+> nobody could see that every label was off by one. If you have five minutes,
+> switch to `acme_incidents_dev` (§2.2, and restart uvicorn) and look at the same
+> charts with almost no data in them. Sparse data is a different test, not a worse
+> one.
+
 ### Pass 4 — the inbox and the bell · 15 min
 
 **Why fourth and not first.** S1 is the newest phase but the best tested — four
@@ -438,9 +498,22 @@ yourself out).
   drop immediately** — not thirty seconds later. That is [D32](DECISION-LOG.md): the
   count is decremented before the navigation unmounts the page, because
   TanStack Query will not run a mutation's `onSuccess` once its component has gone.
-- **Go back to the inbox from the dashboard.** The inbox must not show stale
-  contents. That is [D33](DECISION-LOG.md), and it is the one where the inbox and
-  the badge disagreed.
+- **Go back to the inbox from the dashboard**, and do it more than once, within
+  the 30-second poll window. The inbox must not show stale contents. That is
+  [D33](DECISION-LOG.md), and it is the one where the inbox and the badge
+  disagreed.
+
+  > **This is the one place in the build with a known, honestly-recorded loose
+  > end.** D33's fix (`staleTime: 0` on the inbox feed) demonstrably works — three
+  > of the four tests that depend on navigating back to a fresh inbox failed
+  > before it and pass after. **One did not.** It still failed in a full-suite run
+  > while passing in isolation, with the notification provably in the database and
+  > the response still carrying the old `total`, so something else is also holding
+  > a stale answer on that path under load. That test now takes a reload, and its
+  > comment says it does so because of an unresolved question rather than because a
+  > reload is better. The *rule* is unaffected. **If you can make the inbox show
+  > you something stale by hand, that is a genuinely useful finding** — it is the
+  > one open question in the application and nobody has reproduced it deliberately.
 - **Mark one read, then mark all read.** Badge follows both times?
 - **The negative cases, which are the interesting ones.** As Nina, add an
   **internal** note to Eve's ticket → Eve gets **nothing**. Add a public one → it
@@ -458,9 +531,11 @@ class of defect; you can, in five minutes.
 - Press Tab once. The **skip link** should be the first stop, and activating it
   should land you on the main content.
 - Keep tabbing. **Can you always see where you are?** Every focused control should
-  have a visible ring — 3 px, and white rather than blue inside the app bar. Check
-  cards and list rows, not just buttons: the S6 defect was invisible on buttons and
-  obvious on a card.
+  have a visible ring — 3 px, and white rather than blue inside the app bar.
+- **Go to `/report` and tab to one of the five category cards.** That is the exact
+  spot where the missing focus ring was found: the focused card was pixel-identical
+  to the four beside it. Cards and list rows are where this class of defect shows;
+  buttons are where it hides.
 - Open a dialog with the keyboard. Focus should move into it, Escape should close
   it, and focus should return to the control that opened it.
 - **Complete the report questionnaire with no pointer at all.** All five steps.

@@ -1057,11 +1057,13 @@ E2E_ADMIN_PASSWORD="<the seed_admin password, already changed>" \
 
 ✅ **Correct result:** **82 passed, 10 skipped**, the same as locally. (This item was
 written at M6, when the suite was 12 passed / 2 skipped; M7, S6 and S1 have since taken it
-to 82/10. The ten skips are all deliberate viewport guards — four desktop-only tests are
-skipped in the `mobile` project and four mobile-only ones in `desktop`, plus the
-describe-level skip in `assignment.spec.ts` — so **the skip count is expected and is not a
-sign of anything wrong**. A skip count other than 10 is worth investigating; a skip count
-of 0 means the project filter is not being applied.)
+to 82/10. The ten skips are all deliberate viewport guards — **5** desktop-only tests are
+skipped in the `mobile` project (all in `dashboards.spec.ts`), **4** mobile-only ones in
+`desktop` (the two phone drawers, a keyboard path into one, and the sticky action bar),
+plus the describe-level skip in `assignment.spec.ts`, which is also mobile. 5 + 4 + 1 = 10,
+so **the skip count is expected and is not a sign of anything wrong**. A skip count other
+than 10 is worth investigating; a skip count of 0 means the project filter is not being
+applied.)
 ❌ Timeouts on the first test are most likely a cold Aurora — the config allows 90 s per
 test, which is generous locally and may not be after a 15-minute idle. Warm it with a
 `curl https://$CF/api/v1/health` first and re-run before investigating anything else.
