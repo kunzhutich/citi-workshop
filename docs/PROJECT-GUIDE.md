@@ -3313,6 +3313,7 @@ button — see M5's reasoning about which corner a thumb reaches.
 | `features/engineers/sortForAssignment.test.ts` | 6 | Specialty before load, load before name, and that someone on leave stays in the list. |
 | `features/incidents/ActivityTimeline.test.tsx` | 10 | That a status change reads in words, that an assignment names a person rather than printing their id, and that an internal note is labelled. |
 | `display/labels.test.ts`, `display/time.test.ts` | 19 | That no raw enum reaches a screen, that an absent timestamp renders as an em dash rather than "Invalid Date", and which transition destinations are coloured. |
+| `layout/AppShell.test.tsx` | +1 | That the report FAB is absent on the report page — M5's file, one row added. |
 | `e2e/lifecycle.spec.ts` | 1 × 2 widths | The acceptance criterion, end to end, in a browser. |
 | `e2e/assignment.spec.ts` | 1 | The assign-and-close branch, plus escalation. |
 | `e2e/responsive.spec.ts` | 5 × 2 widths | The geometry jsdom cannot see. |
