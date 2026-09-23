@@ -12,10 +12,15 @@ written after the work, this file is written after the commit.
 
 ## Position
 
-**Last updated:** 2026-09-23, M6 verified and M7 started
+**Last updated:** 2026-09-23, M7 pass 1 complete
 **Current branch:** `m7-dashboards-demo-data`
-**Phase in progress:** M7, pass 1 of 3 (report endpoints). Passes 2 and 3 are
-`seed_demo` and the dashboards.
+**Phase in progress:** M7, pass 2 of 3. Pass 1 (report endpoints) is done and
+committed; passes 2 and 3 are `seed_demo` and the dashboards.
+
+**M7 pass 1 verified:** all eight MVP report endpoints from BUILD-PLAN section
+11, computed with SQL aggregates. 661 backend tests (609 + 52 new), ruff check
+and ruff format clean. Every new test asserts a number worked out by hand from
+the fixture table at the top of `tests/integration/test_reports.py`.
 
 **M6 verified independently:** 609 backend tests, 211 frontend tests,
 12 Playwright tests (2 deliberate viewport skips), ruff check + format clean,
@@ -40,14 +45,14 @@ reviews.
 | `m4-incidents-workflow` | M4 | merged to main (PR #4) |
 | `m5-frontend-shell-auth` | M5 | merged to main (PR #5); branch deletable |
 | `m6-persona-screens` | M6 | verified, committed, **not pushed** (blocked) |
-| `m7-dashboards-demo-data` | M7 | in progress, branched off `m6` |
+| `m7-dashboards-demo-data` | M7 | in progress, branched off `m6`; pass 1 committed |
 | `m8-docs-and-demo` | M8 minus deploy | not started |
 | `s6-hardening` … | stretch | not started |
 
 ## Remaining plan
 
 1. **M6** — verify when the other session finishes, commit, push.
-2. **M7** — report endpoints, `seed_demo`, three dashboards. Branch off `m6`.
+2. **M7** — ~~report endpoints~~ (done), `seed_demo`, three dashboards. Branch off `m6`.
 3. **M8 minus deploy** — README rewrite, architecture diagram, role/permission
    matrix, known limitations, demo script. Branch off `m7`. See decision D1.
 4. **Stretch**, in order S6 → S1 → S3 → S2. See decision D2.
@@ -74,4 +79,7 @@ them is recorded in `docs/DEPLOYMENT-CHECKLIST.md`.
 - `backend/v1/.env` (gitignored) sets `POSTGRES_NAME=acme_incidents_dev`.
 - Run the API with `backend/v1/.venv/bin/uvicorn app.main:app --port 8000`, the
   UI with `npm run dev` in `frontend/` on :3000.
-- Full backend suite takes roughly 5 minutes; run it in the background.
+- Full backend suite takes roughly 5-6 minutes; run it in the background.
+- M7's report tests need `make_incident(created_at=..., escalated_at=...,
+  blocked_reason_type=...)` and `make_event(...)` in `tests/factories.py`; all
+  four were added in pass 1 and are additive, so no existing test changed.

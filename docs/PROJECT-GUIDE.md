@@ -4078,3 +4078,312 @@ a radio group for a screen reader.
 shape of the term: something like `INC-000482` or a bare number is looked up by ticket
 number, anything else goes to PostgreSQL's `websearch_to_tsquery`. One box, two
 searches, decided on the server.
+
+---
+
+## Phase M7 — Dashboards and demo data
+
+M7 is three passes. This section covers **pass 1: the report endpoints.** Passes 2
+(`seed_demo`) and 3 (the three dashboard screens) append their own sections below when
+they land, so if you are reading this and there is nothing after it, that is why.
+
+BUILD-PLAN section 11 lists eight business questions and one endpoint each. All eight now
+exist, all eight are computed by PostgreSQL rather than by Python, and all eight are
+tested against a fixture world small enough to check by hand.
+
+**Verified against local PostgreSQL only.** 661 backend tests (up from 609), ruff check
+and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
+that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/schemas/report.py` | The window model and one response model per report. Also the three tuning constants: `DEFAULT_WINDOW_DAYS`, `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT`. |
+| `app/repositories/reports.py` | Every aggregate, as SQL. Nothing else in the application issues an aggregate over incidents. |
+| `app/services/reporting.py` | Resolves and validates the window; maps aggregate rows onto response models; nests subcategories under their group. No arithmetic. |
+| `app/routers/reports.py` | The eight endpoints, the three shared query parameters, and the admin-only/self split. |
+| `app/models/incident.py` | Gained a module-level `format_reference(ticket_number)`; the `Incident.reference` property now calls it. |
+| `app/main.py` | Mounts `reports.router` under `/api/v1`. |
+| `tests/factories.py` | `make_incident` gained `created_at`, `escalated_at` and `blocked_reason_type`; new `make_event`. |
+| `tests/integration/test_reports.py` | 52 tests. The fixture table at the top of the file is the specification the assertions are read off. |
+
+The endpoints, and the question each answers:
+
+| Endpoint | Answers | Who |
+| --- | --- | --- |
+| `GET /api/v1/reports/summary` | What is open, how urgent, whose, and the daily created-versus-closed flow | admin |
+| `GET /api/v1/reports/categories` | What people report most, per group and per subcategory | admin |
+| `GET /api/v1/reports/locations` | Top 10 buildings, floors and seats | admin |
+| `GET /api/v1/reports/response-times` | Median time to assign / acknowledge / resolve, overall and per priority | admin |
+| `GET /api/v1/reports/engineer-workload` | Level, availability, live load by status, capacity used, resolved this period | admin |
+| `GET /api/v1/reports/blocked-escalated` | Blocked tickets grouped by reason with age; the escalations and their reasons | admin |
+| `GET /api/v1/reports/communication` | Share of resolved tickets whose reporter was told something first; median time to that; reopen rate | admin |
+| `GET /api/v1/reports/me` | The caller's own counts | anyone signed in |
+
+All eight take `from`, `to` (default: the last 30 days) and an optional `building_id`.
+
+### 2. Why it is shaped this way
+
+#### The aggregates are SQL, and that is the whole point of the phase
+
+Every number is computed by PostgreSQL. `COUNT(*) FILTER (WHERE ...)` for the segmented
+counts, `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM ...))` for the
+medians, `AVG`/`MAX` for the blocked ages, a window function for the category group
+totals, `generate_series` for the daily calendar.
+
+The alternative — select the rows, add them up in Python — is not merely slower; it is
+slower *in proportion to how well the platform is doing*. Eleven segments of the summary
+are eleven `FILTER` clauses over one scan, and adding a twelfth costs nothing:
+
+```python
+columns.extend(
+    func.count().filter(Incident.status == status).label(status_label(status))
+    for status in IncidentStatus
+)
+```
+
+One place where the line is worth drawing precisely: the service layer *does* loop, over
+rows the database has already aggregated, to nest subcategories under their group. That
+is assembling a tree out of finished totals, not computing totals. The totals themselves
+arrive complete, including each group's, via `sum(count(*)) OVER (PARTITION BY group)` in
+the same pass.
+
+#### Medians, not means, and no `FILTER` on them
+
+Every duration is a median. A single ticket that sat over a long weekend moves a mean and
+does not move a median, and the headline number on a dashboard is read by people who will
+not check the distribution.
+
+`percentile_cont` needs no `FILTER` clause, which surprised me until it did not: an
+incident that was never resolved contributes `NULL` to `EXTRACT(EPOCH FROM (resolved_at -
+created_at))`, and aggregate functions ignore `NULL`. So the median time to resolve is
+automatically over the tickets that were resolved. The counts published beside each
+median — `resolved_count` and friends — exist so that a reader knows how many rows it
+rests on, because "median 2 hours" over one ticket is not the same claim as over two
+hundred.
+
+#### `NULL` is a real answer and survives all the way out
+
+A period in which nothing was resolved has no median time to resolve. That is not zero.
+Every hours field and every percentage is `float | None`, `NULLIF` guards the two
+divisions, and there is a test asserting that a twelve-hour window with nothing in it
+returns `null` rather than `0`:
+
+```python
+assert body["informed_pct"] is None
+assert body["reopen_rate_pct"] is None
+assert body["median_first_public_note_hours"] is None
+```
+
+A dashboard that renders "0% of reporters were informed" for a quiet Tuesday is lying
+about the business, and the lie starts here if it starts anywhere.
+
+#### Counts come back as lists, with their zeroes
+
+`by_status` always carries five rows and `by_priority` always carries four, including the
+ones nobody used. A `GROUP BY` would omit them, and then the client has to decide whether
+a missing key means "none" or "the server forgot". Making the aggregate a row of
+`FILTER` columns rather than a grouped query is what makes this free.
+
+#### The window rule, and its one uncomfortable consequence
+
+`from`/`to` filter `created_at` on every report, with three exceptions that name their own
+timestamp. That is [decision D5](DECISION-LOG.md), including the consequence worth
+arguing about: a ninety-day-old ticket that is still blocked does not appear in the
+default thirty-day blocked report. The rule is written down once, in `_window_clauses()`.
+
+#### Where "blocked since" comes from
+
+There is no `blocked_at` column, deliberately: `incident_service.py` clears
+`blocked_reason_type` when a ticket leaves BLOCKED, because `incident_events` already
+holds the history. So the age is read from the event log, `COALESCE`d to `created_at` for
+rows whose blocking predates their events. [Decision D6](DECISION-LOG.md).
+
+```python
+latest = (
+    select(func.max(IncidentEvent.created_at))
+    .where(
+        IncidentEvent.incident_id == Incident.id,
+        IncidentEvent.event_type == EventType.STATUS_CHANGED,
+        IncidentEvent.to_value == IncidentStatus.BLOCKED.value,
+    )
+    .correlate(Incident)
+    .scalar_subquery()
+)
+return func.coalesce(latest, Incident.created_at)
+```
+
+This is the event log's docstring claim — that events carry `from_value`/`to_value`
+"rather than a rendered message" so the reports can read them — being cashed in for the
+first time.
+
+#### `now` is a parameter, never `now()`
+
+Ages are measured against an instant the caller passes in, defaulting to
+`app.clock.utc_now()`. That is the same convention M4 established for the reopen window,
+and it is what lets `test_blocked_age_is_measured_from_when_the_ticket_became_blocked`
+assert `96.0` exactly rather than approximately.
+
+#### Permissions: seven admin reports and one that needs no role
+
+The seven aggregate reports describe the organisation, so they are admin-only through the
+existing `require_roles` dependency — expressed as `dependencies=[ADMIN_ONLY]` per route
+rather than on the router, because `/reports/me` must not inherit it.
+
+`/reports/me` takes **no user parameter**. There is no `?user_id=` to tamper with; the
+subject is whoever the access token says it is. That is what makes it safe to expose to
+everyone, and it is why the permission test suite parametrises over the seven and treats
+the eighth separately.
+
+### 3. How the pieces connect
+
+One real request, hop by hop — an admin's dashboard asking for the response-time chart:
+
+```
+browser
+  → GET /api/v1/reports/response-times?from=...&to=...&building_id=...
+  → Vite dev proxy (frontend/vite.config.ts), /api forwarded unchanged
+  → app/main.py                       router mounted at /api/v1
+  → app/routers/reports.py            get_response_times
+      ├─ Depends(ADMIN_ONLY)          security/dependencies.require_roles(FACILITY_ADMIN)
+      │     └─ get_current_user       token → user, password-change gate
+      ├─ Depends(get_report_window)   the three query parameters
+      │     └─ services/reporting.build_window   defaults, UTC, from <= to
+      └─ Depends(get_db)              app/db.py session
+  → app/services/reporting.response_times
+      ├─ repositories/reports.response_times_overall      one row
+      └─ repositories/reports.response_times_by_priority  one row per priority
+           └─ SQL: percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY EXTRACT(epoch FROM (resolved_at - created_at)) / 3600.0)
+  → _to_response_times: Decimal → float, NULL preserved
+  → ResponseTimesReport  (FastAPI serialises by alias, so `date_from` → "from")
+  → TanStack Query cache → chart re-renders
+```
+
+The two things in that trace that are easy to get wrong: the window is resolved by a
+dependency, so no route can forget it; and the `Decimal` → `float` conversion is explicit
+in `_as_float`, because `round(numeric, 2)` comes back as a `Decimal` and `None` has to
+survive the trip.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| What `from`/`to` filter, and the building filter | `app/repositories/reports.py` → `_window_clauses` |
+| Default period, UTC coercion, `from <= to` | `app/services/reporting.py` → `build_window` |
+| Which reports are admin-only | `app/routers/reports.py` → `dependencies=[ADMIN_ONLY]` per route |
+| Who may be an assignee (hence `/reports/me`'s shape) | `app/services/assignment.py` |
+| When a ticket became blocked | `app/repositories/reports.py` → `_blocked_since` |
+| What counts as "kept informed" | `app/repositories/reports.py` → `_first_public_staff_note` + `communication` |
+| Which roles are staff for that purpose | `app/repositories/reports.py` → `STAFF_ROLES` |
+| Hours, rounding, percentages, `NULL` handling | `app/repositories/reports.py` → `_hours`, `_rounded`, `_percentage` |
+| Top-N limits | `app/schemas/report.py` → `TOP_LOCATION_LIMIT`, `ESCALATED_TICKET_LIMIT` |
+| Ticket reference formatting | `app/models/incident.py` → `format_reference` |
+
+### 5. How to change it
+
+**To add a segment to an existing report** — say, a count of tickets closed as duplicates
+— add one `func.count().filter(...)` column in `app/repositories/reports.py`, one field on
+the response model in `app/schemas/report.py`, one line in the mapping in
+`app/services/reporting.py`, and one assertion in `tests/integration/test_reports.py`
+with the number worked out from the fixture table at the top of that file. Four files, no
+new query.
+
+**To add a whole report** — one function in the repository, one in the service, one route
+in the router, one response model, one test class. Follow `/reports/categories`: it is the
+shortest one that does something non-trivial.
+
+**To change what the window means** — `_window_clauses` only. See D5 before you do.
+
+**To add a fixture incident** — add a row to *both* tables in the
+`tests/integration/test_reports.py` docstring, then to `_build_incidents`, then fix every
+assertion the new row changes. That will be most of them, which is deliberate: a fixture
+world small enough that one more ticket moves twenty numbers is a fixture world you can
+still reason about.
+
+### 6. Gotchas
+
+**`count(*)` versus `count(column)` on an outer join.** `/reports/engineer-workload`
+LEFT JOINs incidents onto engineers so that an engineer holding nothing still appears.
+`count(*)` would score that engineer 1, because the join manufactures a row of nulls.
+Every count in that query is `count(Incident.id)`. This is the single most likely place
+for a future edit to introduce a wrong number that looks plausible.
+
+**A `GROUP BY` cannot produce a zero.** Hence the `FILTER`-columns-in-one-row shape for
+the status and priority segments, and `generate_series` for the daily series. If you
+convert either to a grouped query for tidiness, quiet days and unused statuses vanish.
+
+**`date_trunc` and `::date` on a `timestamptz` use the session time zone.** `app/db.py`
+pins it to UTC via `build_connect_args`, and the test fixtures build their engine the same
+way. Without that pin, the daily series would bucket differently on a developer's machine
+than in the Lambda — the same instants, different days.
+
+**Naive datetimes in the query string.** `?from=2026-09-01` parses to a naive datetime.
+`_as_utc` attaches UTC explicitly rather than letting the comparison against a
+`timestamptz` column be resolved by the session default. Same value today; not an
+accident tomorrow.
+
+**A window of 30 days spans 31 calendar days.** Both ends are inclusive, matching
+`GET /incidents`'s `created_from`/`created_to`. `test_summary_reports_created_and_closed_for_every_day_in_the_window`
+asserts `len(per_day) == 31`, which looks off by one until you remember that.
+
+**`CLOSED` keeps `resolved_at`.** Closing a ticket does not erase the fact that it was
+resolved first, so `communication.resolved_total` counts closed tickets too, and
+`engineer-workload.resolved_in_period` credits an engineer for a ticket that has since
+been closed. Reopening *does* clear it — `_apply_transition_effects` nulls `resolved_at`
+and `closed_at` on entering IN_PROGRESS — which is exactly why that code says it is
+written as "what it means to be in this status".
+
+**The fixture world is anchored to `utc_now()` at fixture-build time**, not to a literal
+date, so the default-window test is meaningful. Only two assertions depend on the server's
+clock as well as the fixture's, and both use `pytest.approx` with 0.05-hour slack; the
+exact-age assertions go through the service with an explicit `now`.
+
+### 7. Glossary
+
+**Aggregate function** — SQL that collapses many rows into one value: `count`, `avg`,
+`max`. All of them ignore `NULL` inputs except `count(*)`, which is why the medians here
+need no `FILTER` clause.
+
+**`FILTER (WHERE ...)`** — a per-aggregate condition, so one scan can produce many
+differently-conditioned counts. `count(*) FILTER (WHERE status = 'OPEN')` beside
+`count(*) FILTER (WHERE status = 'BLOCKED')` in the same `SELECT`.
+
+**Ordered-set aggregate** — an aggregate that needs its input sorted, written
+`f(args) WITHIN GROUP (ORDER BY ...)`. `percentile_cont` is one.
+
+**`percentile_cont(0.5)`** — the continuous median. With an even number of values it
+*interpolates* between the two middle ones rather than picking one: `[5, 9, 12, 20]` gives
+10.5, not 9 or 12. `percentile_disc` would pick an actual data point instead.
+
+**`EXTRACT(EPOCH FROM interval)`** — an interval as a number of seconds. Subtracting two
+`timestamptz` values gives an interval; this is how it becomes arithmetic.
+
+**Window function** — an aggregate evaluated over a frame of rows without collapsing
+them, written `f(...) OVER (PARTITION BY ...)`. `sum(count(*)) OVER (PARTITION BY group)`
+puts each group's total on every one of its subcategory rows.
+
+**Correlated subquery** — a subquery that refers to a column of the enclosing query and is
+therefore evaluated per outer row. `_blocked_since()` and `_first_public_staff_note()` are
+both correlated on `incidents.id`.
+
+**Scalar subquery** — a subquery used where a single value is expected, in a `SELECT` list
+or a comparison. In SQLAlchemy, `.scalar_subquery()`.
+
+**`generate_series`** — a set-returning function producing a sequence; here, one row per
+calendar day, so that days with no incidents appear in the series as zeroes.
+
+**`NULLIF(x, 0)`** — returns `NULL` when `x` is zero. Used as the denominator of every
+percentage, so an empty period yields `NULL` rather than a division error.
+
+**`COALESCE`** — the first non-`NULL` of its arguments. `COALESCE(blocked_event_time,
+created_at)` is what stops a missing event producing a `NULL` age.
+
+**`table_valued()` / `render_derived()`** — SQLAlchemy's way of putting a set-returning
+function in the `FROM` clause with a column alias: `generate_series(...) AS calendar(day)`.
+
+**Ordered-set versus grouped** — `GROUP BY priority` produces one row per priority *that
+has rows*. A row of `FILTER` columns produces one row with a column per priority, present
+whether or not it has rows. The reports use both, deliberately, and the choice is always
+about whether zeroes must appear.

@@ -1035,15 +1035,118 @@ delivered CSS rather than the API — check 5.6 and 5.7.
 
 ---
 
+## M7 — Dashboards and demo data (pass 1: report endpoints)
+
+### 7.1 The reports run on Aurora at all
+
+**Why it needs the cloud.** The report SQL uses four things the rest of the application
+never touches: `COUNT(*) FILTER (WHERE ...)`, the ordered-set aggregate
+`percentile_cont(...) WITHIN GROUP (...)`, a window function (`sum(count(*)) OVER
+(PARTITION BY ...)`), and `generate_series(...)` in the `FROM` clause. All four are
+standard PostgreSQL 9.4-and-later and Aurora is 17.7, so they are expected to work — but
+"expected to work" is not the same as "has worked", and this is the first phase whose SQL
+could not have been written against an older server.
+
+```sh
+TOKEN=...   # a FACILITY_ADMIN access token
+BASE="https://${CLOUDFRONT_DOMAIN}/api/v1"
+
+for report in summary categories locations response-times \
+              engineer-workload blocked-escalated communication me; do
+  printf '%-20s ' "$report"
+  curl -s -o /dev/null -w '%{http_code}\n' \
+    -H "Authorization: Bearer $TOKEN" "$BASE/reports/$report"
+done
+```
+
+✅ **Correct result:** eight `200`s.
+
+❌ A `500` on `response-times` only points at `percentile_cont`; on `summary` only, at
+`generate_series` in the `FROM` clause. Read the Lambda log group for the SQLSTATE rather
+than guessing — both render as a generic 500 to the client.
+
+### 7.2 The daily series buckets in UTC, not in the server's zone
+
+**Why it needs the cloud.** `summary.per_day` casts `created_at` to `date`, and a
+`timestamptz` renders in the **session** time zone. `app/db.py` pins that to UTC through
+`build_connect_args`, and the test fixtures build their engine the same way — so locally
+the pin is proven to work, not proven to be what Aurora would otherwise have done. If the
+pin were ever dropped, tickets near midnight would land on different days in the two
+environments and nothing would error.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/reports/summary?from=$(date -u -d '2 days ago' +%Y-%m-%dT00:00:00Z)&to=$(date -u +%Y-%m-%dT23:59:59Z)" \
+  | python3 -m json.tool | head -40
+```
+
+✅ **Correct result:** `window.from` and `window.to` come back with a `+00:00` offset, and
+`per_day` holds one entry per calendar day with `day` values that match the UTC dates in
+the request.
+
+❌ Days offset by one, or a `per_day` length one longer or shorter than expected, means
+the session zone is not UTC. Check `SHOW timezone` through a `migrate`-style invoke before
+touching the report code.
+
+### 7.3 Report latency against a realistic row count
+
+**Why it needs the cloud.** Locally every report runs against a fixture of ten incidents.
+The demo dataset is ~300, and Aurora Serverless v2 starts from `min_capacity = 0.0`.
+The reports issue between one and three statements each; `/reports/summary` issues three,
+one of which is a 31-row `generate_series` with two correlated subqueries per row.
+
+Run **after** `seed_demo` (pass 2), and warm the database first so the number is not a
+cold-start measurement:
+
+```sh
+curl -s "https://${CLOUDFRONT_DOMAIN}/api/v1/health" > /dev/null
+for report in summary categories locations response-times \
+              engineer-workload blocked-escalated communication; do
+  printf '%-20s ' "$report"
+  curl -s -o /dev/null -w '%{time_total}s\n' \
+    -H "Authorization: Bearer $TOKEN" "$BASE/reports/$report"
+done
+```
+
+✅ **Correct result:** every report under 1 s warm. A dashboard fires several at once, so
+the slowest one sets the page's time-to-content.
+
+⚠️ If `/reports/summary` is the outlier, the 31 correlated subqueries in `per_day` are the
+first thing to look at — two grouped queries plus a Python zero-fill would be the fallback,
+and the reason it was not done that way is in the guide.
+
+⚠️ If `/reports/blocked-escalated` is the outlier, it is `_blocked_since()`: one correlated
+`MAX` over `incident_events` per blocked row. `ix_incident_events_incident_id_created_at`
+should cover it; confirm with `EXPLAIN` rather than assuming.
+
+### 7.4 The admin-only split survives CloudFront
+
+**Why it needs the cloud.** M3's 3.3 established that error status codes survive the
+distribution, but the 403s there came from routes CloudFront had already been asked to
+forward. These are new paths, and a 403 that CloudFront rewrote into a 200 `/index.html`
+would be the exact rubric violation `infra/cloudfront.tf` was changed to prevent.
+
+```sh
+EMPLOYEE_TOKEN=...   # any EMPLOYEE account
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $EMPLOYEE_TOKEN" "$BASE/reports/summary"
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $EMPLOYEE_TOKEN" "$BASE/reports/me"
+```
+
+✅ **Correct result:** `403` then `200`, and the 403 body is
+`{"detail": ..., "code": "ROLE_NOT_PERMITTED"}` rather than HTML.
+
 ## Not yet verifiable, by design
 
 These are out of scope until the phase that introduces them:
 
-- `seed_demo` and its production guard — M7.
-- Report endpoint performance against a realistic row count — M7.
-- The three persona home pages and the admin dashboard — M7. M6 ships every other screen;
-  `/` is still a placeholder naming the phase, because the counts and charts on it come
-  from report endpoints M7 builds.
+- `seed_demo` and its production guard — M7 pass 2.
+- Report endpoint performance against a realistic row count — M7 pass 3's prerequisite;
+  the checks are written up as 7.3 above and need `seed_demo` to have run first.
+- The three persona home pages and the admin dashboard — M7 pass 3. M6 ships every other
+  screen; `/` is still a placeholder naming the phase. The report endpoints those pages
+  read now exist (M7 pass 1); the pages themselves do not.
 - Anything depending on a realistic row count — M7's `seed_demo`. The deployed database
   currently holds whatever has been reported by hand, so 6.7's timings and 4.7's query
   plan are measured against tens of rows rather than hundreds.
