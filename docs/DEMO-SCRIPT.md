@@ -389,5 +389,5 @@ Each of these is one extra minute and shows something the main script skips.
 - **The same screens at 375 px.** Narrow the window: the sidebar becomes a bottom bar, the
   ticket table becomes cards, dialogs go full-screen, and the ticket's action buttons move
   into a sticky bar at the bottom of the screen.
-- **The API itself** — <http://localhost:8000/api/v1/docs>. 41 paths, 61 operations, and
+- **The API itself** — <http://localhost:8000/api/v1/docs>. 45 paths, 65 operations, and
   `GET /incidents/{id}/allowed-transitions` is the one the frontend leans on.

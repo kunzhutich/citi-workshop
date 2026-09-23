@@ -17,8 +17,8 @@ written after the work, this file is written after the commit.
 **Phase in progress:** none. S1 is finished. Next is stretch S3 (SLA targets),
 per [D2](DECISION-LOG.md).
 
-**S1 verified:** backend **819** pytest (738 + 81) · frontend **310** vitest
-(290 + 20) · e2e **82 passed, 10 deliberate viewport skips** (72 + 8 before) ·
+**S1 verified:** backend **825** pytest (738 + 87) · frontend **312** vitest
+(290 + 22) · e2e **82 passed, 10 deliberate viewport skips** (72 + 10 before) ·
 ruff check + ruff format clean · eslint, `tsc -b` and `vite build` clean.
 Migration `0005` applied to **both** `acme_incidents_dev` and `acme_demo`.
 
@@ -73,11 +73,25 @@ something to measure and puts all four figures on the admin dashboard as
 `0%`, because "nothing was resolved" and "nobody was informed" are different
 facts and the API is careful to distinguish them.
 
+**The migration was round-tripped**, not just applied: on a scratch database,
+`0004 → 0005`, then `alembic downgrade 0004` (which removes the table *and* the
+enum type — checked in `pg_type`, not assumed), then back up to `0005`. That
+also exercises the 0001 fix: a database created after the change gets eleven
+enum types from 0001 and the twelfth from 0005, with no collision.
+
 **Demo data.** `seed_demo` now builds the demo inbox by replaying each ticket's
 planned history through `app/notifications.py` rather than reimplementing the
 audience rule. A 60-incident world produces 304 notifications across all four
 kinds, with a 61.4% read rate — a number a dashboard can show, which neither 0%
 nor 100% would be.
+
+**The one application bug the e2e suite found.** Opening a notification follows
+a link, which unmounts the inbox — and TanStack Query does not call a
+mutation's `onSuccess` once its component has gone, so the invalidation that
+clears the badge never ran and the bell kept its old number until the next
+poll. Invisible in a component test, because jsdom has no navigation to unmount
+anything. The count is now decremented in `onMutate`, which fires
+synchronously before the navigation. [D32](DECISION-LOG.md).
 
 **What looking at the screen found**, as in every phase so far: the inbox showed
 each message beside the ticket's *current* status chip, so "Your ticket

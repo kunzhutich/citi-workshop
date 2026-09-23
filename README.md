@@ -19,7 +19,7 @@ See [Known limitations](#known-limitations).
 
 | | |
 | --- | --- |
-| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 41 paths / 61 operations under `/api/v1` |
+| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 45 paths / 65 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
 | **Tests** | 738 backend (pytest) · 290 frontend (Vitest) · 72 end-to-end (Playwright, two viewports, axe-core included) |
 | **Docs** | [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
@@ -417,9 +417,9 @@ npm run test:e2e                  # or npm run test:e2e:ui
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Backend unit + integration | `pytest` | **819 passing** |
+| Backend unit + integration | `pytest` | **825 passing** |
 | Backend lint + format | `ruff check` / `ruff format --check` | clean |
-| Frontend component + hook | `npm test` (Vitest, 33 files) | **310 passing** |
+| Frontend component + hook | `npm test` (Vitest, 33 files) | **312 passing** |
 | Frontend lint + types + build | `npm run lint` / `typecheck` / `build` | clean (ESLint, `tsc -b`, `vite build`) |
 | End-to-end | `npm run test:e2e` | **82 passing**, 10 deliberate viewport skips, across 6 spec files and 2 viewports (1440×900, 375×812) |
 | Accessibility | part of `npm run test:e2e` | axe-core at WCAG 2.1 AA over every screen, at both viewports, with dialogs and drawers open |
@@ -508,7 +508,7 @@ Stated plainly, because the rubric asks for coverage figures this project does n
 
 ## Trade-offs and decisions
 
-Thirty-one decisions are recorded with their alternatives in
+Thirty-two decisions are recorded with their alternatives in
 [docs/DECISION-LOG.md](./docs/DECISION-LOG.md); three infrastructure changes in
 [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:

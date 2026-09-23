@@ -1745,3 +1745,59 @@ in a row where the most valuable defect was found by looking.
 
 **Reversible.** Each omission is a row in `RULES` and a test that would need
 deleting. The "Now" label is one element.
+
+## D32 — The badge that stayed behind, because the page it belonged to had gone
+
+**Question.** `useMarkNotificationRead` invalidated the whole `['notifications']`
+query prefix in `onSuccess`, which is the standard shape and is what every
+other mutation in this codebase does. Writing the end-to-end test for "opening
+a notification clears it" found the assertion failing. Is the test wrong?
+
+**Finding — the test was right, and the shape is wrong for this one case.**
+Opening a notification does two things at once: it fires the mark-read mutation
+and it follows a React Router link to the ticket. The link unmounts
+`NotificationsPage`, and **TanStack Query does not call a mutation's callbacks
+once the component that started them has unmounted** — the mutation itself
+completes, the row is marked read on the server, but `onSuccess` never runs and
+nothing invalidates the unread count. The bell therefore kept its old number
+until the next poll: up to thirty seconds after the user watched the row they
+had just read disappear.
+
+It is a small bug with an unpleasant shape. It is invisible in a component
+test, because jsdom has no navigation to unmount anything; it is invisible in a
+manual click-through if you happen to wait; and the symptom — "the badge is
+sometimes wrong" — points at the polling, which is the part that works.
+
+**Chosen.** Decrement the cached count in `onMutate`, which fires
+**synchronously** when `mutate()` is called and therefore always runs, before
+any navigation. The mutation takes `{ id, wasUnread }` rather than a bare id so
+the decrement happens only for a row that was actually unread — the per-row
+tick only exists on unread rows, but opening an already-read one must not move
+the badge.
+
+The invalidation stays in `onSuccess`, as the correction: when it runs it
+replaces the optimistic guess with the server's answer, and when it does not,
+the next poll does within thirty seconds. This is deliberately *not* a full
+optimistic-update-with-rollback — there is no `onError` restoring the previous
+count, because the worst case is a badge one too low for one polling interval,
+and a rollback would need a snapshot and a cancel for a symptom nobody would
+notice.
+
+**Alternatives rejected.** *Await the mutation, then navigate programmatically*:
+the row stops being a real link, losing open-in-new-tab, middle-click and the
+status-bar preview — the same properties S6 changed the mobile bottom bar to
+gain. *Move the invalidation into a global `MutationCache` handler*: it would
+work, and it would put one mutation's business in a place that every other
+mutation also passes through.
+
+**Where it is written down.** `useMarkNotificationRead` in
+`frontend/src/features/notifications/hooks.ts`, with the reasoning beside it,
+because the code looks over-engineered without it.
+
+**Regression test.** `e2e/notifications.spec.ts`, "opening a notification goes
+to its ticket and clears it" — the test that found it. It is end-to-end by
+necessity rather than by preference: the bug only exists where there is a real
+router unmounting a real component.
+
+**Reversible.** Yes: delete `onMutate` and the `wasUnread` flag, and the badge
+goes back to being right within thirty seconds instead of immediately.

@@ -717,7 +717,7 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | One person who holds two capacities gets one notification | `app/notifications.py` | `plan()`, `AUDIENCE_PRECEDENCE` — the reporter's wording wins |
 | **An INTERNAL note notifies nobody** | `app/notifications.py` | `_is_a_public_staff_note`, the `applies` precondition on the NOTE_ADDED row |
 | Which capacity a user holds on a ticket | `app/notifications.py` | `user_in_capacity` — **not** `workflow.resolve_actors`, which makes a LEAD an ASSIGNEE everywhere |
-| There is no admin audience | `app/notifications.py` | `Audience` has two members; asserted by `test_no_rule_speaks_to_an_admin_as_an_audience` |
+| There is no admin audience | `app/notifications.py` | `Audience` — two members, not three; `tests/unit/test_notifications.py` asserts no rule reaches past them |
 | How a status is worded inside a stored message | `app/notifications.py` | `STATUS_WORDING` — the only place the backend renders a domain value into English |
 | That a notification is written in the same transaction as its event | `app/services/notification_service.py` | `record` — "the caller commits", like every other service |
 | One inbox is unreachable from another session | `app/repositories/notifications.py` | every statement takes `user_id` as an argument; there is no query that could express otherwise |
@@ -7021,7 +7021,7 @@ Facts that live in more than one document, and which copy wins:
 | Test counts | the suites themselves | README, BUILD-STATUS, this guide |
 | Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
 | Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
-| The API surface | the running OpenAPI document | README (41 paths / 61 operations), BUILD-PLAN §9 |
+| The API surface | the running OpenAPI document | README (45 paths / 65 operations), BUILD-PLAN §9 |
 | Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the nine per-phase §4 maps it merges. Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
 
 ### 5. How to change it
@@ -7031,7 +7031,7 @@ three documentation edits: the transition table in `README.md`, the state diagra
 if the new row adds an edge, and BUILD-PLAN §6 if you want the plan to stay honest. The
 frontend needs nothing.
 
-**You added or changed an endpoint.** The README quotes "41 paths / 61 operations"; re-derive
+**You added or changed an endpoint.** The README quotes "45 paths / 65 operations"; re-derive
 it rather than adjusting it by hand:
 
 ```sh
@@ -7813,7 +7813,7 @@ protecting, rather than in an `if` at the call site.
 | Which capacity a user holds on a ticket | `app/notifications.py` `user_in_capacity` — **not** `workflow.resolve_actors`, and §6 says why |
 | The wording of a status inside a stored message | `app/notifications.py` `STATUS_WORDING` — the only place the backend renders a domain value into English |
 | One inbox is unreachable from another session | `app/repositories/notifications.py` — every statement takes `user_id` as an argument |
-| Somebody else's notification is 404, not 403 | `app/services/notification_service.mark_read` |
+| Somebody else's notification is 404, not 403 | `app/services/notification_service.py` `mark_read` — and `app/repositories/notifications.py` `get_for_user`, which puts the `user_id` in the lookup rather than in a check afterwards |
 | How often the badge polls | `frontend/src/features/notifications/hooks.ts` `UNREAD_POLL_INTERVAL_MS` |
 | What the read rate counts | `app/repositories/reports.py` `notification_read_rate` |
 
@@ -7832,7 +7832,9 @@ protecting, rather than in an `if` at the call site.
    the actor. If it needs a condition — "only when the note is public" — that
    condition is an `applies` on the row, not an `if` at the call site.
 5. Add an icon to `NOTIFICATION_ICONS` in `NotificationsPage.tsx`. It is a
-   `Record`, so the compiler will already have told you.
+   `Record<NotificationType, …>`, so the compiler will already have told you —
+   which is the same trick `display/labels.ts` uses and the reason neither can
+   quietly render a blank.
 
 `tests/unit/test_notifications.py` parametrises over `RULES`, so steps 1 and 3
 without a test are impossible — several parametrised tests will fail until the
@@ -7864,6 +7866,18 @@ who had just lost it. Setting the relationship sets the id too.
 `test_reassigning_names_the_new_engineer_not_the_previous_one` is the
 regression test; it assigns to Sam, then to Ada, and asserts the reporter was
 told "Ada Other".
+
+**A mutation's `onSuccess` does not run if its component has gone.** Opening a
+notification follows a link to the ticket, which unmounts `NotificationsPage`
+— and TanStack Query deliberately does not call a mutation's callbacks once the
+component that started it has unmounted. The invalidation that clears the badge
+therefore never ran, and the bell kept its old number until the next poll, up
+to thirty seconds after the user watched the row they had just read disappear.
+`useMarkNotificationRead` now decrements the cached count in `onMutate`, which
+fires synchronously before the navigation and so always runs; the invalidation
+stays as the correction for when it does. This is the one application bug the
+end-to-end tests found that the component tests could not — jsdom has no
+navigation to unmount anything. [D32](DECISION-LOG.md#d32--the-badge-that-stayed-behind-because-the-page-it-belonged-to-had-gone).
 
 **`user_in_capacity` is not `workflow.resolve_actors`, on purpose.** The
 workflow makes a LEAD engineer an ASSIGNEE on *any* ticket, because leads cover
