@@ -157,11 +157,7 @@ export async function signIn(page: Page, account: Account): Promise<void> {
   await page.goto('/login');
   await page.getByLabel('Email').fill(account.email);
   await page.getByLabel('Password').fill(account.password);
-  // `exact`, because the demo account picker below the form is an accordion
-  // whose header is a button called "Sign in as someone". Without it this
-  // locator matches two controls, Playwright's strict mode refuses, and every
-  // test in the suite fails in its own fixture before reaching an assertion.
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign in' }).click();
   // The shell's title only renders once the session is restored and the
   // guard has let the route through.
   await expect(page.getByRole('link', { name: 'ACME Facilities' })).toBeVisible();

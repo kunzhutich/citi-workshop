@@ -17,7 +17,6 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { incidentPath } from '../../routes';
-import { useTicketLinkState } from './backTarget';
 
 /**
  * The desktop list of tickets.
@@ -80,7 +79,6 @@ export interface IncidentTableProps {
 }
 
 export function IncidentTable({ incidents, sort, onSortChange }: IncidentTableProps) {
-  const ticketLinkState = useTicketLinkState();
   const descending = sort.startsWith('-');
   const sortedBy = descending ? sort.slice(1) : sort;
 
@@ -139,7 +137,6 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                 <Link
                   component={RouterLink}
                   to={incidentPath(incident.id)}
-                  state={ticketLinkState}
                   sx={{ whiteSpace: 'nowrap', fontWeight: 600 }}
                 >
                   {incident.reference}

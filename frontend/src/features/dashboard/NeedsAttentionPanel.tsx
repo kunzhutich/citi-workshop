@@ -18,7 +18,6 @@ import { relativeTime } from '../../display/time';
 import { AssignButton } from '../incidents/AssignButton';
 import { ACTIVE_STATUSES, currentListLink } from './listLinks';
 import { incidentPath } from '../../routes';
-import { useTicketLinkState } from '../incidents/backTarget';
 
 /** How long a ticket may sit unowned before it belongs in this panel. */
 export const UNASSIGNED_HOURS = 24;
@@ -247,8 +246,6 @@ function AttentionRow({
   age: string | null;
   groupId: string | null;
 }) {
-  const ticketLinkState = useTicketLinkState();
-
   return (
     <Box
       sx={{
@@ -268,7 +265,6 @@ function AttentionRow({
           <Link
             component={RouterLink}
             to={incidentPath(incidentId)}
-            state={ticketLinkState}
             underline="hover"
             sx={{ fontWeight: 600 }}
           >

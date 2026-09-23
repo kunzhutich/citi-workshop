@@ -116,25 +116,16 @@ function adminNavItems(): NavItem[] {
 /**
  * Pick the navigation item the current URL belongs to.
  *
- * Longest prefix wins, so `/tickets/mine` matches "My tickets" rather than
+ * Longest prefix wins, so `/tickets/mine` highlights "My tickets" rather than
  * "All tickets" at `/tickets`. The home path is matched exactly, because every
  * URL starts with `/`.
- *
- * Two callers want two different halves of the answer: the shell highlights a
- * path, and `features/incidents/backTarget.ts` names a screen. They share this
- * function so that "which screen am I on?" is decided once.
  */
-export function activeNavItem(pathname: string, items: NavItem[]): NavItem | undefined {
+export function activeNavPath(pathname: string, items: NavItem[]): string | false {
   const matches = items
     .filter((item) =>
       item.path === paths.home ? pathname === paths.home : pathname.startsWith(item.path),
     )
     .sort((a, b) => b.path.length - a.path.length);
 
-  return matches[0];
-}
-
-/** The path of the navigation item the current URL belongs to. */
-export function activeNavPath(pathname: string, items: NavItem[]): string | false {
-  return activeNavItem(pathname, items)?.path ?? false;
+  return matches[0]?.path ?? false;
 }

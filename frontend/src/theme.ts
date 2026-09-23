@@ -115,30 +115,6 @@ export const theme = createTheme({
           outlineOffset: 2,
         },
         /*
-         * ...except on a composed input, where the focusable element is the
-         * bare `<input>` inside the field rather than the field itself.
-         *
-         * The rule above drew its ring around that inner `<input>`, which
-         * stops short of the search icon and knows nothing about the rounded
-         * outline the field is wearing — so clicking the app bar's search box
-         * produced a hard white rectangle sitting inside a rounded one. A text
-         * input matches `:focus-visible` on a mouse click too, so this was
-         * every use of the control, not an edge case for keyboard users.
-         *
-         * The ring moves out to `.MuiInputBase-root`, which is the whole
-         * field: it picks up the theme's border radius, encloses the icon, and
-         * is the shape a reader would draw if asked to point at "the search
-         * box". Focus is still shown, and shown once — which is the part S6
-         * cared about.
-         */
-        'body .MuiAppBar-root .MuiInputBase-input:focus-visible': {
-          outline: 'none',
-        },
-        'body .MuiAppBar-root .MuiInputBase-root:has(:focus-visible)': {
-          outline: `3px solid ${current.palette.common.white}`,
-          outlineOffset: 2,
-        },
-        /*
          * Honour the operating system's reduced-motion setting. Everything
          * here animates for polish rather than meaning, so there is nothing to
          * lose by turning it off for someone who asked.
