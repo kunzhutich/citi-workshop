@@ -282,7 +282,10 @@ II** is the unchanged phase log. The guide is now 6,985 lines.
 > when M8 wrote them and are kept as the record of that pass. They are no longer
 > the current state of the guide: S6 added `login_attempts` and S1 added
 > `notifications`, so Part I now narrates **twelve** tables rather than ten, and
-> the guide as a whole is **7,936** lines. The related claim below that "nine of
+> the guide as a whole has grown past 7,900 lines. (An exact line count is not
+> restated here on purpose — it is a number that goes stale on the next edit and
+> that nobody can act on. Part I's line range is the one worth knowing, and the
+> guide's own table of contents carries it.) The related claim below that "nine of
 > ten" tables carry `UUIDPrimaryKeyMixin` is now **ten of twelve** — the two
 > exceptions are `engineer_profiles`, which keys on `user_id`, and
 > `login_attempts`, which keys on `email` and carries neither mixin.
