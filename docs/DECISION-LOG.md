@@ -3639,6 +3639,120 @@ dashboard pair reading `expected null to be 'OPEN'` and `expected null to be
 
 **Reversible.** Yes, in two lines — one per hook.
 
+## D63 — Two filters that already existed, given controls, and the one that was lying
+
+**§C of the phase brief.** A reported-between range for everybody, and an
+engineer filter for admins and leads.
+
+Neither is a new *filter*. `createdFrom`, `createdTo` and `assigneeId` have
+been in `IncidentFilters` since M7, because the dashboard links into this list
+and a link is only honest if the list it opens is the set of tickets the tile
+counted. What they had was no control — M7 judged that four more controls for
+everyone was a high price for a case that only ever arrives by link, and gave
+them removable chips instead. R7 revisits that for two of the three.
+
+### The conversion, and where it lives
+
+The two ends are stored as **full ISO instants** and picked as **calendar
+days**, and those are not the same thing. The instants are not decoration: the
+same parameters carry a dashboard window computed to the second, so the
+conversion has to leave an end the reader did not touch *character for
+character* intact rather than rounding it to a midnight. `DateRangeFields`
+reports only the end that moved, which is what makes that possible, and there
+is a test for exactly it.
+
+The helpers went into `display/time.ts` — `startOfDayInstant`,
+`endOfDayInstant`, `calendarDayOf` — and the reason is stronger than "it is the
+date module". `startOfDayInstant` *is* `parseCalendarDay` plus `toISOString`,
+so writing it there keeps the rule those three depend on — **a calendar day
+means local midnight, not UTC midnight** — in the one place that already owns
+it. `calendarDayOf` reads the **local** day for the same reason: `.slice(0, 10)`
+on an ISO string reads the UTC day, so a filter widened to a local day that
+began at 07:00 UTC comes back as the day before east of Greenwich and the
+picker shows a date nobody chose.
+
+`useDashboardFilters` had two private functions of the same shape, written
+before that module had these. They are gone; it calls the shared ones and
+keeps only its own guard, because deciding that a URL contains something that
+is not a date is a question about the query being built rather than about
+arithmetic.
+
+### The engineer control, and a correction to the brief
+
+The phase brief said `GET /incidents?assignee_id=` answers an employee with
+403. **It does not.** Checked against the running API with two accounts:
+
+```
+employee  GET /incidents?assignee_id=<engineer>   200  + a filtered list
+employee  GET /incidents?created_from=…           200
+employee  GET /engineers                          403  ROLE_NOT_PERMITTED
+junior    GET /engineers                          200
+```
+
+That is not an oversight in the API — `app/routers/incidents.py` says in its
+first line that every signed-in user may read every ticket, because the brief
+wants an employee to be able to check whether a problem is already reported.
+
+So the honest framing, and the one the code carries: **the roster is the
+privileged thing, not the filter.** An employee is not shown the control
+because they could never fill it in — the list of engineers is what they may
+not have — and hiding it spares them a 403 they can do nothing about. A JUNIOR
+or SENIOR engineer *can* read the roster, so their exclusion is not a
+permission at all: it is the same line the Team page draws about who
+distributes work. Both halves are in `mayFilterByEngineer`'s docstring, because
+a comment saying "the API enforces this" would have been false.
+
+The roster request is `enabled`-gated on the same predicate, so a reader
+without the control never issues it, and it asks for the same 100 rows as the
+Team page and the assign dialog so all three share one cache entry.
+
+### The chips rule, generalised
+
+`AppliedFilterChips` existed *because* three filters had no control. Two of
+them now have one, so the rule is stated once and applies to all three:
+
+> **A chip is drawn only for a filter this reader has no control for, and never
+> beside a control showing the same value.**
+
+The date chip is gone outright. The assignee chip survives for everyone the
+engineer control is not drawn for — the employee following a dashboard link
+being exactly the case it was written for. The subcategory still has no control
+anywhere, so its chip is unconditional. The bar computes the rule once and
+passes it down as a boolean rather than letting the chips re-derive it: a chip
+and a control disagreeing about one filter is the failure mode, and two copies
+of the predicate is how you get there.
+
+### The filter that lied, which is the part nobody asked for
+
+`toQuery` applies a screen's preset **after** the reader's filters, deliberately
+— My queue narrowed to somebody else's tickets is not My queue. The
+consequence, once an engineer control exists, is that on `/unassigned`
+(`assignee_id: 'unassigned'`) and `/queue` (`mine: 'assigned'`, which
+`services/incident_service.py` resolves by *overwriting* `assignee_id` with the
+caller's own id) the control moved, the address bar moved, and the list did
+not. A LEAD meets that on two of their three ticket screens.
+
+`IncidentFilterBar` now takes the screen's `preset` and leaves out the controls
+it fixes. **A reading of the preset rather than a list of screens**, so a fifth
+list added next year gets the right bar without anybody remembering the file —
+and the engineer page's embedded list already got it without being thought
+about.
+
+**The inert Status control on `/unassigned` predates R7** and is fixed by the
+same reading. Keeping one lying control beside a fixed one would have been
+harder to explain than either, and the mechanism costs nothing once it exists.
+
+The chips follow: a screen that fixes the assignee draws neither the control
+nor a chip offering to remove it, because those are the same lie twice.
+
+### What is still open
+
+**Nothing hides a filter that is inert for a reason the preset does not
+express.** This fix reads `status`, `assignee_id` and `mine`; a preset that
+pinned something else would need a line here. Stated rather than generalised,
+because three is the whole set today and a framework for one more would be
+harder to read than the line it saved.
+
 ## D64 — Table density, set once, and the five screens it reached
 
 **§E of the phase brief:** tables are cramped, the ticket tables worst.

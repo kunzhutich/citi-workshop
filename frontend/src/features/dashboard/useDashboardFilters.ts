@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import type { ReportPeriodParams, ReportScopeParams } from '../../api/reports';
+import { endOfDayInstant, parseCalendarDay, startOfDayInstant } from '../../display/time';
 
 /**
  * The admin dashboard's filters, kept in the URL query string.
@@ -220,14 +221,21 @@ export function rangeLabel(filters: DashboardFilters): string {
 }
 
 /**
- * One end of a custom range as the instant its local day begins, or nothing.
+ * One end of a custom range as an instant, or nothing at all.
  *
- * **`undefined` for a value that is not a date**, which is not defensive
- * padding: `from` and `to` come out of the address bar, where a hand-edit, a
- * truncated paste or a stale link can put anything at all. Until R7 they came
- * out of a native `type="date"` input that would only ever have written a real
- * day, and `new Date('nonsenseT00:00:00').toISOString()` throws `RangeError`
- * — so `?range=custom&from=nonsense` took the whole dashboard to the error
+ * **The conversion is `display/time.ts`'s; only the guard is this hook's.**
+ * Those two helpers are `parseCalendarDay` plus `toISOString`, and the rule
+ * they carry — that a calendar day means *local* midnight, not UTC midnight —
+ * has one home. This file used to hold a second copy of both, written before
+ * that module had them.
+ *
+ * What stays here is deciding that a value is not a date at all, because that
+ * is a question about the query being built rather than about arithmetic.
+ * `from` and `to` come out of the address bar, where a hand-edit, a truncated
+ * paste or a stale link can put anything; until R7 they came out of a native
+ * `type="date"` input that could only ever have written a real day, and
+ * `new Date('nonsenseT00:00:00').toISOString()` throws `RangeError` — so
+ * `?range=custom&from=nonsense` took the whole dashboard to the error
  * boundary. Found by another worker's deliberate-break tests on the date
  * picker, not by anything the picker itself does wrong.
  *
@@ -237,23 +245,16 @@ export function rangeLabel(filters: DashboardFilters): string {
  * unfiltered end is the safe direction as well — the reader sees more than
  * they asked for rather than silently less.
  */
-function startOfDay(date: string): string | undefined {
-  return instantOrNothing(`${date}T00:00:00`);
+function startOfDay(day: string): string | undefined {
+  return isCalendarDay(day) ? startOfDayInstant(day) : undefined;
 }
 
-/**
- * The other end, at the last millisecond of its local day.
- *
- * The milliseconds matter: the API's bound is inclusive on an instant, so a
- * `to` left at its own midnight would drop every ticket reported during the
- * day the reader named.
- */
-function endOfDay(date: string): string | undefined {
-  return instantOrNothing(`${date}T23:59:59.999`);
+/** The other end, at the last millisecond of its local day. Same guard. */
+function endOfDay(day: string): string | undefined {
+  return isCalendarDay(day) ? endOfDayInstant(day) : undefined;
 }
 
-/** Parse, or say so by being absent. Never throws. */
-function instantOrNothing(value: string): string | undefined {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+/** Whether this string names a day at all. `''` does not, which is the point. */
+function isCalendarDay(day: string): boolean {
+  return day !== '' && !Number.isNaN(parseCalendarDay(day).getTime());
 }

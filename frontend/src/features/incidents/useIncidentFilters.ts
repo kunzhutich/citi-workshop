@@ -32,20 +32,22 @@ export interface IncidentFilters {
   page: number;
 
   /**
-   * The four filters below have no control on the filter bar.
+   * The four filters below arrived from the dashboard's links rather than from
+   * the filter bar.
    *
    * They exist because M7's dashboard links into this list, and a link is only
    * honest if the list it opens really is the set of tickets the tile counted.
    * A KPI tile reading "Unassigned · 13" over a thirty-day period has to land
-   * on thirteen tickets, which needs an assignee filter and a date range that
-   * the bar never offered.
+   * on thirteen tickets, which needs an assignee filter and a date range the
+   * bar did not offer.
    *
-   * They are not hidden. `AppliedFilterChips` renders one removable chip for
-   * each of them above the list, so a reader who arrived from a chart can see
-   * exactly what was applied on their behalf and take it off. Giving them full
-   * controls in the bar was the alternative: rejected because a subcategory
-   * select and two date pickers are four more controls for everyone, to serve
-   * a case that only ever arrives by link.
+   * M7 gave them no controls at all and one removable chip each, on the
+   * grounds that four more controls for everyone was a high price for a case
+   * that only ever arrives by link. R7 revisited that for two of them: the
+   * reported-between range is a control for everybody now, and the assignee is
+   * one for the readers who may read the engineer roster. `AppliedFilterChips`
+   * draws a chip only where the reader has no control for the filter, so the
+   * subcategory — which still has none — is the one that always has a chip.
    */
 
   /** A subcategory, from drilling into a category group's chart. */
