@@ -103,7 +103,8 @@ export type CloseReason =
   | 'DUPLICATE'
   | 'INVALID'
   | 'CANCELLED_BY_REPORTER'
-  | 'ADMIN_CLOSED';
+  | 'ADMIN_CLOSED'
+  | 'SYSTEM_CLOSED';
 
 /** `app.models.enums.NoteVisibility`. INTERNAL never reaches an employee. */
 export type NoteVisibility = 'PUBLIC' | 'INTERNAL';
