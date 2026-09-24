@@ -429,7 +429,7 @@ RATED_SHARE = 0.45
 #: what earns its place: some 1s and 2s exist, so the low-rating case has
 #: something to show and the distribution chart on an engineer's page is not a
 #: single bar.
-RATING_WEIGHTS: tuple[int, ...] = (2, 5, 14, 40, 39)
+RATING_WEIGHTS: tuple[int, ...] = (4, 8, 16, 38, 34)
 
 #: How long after the repair the reporter gets round to saying something.
 #: Inside the fourteen-day window `services/feedback.py` allows, because a
@@ -437,28 +437,51 @@ RATING_WEIGHTS: tuple[int, ...] = (2, 5, 14, 40, 39)
 #: written.
 FEEDBACK_DELAY_HOURS = (2, 96)
 
-#: What a rating says, by score. One sentence each, so a reviewer reading the
-#: timeline sees words that match the stars rather than lorem ipsum.
+#: What a rating says, by score. Sentences that match their stars rather than
+#: lorem ipsum, because the reviews screen is a *page of prose* and a demo of
+#: it reads as false the moment the same line appears twice on one screen.
+#:
+#: **Five each and not two**, which is the number this list started at. Six
+#: reviews fit above the fold at 1440px and a pool of two put "Could not have
+#: been handled better" on three of them — nothing was wrong with the code,
+#: and the screen still looked fabricated. Five is enough that a full page
+#: rarely repeats; the alternative is a sentence generator, which is a lot of
+#: machinery to avoid writing twenty-five sentences once.
 FEEDBACK_COMMENTS: dict[int, tuple[str, ...]] = {
     1: (
         "Still exactly as it was. Nobody came.",
         "Marked as fixed without anything changing.",
+        "Closed before anyone had even looked at it.",
+        "Had to report the same thing again two days later.",
+        "No contact at all, and the problem is untouched.",
     ),
     2: (
         "Working again but it took far longer than it should have.",
         "Fixed, then broke again the same week.",
+        "Sorted eventually. I had to chase it three times.",
+        "Half of it works. I have given up on the rest.",
+        "Nobody told me anything until I asked.",
     ),
     3: (
         "Sorted in the end. I had to chase it twice.",
         "Fine. Would have liked to know what was happening.",
+        "Took a while, but it is working now.",
+        "Job done. The desk was left in a bit of a state.",
+        "All right. Not quick, not slow.",
     ),
     4: (
         "Quick and tidy, and they explained what had gone wrong.",
         "Sorted the same afternoon. No complaints.",
+        "Good work and kept me posted throughout.",
+        "Straightforward and done without any fuss.",
+        "Happy with it. Only took one visit.",
     ),
     5: (
         "Turned up within the hour and had it working immediately.",
         "Could not have been handled better. Thank you.",
+        "Diagnosed it in minutes and fixed it on the spot.",
+        "Genuinely excellent — explained the cause and prevented a repeat.",
+        "Fast, friendly, and left everything as they found it.",
     ),
 }
 

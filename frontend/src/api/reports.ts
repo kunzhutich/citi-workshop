@@ -5,7 +5,9 @@ import type {
   EngineerLevel,
   IncidentPriority,
   IncidentStatus,
+  Page,
   UserRole,
+  UserSummary,
 } from './types';
 
 /**
@@ -376,6 +378,47 @@ export interface EngineerDetailReport {
   /** Null when nothing was resolved — no rate, rather than a flawless 0%. */
   reopen_rate_pct: number | null;
   resolved_by_group: EngineerGroupCount[];
+
+  /** Of the repairs they made in the window, how many the reporter rated. */
+  rated_in_period: number;
+  /** Null when nothing was rated. Not 0 — that is below the scale, not neutral. */
+  average_rating: number | null;
+  /** `rated_in_period` over `resolved_in_period`. Says whether the average is worth reading. */
+  response_rate_pct: number | null;
+  /** Always five entries, one per score, including the scores nobody gave. */
+  rating_distribution: EngineerRatingCount[];
+  /**
+   * Whether the caller may read the reviews behind these figures.
+   *
+   * An admin, a lead, or this engineer themselves. **The scores above are
+   * visible to any member of staff** — a colleague sees the average and the
+   * distribution and not one word of the comments, which is the owner's rule
+   * and is enforced by `apply_feedback_visibility` on the API rather than by
+   * this flag. This only decides whether the link is drawn.
+   */
+  can_read_reviews: boolean;
+}
+
+/** How many times one score was given. */
+export interface EngineerRatingCount {
+  rating: number;
+  count: number;
+}
+
+/** One review, with enough of its ticket to be worth reading. */
+export interface EngineerReview {
+  feedback_id: string;
+  rating: number;
+  comment: string;
+  created_at: string;
+  edited_at: string | null;
+  author: UserSummary;
+  incident_id: string;
+  reference: string;
+  title: string;
+  /** Group and subcategory as one readable path. */
+  category: string;
+  resolved_at: string | null;
 }
 
 /** One engineer's output over the period, for their profile page. */
@@ -386,6 +429,25 @@ export async function fetchEngineerDetail(
   const { data } = await apiClient.get<EngineerDetailReport>(`/reports/engineers/${userId}`, {
     params,
   });
+  return data;
+}
+
+/**
+ * One page of the reviews an engineer earned in the period, newest first.
+ *
+ * Windowed on the ticket's `resolved_at`, exactly like the figures on their
+ * report — so the list reached by clicking "18 of 26 resolved rated" holds
+ * those eighteen. A caller who may not read them gets an empty page rather
+ * than an error; `can_read_reviews` is what stops the link being drawn.
+ */
+export async function fetchEngineerReviews(
+  userId: string,
+  params: ReportPeriodParams & { rating?: number; page?: number; page_size?: number },
+): Promise<Page<EngineerReview>> {
+  const { data } = await apiClient.get<Page<EngineerReview>>(
+    `/reports/engineers/${userId}/reviews`,
+    { params },
+  );
   return data;
 }
 

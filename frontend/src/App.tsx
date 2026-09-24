@@ -7,6 +7,7 @@ import { LoginPage } from './features/auth/LoginPage';
 import { RegisterPage } from './features/auth/RegisterPage';
 import { CategoriesPage } from './features/categories/CategoriesPage';
 import { EngineerDetailPage } from './features/engineers/EngineerDetailPage';
+import { EngineerReviewsPage } from './features/engineers/EngineerReviewsPage';
 import { EngineersPage } from './features/engineers/EngineersPage';
 import { TeamPage } from './features/engineers/TeamPage';
 import { FacilitiesPage } from './features/facilities/FacilitiesPage';
@@ -154,6 +155,16 @@ export default function App() {
           */}
           <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} />}>
             <Route path={paths.engineerDetail} element={<EngineerDetailPage />} />
+            {/*
+              The reviews behind their rating, on the same guard — and it is
+              the same guard on purpose. Which staff may read *a review* is
+              narrower (an admin, a lead, or the engineer it is about), and
+              that lives in `apply_feedback_visibility` on the API where the
+              rows are. A colleague who reaches this URL gets an empty list,
+              which is the answer `GET /incidents/{id}/feedback` gives too:
+              a 403 would confirm that reviews exist.
+            */}
+            <Route path={paths.engineerReviews} element={<EngineerReviewsPage />} />
           </Route>
 
           <Route element={<RequireRole roles={['FACILITY_ADMIN']} />}>

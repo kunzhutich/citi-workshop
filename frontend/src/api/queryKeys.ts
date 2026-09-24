@@ -94,6 +94,19 @@ export const queryKeys = {
       ['reports', 'engineer-workload', params] as const,
     engineerDetail: (userId: string, params: ReportPeriodParams) =>
       ['reports', 'engineer-detail', userId, params] as const,
+    /**
+     * One page of one engineer's reviews.
+     *
+     * Under the `reports` prefix rather than `incidents`, although a rating
+     * lives on a ticket — because what invalidates this is the same thing
+     * that invalidates the average above it, and `invalidateIncidents`
+     * already clears both prefixes after any change to a ticket.
+     */
+    engineerReviews: (
+      userId: string,
+      params: ReportPeriodParams & { rating?: number; page?: number },
+    ) =>
+      ['reports', 'engineer-reviews', userId, params] as const,
     communication: (params: ReportPeriodParams) => ['reports', 'communication', params] as const,
     blockedEscalated: (params: ReportScopeParams) =>
       ['reports', 'blocked-escalated', params] as const,
