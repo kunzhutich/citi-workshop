@@ -3338,6 +3338,62 @@ server still holds a pool against.
 It is local only. Aurora is `publicly_accessible = false` and unreachable from
 here, which is the intended blast radius.
 
+## D62 — Two filter hooks in one address bar, and who owns which parameter
+
+**Found by building §D4**, which puts a ticket list inside the engineer page.
+That screen is the first to run `useDashboardFilters` and `useIncidentFilters`
+at the same time, and both of them wrote the query string the same way: build a
+**fresh** `URLSearchParams` from this hook's own view of the world and hand it
+to `setSearchParams`.
+
+That is correct on every screen built before now, because on every one of them
+exactly one hook was writing. Put both on one screen and the last writer wins
+outright — changing the date range dropped the list's status filter, and
+changing the status filter reset the period to the default and moved every
+figure on the page. Neither hook would look wrong on its own, which is why this
+is recorded rather than quietly patched.
+
+**Chosen: each hook declares the parameters it owns, and carries the rest
+across untouched.** `OWNED_PARAMS` in each file, deleted from a copy of the
+current query string before that hook writes its own values back.
+
+**Stated as an owned set rather than as "merge what changed", and that is the
+whole decision.** A merge looks simpler and cannot work: clearing a filter has
+to *remove* its parameter, and a merge has no way to tell "the reader cleared
+this" from "this belongs to somebody else". Both are absent from the hook's
+view. The owned list is what makes the difference expressible.
+
+**`building_id` and `group_id` are in both lists deliberately.** On the one
+screen that runs both hooks they are the same filter asked twice, and a reader
+who narrows the page to SFO-1 means it for the charts and for the table
+underneath them. Anything else would put two Building controls on one screen
+disagreeing with each other.
+
+**`reset()` is the case that would have been missed.** The ticket list's Clear
+button called `setSearchParams(new URLSearchParams())`, so on the engineer page
+it would have reset that screen's period as well — a button under a table
+silently changing the charts above it. It clears its own parameters now and
+nothing else.
+
+**What it costs.** Two lists that have to stay in step with the parameters each
+hook reads. A parameter added to one and forgotten in the other is silently
+dropped on the next write, which is the same class of fault this entry exists
+to fix, one level down. Each list carries a pointer to the other, and both are
+directly beneath the hook whose parameters they name.
+
+**Tests.** Five, across
+`features/dashboard/useDashboardFilters.test.ts` and
+`features/incidents/useIncidentFilters.test.tsx`, each asserting both halves —
+that the foreign parameter survives *and* that the hook's own one still
+clears. **Verified by reversion**, per the standing lesson of
+[D24](#d24--a-heading-is-not-a-signal-that-the-data-arrived) and
+[D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it):
+with `keepForeignParams` replaced by `new URLSearchParams()` all five fail, the
+dashboard pair reading `expected null to be 'OPEN'` and `expected null to be
+'4'`, the ticket-list trio `expected null to be '90d'`.
+
+**Reversible.** Yes, in two lines — one per hook.
+
 ## D65 — Section F: the mark replaces the word, and the PNG is not the file we were given
 
 **The owner** attached two versions of the ACME mark — black lettering on

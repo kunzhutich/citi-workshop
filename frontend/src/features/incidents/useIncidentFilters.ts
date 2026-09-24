@@ -98,7 +98,7 @@ export function useIncidentFilters(): IncidentFilterControls {
         next.page = 1;
       }
 
-      const params = new URLSearchParams();
+      const params = keepForeignParams(searchParams);
       if (next.q) {
         params.set('q', next.q);
       }
@@ -140,12 +140,16 @@ export function useIncidentFilters(): IncidentFilterControls {
       // user and the page they arrived from.
       setSearchParams(params, { replace: true });
     },
-    [filters, setSearchParams],
+    [filters, searchParams, setSearchParams],
   );
 
+  // Clear drops this list's own filters and nothing else. On the engineer
+  // page the address bar also carries that screen's period, and a Clear
+  // button under a ticket table that silently reset the charts above it would
+  // be doing something nobody asked for.
   const reset = useCallback(() => {
-    setSearchParams(new URLSearchParams(), { replace: true });
-  }, [setSearchParams]);
+    setSearchParams(keepForeignParams(searchParams), { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const activeCount =
     (filters.q ? 1 : 0) +
@@ -161,6 +165,50 @@ export function useIncidentFilters(): IncidentFilterControls {
     (filters.createdFrom || filters.createdTo ? 1 : 0);
 
   return { filters, setFilters, reset, activeCount };
+}
+
+/**
+ * Which query parameters this hook owns, and therefore rewrites in full.
+ *
+ * Everything else in the address bar belongs to somebody else and is carried
+ * across untouched. Both filter hooks used to build a *fresh* `URLSearchParams`
+ * from their own view of the world, which is correct on a screen where one of
+ * them is the only writer — and every screen was, until R7 put a ticket list
+ * inside the engineer page. There, changing the status filter reset that
+ * screen's period to the default and changing the period dropped the status
+ * filter: two hooks each convinced the URL was theirs alone.
+ *
+ * Stated as the owned set rather than as "merge what changed", because a
+ * filter being *cleared* has to remove its parameter, and a merge cannot tell
+ * "cleared" from "not mine". See the matching list in `useDashboardFilters.ts`.
+ *
+ * `building_id` and `group_id` appear in both lists deliberately: on the one
+ * screen that runs both hooks they are the same filter asked twice, and a
+ * reader who narrows the page to SFO-1 means it for the charts and the table
+ * alike.
+ */
+const OWNED_PARAMS = [
+  'q',
+  'status',
+  'priority',
+  'group_id',
+  'building_id',
+  'is_escalated',
+  'sort',
+  'page',
+  'category_id',
+  'assignee_id',
+  'created_from',
+  'created_to',
+] as const;
+
+/** Every parameter except the ones above, so a co-tenant's state survives. */
+function keepForeignParams(current: URLSearchParams): URLSearchParams {
+  const params = new URLSearchParams(current);
+  for (const name of OWNED_PARAMS) {
+    params.delete(name);
+  }
+  return params;
 }
 
 /**

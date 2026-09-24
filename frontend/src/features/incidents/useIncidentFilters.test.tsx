@@ -166,3 +166,49 @@ describe('toQuery', () => {
     expect(query.status).toEqual(['OPEN']);
   });
 });
+
+/**
+ * The address bar can have a second tenant, and this hook is not its landlord.
+ *
+ * The engineer page runs this hook inside a screen that also runs
+ * `useDashboardFilters` — a period over the charts, this table underneath.
+ * Each hook used to rebuild the query string from its own view of the world,
+ * so whichever wrote last erased the other. All three tests below fail when
+ * `keepForeignParams` is taken out — verified by reverting it: the first two
+ * read `null` for `range`, and Clear wipes it as well.
+ */
+describe('writing the URL beside another filter hook', () => {
+  it('leaves that screen its period when a filter changes', () => {
+    const { result } = renderFilters('/engineers/e1?range=90d');
+
+    act(() => result.current.controls.setFilters({ statuses: ['OPEN'] }));
+
+    const params = new URLSearchParams(result.current.location.search);
+    expect(params.get('status')).toBe('OPEN');
+    expect(params.get('range')).toBe('90d');
+  });
+
+  it('still clears its own filter rather than merging over it', () => {
+    // The other half of the rule, and the reason this is an owned-parameter
+    // list instead of a merge: a merge cannot tell "cleared" from "not mine",
+    // so a status would be impossible to remove.
+    const { result } = renderFilters('/engineers/e1?range=90d&status=OPEN');
+
+    act(() => result.current.controls.setFilters({ statuses: [] }));
+
+    const params = new URLSearchParams(result.current.location.search);
+    expect(params.get('status')).toBeNull();
+    expect(params.get('range')).toBe('90d');
+  });
+
+  it('clears this list only, not the screen around it', () => {
+    const { result } = renderFilters('/engineers/e1?range=90d&status=OPEN&q=printer');
+
+    act(() => result.current.controls.reset());
+
+    const params = new URLSearchParams(result.current.location.search);
+    expect(params.get('status')).toBeNull();
+    expect(params.get('q')).toBeNull();
+    expect(params.get('range')).toBe('90d');
+  });
+});

@@ -110,7 +110,7 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
   const setFilters = useCallback(
     (changes: Partial<DashboardFilters>) => {
       const next = { ...filters, ...changes };
-      const params = new URLSearchParams();
+      const params = keepForeignParams(searchParams);
 
       if (next.rangeId !== DEFAULT_RANGE_ID) {
         params.set('range', next.rangeId);
@@ -134,7 +134,7 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
       // between the reader and the page they arrived from.
       setSearchParams(params, { replace: true });
     },
-    [filters, setSearchParams],
+    [filters, searchParams, setSearchParams],
   );
 
   const period = resolvePeriod(filters, resolvedNow);
@@ -149,6 +149,32 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
     },
     scopeParams: { building_id: filters.buildingId || undefined },
   };
+}
+
+/**
+ * Which query parameters this hook owns, and therefore rewrites in full.
+ *
+ * Everything else in the address bar belongs to somebody else and is carried
+ * across untouched. Both filter hooks used to build a *fresh* `URLSearchParams`
+ * from their own view of the world, which is correct on a screen where one of
+ * them is the only writer — and every screen was, until R7 put a ticket list
+ * inside the engineer page. There, changing the date range dropped the list's
+ * status filter and changing the status filter reset the date range to the
+ * default: two hooks each convinced the URL was theirs alone.
+ *
+ * Stated as the owned set rather than as "merge what changed", because a
+ * filter being *cleared* has to remove its parameter, and a merge cannot tell
+ * "cleared" from "not mine". See the matching list in `useIncidentFilters.ts`.
+ */
+const OWNED_PARAMS = ['range', 'from', 'to', 'building_id', 'group_id'] as const;
+
+/** Every parameter except the ones above, so a co-tenant's state survives. */
+function keepForeignParams(current: URLSearchParams): URLSearchParams {
+  const params = new URLSearchParams(current);
+  for (const name of OWNED_PARAMS) {
+    params.delete(name);
+  }
+  return params;
 }
 
 /**
