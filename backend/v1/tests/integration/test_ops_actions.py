@@ -13,13 +13,13 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 import function
-from app.seed.categories import CATEGORY_GROUPS
 from app.migrations import build_alembic_config
 from app.models.category import Category
 from app.models.enums import UserRole
 from app.models.user import User
 from app.repositories import users as user_repository
 from app.security.passwords import verify_password
+from app.seed.categories import CATEGORY_GROUPS
 
 
 def invoke(payload: dict[str, Any]) -> dict[str, Any]:
