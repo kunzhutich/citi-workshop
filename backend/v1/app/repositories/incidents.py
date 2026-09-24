@@ -68,20 +68,23 @@ def _list_loaders() -> tuple[Any, ...]:
 def _detail_loaders() -> tuple[Any, ...]:
     """Return the eager-loading options for a single incident.
 
-    Three more than a list row: who escalated it, which ticket it duplicates,
-    and who is following it. All three appear only on the detail page, so a
-    list does not pay for them.
+    Four more than a list row: who escalated it, which ticket it duplicates,
+    who is following it, and how each of its repairs was rated. All four
+    appear only on the detail page, so a list does not pay for them.
 
-    `watchers` is load-bearing beyond the screen. `app/notifications.py` reads
-    `incident.watchers` as an attribute and does no database access of its
-    own, which only holds because every incident that reaches a service has
-    come through `get` or `reload` and therefore through this tuple.
+    `watchers` and `feedback` are load-bearing beyond the screen.
+    `app/notifications.py` reads `incident.watchers` as an attribute and
+    `services/feedback.can_give_feedback` reads `incident.feedback` as one;
+    neither does any database access of its own, which only holds because
+    every incident that reaches a service has come through `get` or `reload`
+    and therefore through this tuple.
     """
     return (
         *_list_loaders(),
         selectinload(Incident.escalator),
         selectinload(Incident.duplicate_of),
         selectinload(Incident.watchers),
+        selectinload(Incident.feedback),
     )
 
 

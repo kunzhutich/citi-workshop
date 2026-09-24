@@ -45,6 +45,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -65,10 +66,17 @@ from app.schemas.incident import (
     SuggestionQuery,
     TransitionRequest,
 )
+from app.services import feedback as feedback_service
 from app.services import notes as note_service
 from app.services import notification_service
 from app.services.visibility import apply_incident_visibility
 from app.workflow import Transition
+
+#: One entry in the merged activity timeline, whichever table it came from.
+#: A union rather than a common base class, because the three have almost no
+#: columns in common beyond `created_at` — which is the one thing
+#: `load_activity` needs and the reason it can sort them together at all.
+ActivityRow = IncidentEvent | IncidentNote | IncidentFeedback
 
 #: Fields of `IncidentUpdate` that describe what the problem is and where it
 #: is. They share one permission; `priority` has its own.
@@ -239,18 +247,26 @@ def load_activity(
     *,
     incident: Incident,
     user: User,
-) -> list[IncidentEvent | IncidentNote]:
-    """Return the incident's events and readable notes as one timeline.
+) -> list[ActivityRow]:
+    """Return the incident's events, readable notes and readable ratings as one timeline.
 
-    Merged in Python rather than with a SQL `UNION`: the two tables have
-    almost no columns in common, so a union would mean padding both sides with
+    Merged in Python rather than with a SQL `UNION`: the three tables have
+    almost no columns in common, so a union would mean padding every side with
     nulls to make the shapes match, and the result is a page of a single
     ticket's history — tens of rows, not thousands.
+
+    **Two of the three sources are filtered and they are filtered
+    differently.** Notes go through `apply_note_visibility`, which asks only
+    what the reader is; ratings go through `apply_feedback_visibility`, which
+    also asks who each row is about. Both filters are applied to their query
+    by the service that owns them, so nothing here has to remember them — this
+    function sorts, and decides nothing.
     """
     events = repository.list_events(session, incident.id)
     notes = note_service.list_notes(session, incident=incident, user=user)
+    ratings = feedback_service.list_for_incident(session, incident=incident, user=user)
 
-    timeline: list[IncidentEvent | IncidentNote] = [*events, *notes]
+    timeline: list[ActivityRow] = [*events, *notes, *ratings]
     timeline.sort(key=lambda entry: entry.created_at)
     return timeline
 
@@ -261,7 +277,7 @@ _USER_VALUED_EVENTS = frozenset({EventType.ASSIGNED, EventType.UNASSIGNED})
 
 def resolve_event_labels(
     session: Session,
-    timeline: Sequence[IncidentEvent | IncidentNote],
+    timeline: Sequence[ActivityRow],
 ) -> dict[str, str]:
     """Return ``{user id: full name}`` for every id an event refers to.
 
@@ -882,6 +898,7 @@ def _apply_transition_effects(
     if transition.to_status == IncidentStatus.IN_PROGRESS:
         incident.acknowledged_at = incident.acknowledged_at or now
         incident.resolved_at = None
+        incident.resolved_by_id = None
         incident.closed_at = None
         incident.close_reason = None
         incident.duplicate_of_id = None
@@ -889,6 +906,13 @@ def _apply_transition_effects(
     if transition.to_status == IncidentStatus.RESOLVED:
         incident.resolved_at = now
         incident.resolution_summary = payload.resolution_summary
+        # Who the fix belongs to, frozen here because `assignee_id` does not
+        # stay frozen: an admin or a lead may reassign a RESOLVED ticket, and
+        # `services/feedback.py` copies this onto every rating so a review
+        # cannot drift onto an engineer who never touched the problem. Cleared
+        # again above on the way back into IN_PROGRESS, beside `resolved_at`
+        # and for the same reason — a reopened ticket has no current fix.
+        incident.resolved_by_id = incident.assignee_id
 
     if transition.to_status == IncidentStatus.CLOSED:
         incident.closed_at = now

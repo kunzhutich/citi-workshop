@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from app.models.building import Building
     from app.models.category import Category
     from app.models.event import IncidentEvent
+    from app.models.feedback import IncidentFeedback
     from app.models.floor import Floor
     from app.models.note import IncidentNote
     from app.models.seat import Seat
@@ -150,6 +151,27 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # --- Resolution -----------------------------------------------------------
     resolution_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Who held the ticket when it was resolved, as opposed to who holds it
+    #: now. The two are usually the same person and must not be assumed to be:
+    #: `services/assignment.can_assign` blocks reassignment only on CLOSED, so
+    #: an admin or a lead may hand a RESOLVED ticket to somebody else, and
+    #: `assignee_id` then names an engineer who did not fix it.
+    #:
+    #: Set by `_apply_transition_effects` on entering RESOLVED and cleared on
+    #: entering IN_PROGRESS, exactly like `resolved_at` beside it — a reopened
+    #: ticket has no current fix and so has nobody who made one.
+    #:
+    #: `services/feedback.py` copies this onto every rating, which is what
+    #: keeps a review attached to the engineer it is about. The engineer
+    #: reports in `repositories/reports.py` still attribute resolutions by
+    #: `assignee_id` and so still carry the older, looser definition; moving
+    #: them onto this column would change numbers the owner has already seen,
+    #: so it is deliberately not done here. See D71.
+    resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     close_reason: Mapped[CloseReason | None] = mapped_column(
         pg_enum(CloseReason, "close_reason"),
         nullable=True,
@@ -191,10 +213,11 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     seat: Mapped["Seat | None"] = relationship()
     reporter: Mapped["User"] = relationship(foreign_keys=[reporter_id])
     assignee: Mapped["User | None"] = relationship(foreign_keys=[assignee_id])
-    # Named `escalator` rather than `escalated_by`, which is the column. Three
+    # Named `escalator` and `resolver` rather than after their columns. Four
     # relationships point at `users` from this table, so each one has to name
     # its foreign key explicitly.
     escalator: Mapped["User | None"] = relationship(foreign_keys=[escalated_by])
+    resolver: Mapped["User | None"] = relationship(foreign_keys=[resolved_by_id])
     duplicate_of: Mapped["Incident | None"] = relationship(
         remote_side="Incident.id",
         foreign_keys=[duplicate_of_id],
@@ -220,6 +243,23 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # `app/notifications.py` reads it — that module does no database access.
     watchers: Mapped[list["IncidentWatcher"]] = relationship(
         cascade="all, delete-orphan",
+    )
+    # Every rating left on this ticket — one per repair, so usually nought or
+    # one and more only where a fix did not hold. One-way like `watchers`, and
+    # eager-loaded by the same tuple, which is what lets
+    # `services/feedback.can_give_feedback` ask "have they already rated this
+    # repair?" as an attribute read rather than a query.
+    #
+    # **Unfiltered, deliberately.** This is the whole collection, not the part
+    # the current reader may see; narrowing lives in
+    # `services/visibility.apply_feedback_visibility` and applies to the
+    # queries that build a response. A relationship that quietly hid rows
+    # would make `can_give_feedback` answer yes to a reporter who has already
+    # rated, on the day somebody gives reporters a narrower view than they
+    # have today.
+    feedback: Mapped[list["IncidentFeedback"]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="IncidentFeedback.created_at",
     )
 
     @property

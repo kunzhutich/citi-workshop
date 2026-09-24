@@ -590,7 +590,11 @@ def test_a_reporter_who_also_follows_their_own_ticket_is_told_once(
     told = notifications_for(db_session, user=reporter)
     assert len(told) == 1
     assert told[0].type == NotificationType.STATUS_CHANGED
-    assert told[0].message.startswith("Your ticket ")
+    # The reporter's wording, not the watcher's. A resolution addresses the
+    # reporter by name and asks them for something; "which you said affected
+    # you too" is the sentence they must *not* have been sent.
+    assert told[0].message.endswith("Please confirm the fix and rate the work.")
+    assert "affected you too" not in told[0].message
 
 
 def test_a_ticket_nobody_follows_writes_no_watcher_notification(

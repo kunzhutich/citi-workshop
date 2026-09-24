@@ -96,6 +96,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.models.enums import IncidentStatus, NoteVisibility, NotificationType
+from app.models.feedback import IncidentFeedback
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.user import User
@@ -114,11 +115,18 @@ class Audience(StrEnum):
     nobody is in it who did not put themselves in it. There is no endpoint
     that subscribes somebody else, and `categories.allows_watchers` decides
     which kinds of problem may be subscribed to at all.
+
+    RATED_ENGINEER is the one capacity not read off the incident at all: it
+    is whoever a *particular rating* is about, which is a snapshot taken when
+    the work was resolved and not the same question as who holds the ticket
+    now. That is why it needs the feedback row on the context, and it is the
+    reason `CapacityLookup` takes a context rather than an incident.
     """
 
     REPORTER = "REPORTER"
     ASSIGNEE = "ASSIGNEE"
     WATCHER = "WATCHER"
+    RATED_ENGINEER = "RATED_ENGINEER"
 
 
 #: Which wording wins when one person holds two capacities on one ticket.
@@ -132,9 +140,16 @@ class Audience(StrEnum):
 #: WATCHER is last because it is the weakest claim on a ticket: somebody who
 #: reported a fault and then pressed "I'm affected too" on it is a reporter
 #: who clicked a button, and should read "your ticket".
+#:
+#: RATED_ENGINEER's position never comes up in practice and is set anyway, on
+#: the principle that every audience has one: the only rule it appears in
+#: speaks to nobody else, and the person it names cannot be the reporter —
+#: `plan()` drops a recipient who is also the actor, and the actor of a rating
+#: is always the reporter who wrote it.
 AUDIENCE_PRECEDENCE: tuple[Audience, ...] = (
     Audience.REPORTER,
     Audience.ASSIGNEE,
+    Audience.RATED_ENGINEER,
     Audience.WATCHER,
 )
 
@@ -166,11 +181,18 @@ class NotificationContext:
 
     `note` is set only for `NOTE_ADDED`, where the rule has to read the note's
     visibility. Nothing else may use it.
+
+    `feedback` is set only for `FEEDBACK_RECEIVED`, where the *audience* is on
+    the row rather than on the incident: a rating names the engineer it is
+    about, and that is a snapshot of who resolved the ticket, not whoever
+    holds it by the time the reporter gets round to rating it. Nothing else
+    may use it either.
     """
 
     incident: Incident
     actor: User
     note: IncidentNote | None = None
+    feedback: IncidentFeedback | None = None
 
 
 #: Renders one audience's sentence. Stored verbatim on the notification row.
@@ -183,9 +205,37 @@ Precondition = Callable[[NotificationContext], bool]
 
 
 def _status_message_for_reporter(context: NotificationContext) -> str:
-    """Tell the reporter their own ticket moved."""
-    wording = STATUS_WORDING[context.incident.status]
-    return f"Your ticket {context.incident.reference} is now {wording}."
+    """Tell the reporter their own ticket moved, and ask for a rating if it is fixed.
+
+    The resolution is the one move that wants something back from the reader,
+    so it is the one that says so. A *second* rule beside STATUS_CHANGED would
+    have been the other way to do it and is wrong here: the reporter would get
+    two notifications for one repair, which is the bug D68 found when a
+    reporter who was also a watcher received both sentences.
+
+    **The extra half-sentence is an instruction, not a claim about state**,
+    and that is what makes it safe to store. The rest of this module is
+    careful never to write down something that a later event could falsify —
+    see `models/notification.py` — but "please confirm the fix and rate the
+    work" does not become false when the ticket is closed or reopened; it
+    becomes moot, and a moot instruction in an old inbox entry misleads
+    nobody. `services/feedback.py` is what decides whether it can still be
+    acted on.
+
+    It names whoever made the move rather than the assignee, because those are
+    not always the same person: an admin may resolve a ticket on an engineer's
+    behalf, and the sentence should say who actually did it.
+    """
+    incident = context.incident
+    wording = STATUS_WORDING[incident.status]
+
+    if incident.status == IncidentStatus.RESOLVED:
+        return (
+            f"{context.actor.full_name} resolved your ticket {incident.reference}. "
+            "Please confirm the fix and rate the work."
+        )
+
+    return f"Your ticket {incident.reference} is now {wording}."
 
 
 def _status_message_for_assignee(context: NotificationContext) -> str:
@@ -244,6 +294,22 @@ def _resolution_message_for_watcher(context: NotificationContext) -> str:
     return f"{context.incident.reference}, which you said affected you too, has been resolved."
 
 
+def _feedback_message_for_rated_engineer(context: NotificationContext) -> str:
+    """Tell an engineer that the reporter rated a repair of theirs.
+
+    **Quotes neither the score nor the words.** The rule in
+    `models/notification.py` is that a notification is a pointer and never a
+    copy, and a rating is editable for fifteen minutes after it is written —
+    so a stored "rated 2 out of 5" could outlive the 2. The engineer follows
+    the link and reads whatever the review says now.
+
+    Names the author for the same reason `_note_message_for_reporter` does: a
+    bare "you received feedback" arriving days after the work leaves the
+    reader hunting for which ticket and from whom.
+    """
+    return f"{context.actor.full_name} rated your work on {context.incident.reference}."
+
+
 def _is_a_resolution(context: NotificationContext) -> bool:
     """Return whether this status change is the one watchers asked about.
 
@@ -276,24 +342,50 @@ def _is_a_public_staff_note(context: NotificationContext) -> bool:
     return note.visibility == NoteVisibility.PUBLIC and context.actor.is_staff
 
 
-#: Reads one capacity off an incident. Every one of these is attribute
+#: Reads one capacity off the context. Every one of these is attribute
 #: access: no session, no query. See the module docstring.
-CapacityLookup = Callable[[Incident], tuple[uuid.UUID, ...]]
+#:
+#: It takes the whole context rather than the incident because RATED_ENGINEER
+#: is not on the incident — it is on the feedback row, which is the only place
+#: that remembers who did the work as opposed to who holds the ticket now.
+#: Three of the four lookups ignore everything but `context.incident`, and the
+#: signature is the same for all four so `plan()` does not have to know which
+#: is which.
+CapacityLookup = Callable[["NotificationContext"], tuple[uuid.UUID, ...]]
 
 
-def _the_reporter(incident: Incident) -> tuple[uuid.UUID, ...]:
+def _the_reporter(context: "NotificationContext") -> tuple[uuid.UUID, ...]:
     """Return the person who reported this ticket. Always exactly one."""
-    return (incident.reporter_id,)
+    return (context.incident.reporter_id,)
 
 
-def _the_assignee(incident: Incident) -> tuple[uuid.UUID, ...]:
+def _the_assignee(context: "NotificationContext") -> tuple[uuid.UUID, ...]:
     """Return the engineer holding this ticket, or nobody."""
-    if incident.assignee_id is None:
+    if context.incident.assignee_id is None:
         return ()
-    return (incident.assignee_id,)
+    return (context.incident.assignee_id,)
 
 
-def _the_watchers(incident: Incident) -> tuple[uuid.UUID, ...]:
+def _the_rated_engineer(context: "NotificationContext") -> tuple[uuid.UUID, ...]:
+    """Return the engineer a rating is about, or nobody if there is no rating.
+
+    Read from the feedback row and **not** from `incident.assignee_id`. A
+    RESOLVED ticket can be reassigned — `services/assignment.can_assign`
+    blocks only CLOSED — so the engineer holding it when the reporter finally
+    rates the work is not always the engineer who did it.
+
+    An empty tuple when `feedback` is None, which is the same shape every
+    other lookup uses for a capacity nobody holds. It cannot happen through
+    `services/feedback.submit`, which always passes the row it has just
+    written; it is what makes the FEEDBACK_RECEIVED rule silent rather than a
+    crash if some future caller forgets.
+    """
+    if context.feedback is None:
+        return ()
+    return (context.feedback.rated_user_id,)
+
+
+def _the_watchers(context: "NotificationContext") -> tuple[uuid.UUID, ...]:
     """Return everyone following this ticket who is not otherwise on it.
 
     **The exclusion is the interesting half.** Rule 2 — one person, one
@@ -320,6 +412,7 @@ def _the_watchers(incident: Incident) -> tuple[uuid.UUID, ...]:
     `incident_watchers` is keyed on the pair — so the de-duplication in
     `plan()` is a second line of defence rather than the only one.
     """
+    incident = context.incident
     already_on_the_ticket = {incident.reporter_id, incident.assignee_id}
     return tuple(
         watcher.user_id
@@ -334,6 +427,7 @@ def _the_watchers(incident: Incident) -> tuple[uuid.UUID, ...]:
 CAPACITY_HOLDERS: Mapping[Audience, CapacityLookup] = {
     Audience.REPORTER: _the_reporter,
     Audience.ASSIGNEE: _the_assignee,
+    Audience.RATED_ENGINEER: _the_rated_engineer,
     Audience.WATCHER: _the_watchers,
 }
 
@@ -399,6 +493,15 @@ RULES: tuple[NotificationRule, ...] = (
         messages={Audience.WATCHER: _resolution_message_for_watcher},
         applies=_is_a_resolution,
     ),
+    # The reporter rated a repair. One audience, and one person in it: the
+    # engineer the rating names, which `_the_rated_engineer` reads off the
+    # feedback row rather than off the ticket. There is no reporter entry —
+    # they wrote it — and no admin one, because `Audience` has no admin
+    # member and the ratings screen is where an admin reads these.
+    NotificationRule(
+        type=NotificationType.FEEDBACK_RECEIVED,
+        messages={Audience.RATED_ENGINEER: _feedback_message_for_rated_engineer},
+    ),
     # An escalation was answered. Only an admin can clear one, so in practice
     # both audiences hear about it — unless the admin is one of them.
     NotificationRule(
@@ -456,7 +559,7 @@ def plan(
         if render is None:
             continue
 
-        for user_id in users_in_capacity(audience, context.incident):
+        for user_id in users_in_capacity(audience, context):
             # Rule 1: never your own action. Rule 2: one person, one
             # notification. Both hold for a capacity held by twenty people
             # exactly as they held for one.
@@ -475,7 +578,7 @@ def plan(
     return planned
 
 
-def users_in_capacity(audience: Audience, incident: Incident) -> tuple[uuid.UUID, ...]:
+def users_in_capacity(audience: Audience, context: NotificationContext) -> tuple[uuid.UUID, ...]:
     """Return everyone who holds this capacity on this incident.
 
     A tuple rather than a single id, because WATCHER is held by as many people
@@ -489,4 +592,4 @@ def users_in_capacity(audience: Audience, incident: Incident) -> tuple[uuid.UUID
     cover for their team — but notifying every lead about every ticket in the
     estate is not covering for anybody, it is an unreadable inbox.
     """
-    return CAPACITY_HOLDERS[audience](incident)
+    return CAPACITY_HOLDERS[audience](context)

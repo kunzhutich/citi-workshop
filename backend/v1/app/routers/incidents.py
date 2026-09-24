@@ -21,10 +21,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from app.clock import utc_now
 from app.errors import ValidationError
 from app.models.category import Category
 from app.models.enums import IncidentPriority, IncidentStatus, UserRole
-from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.user import User
@@ -60,6 +61,7 @@ from app.schemas.incident import (
 )
 from app.security.dependencies import AdminUser, CurrentUser, DbSession, require_roles
 from app.services import assignment, incident_service
+from app.services import feedback as feedback_service
 from app.services import notes as note_service
 from app.services import watchers as watcher_service
 from app.workflow import Transition
@@ -432,7 +434,7 @@ def get_activity(
     session: DbSession,
     user: CurrentUser,
 ) -> list[ActivityEntry]:
-    """Return events and readable notes as one chronological stream.
+    """Return events, readable notes and readable ratings as one chronological stream.
 
     Not paginated: this is one ticket's history, and the timeline is only
     coherent read whole.
@@ -442,7 +444,9 @@ def get_activity(
     # ASSIGNED events record a user id, which is right for an audit row and
     # unreadable on a screen. Resolved once for the whole timeline.
     labels = incident_service.resolve_event_labels(session, timeline)
-    return [_to_activity_entry(entry, labels) for entry in timeline]
+    # One clock for the whole feed; see `_to_activity_entry`.
+    now = utc_now()
+    return [_to_activity_entry(entry, labels, user, now) for entry in timeline]
 
 
 # --- Response mapping --------------------------------------------------------
@@ -549,6 +553,7 @@ def _to_read(incident: Incident, user: User) -> IncidentRead:
         can_assign=assignment.can_assign(incident, user),
         can_add_note=note_service.can_add_note(incident, user),
         can_add_internal_note=note_service.can_add_internal_note(incident, user),
+        can_give_feedback=feedback_service.can_give_feedback(incident, user),
         is_watching=watch_status.watching,
         watcher_count=watch_status.watcher_count,
     )
@@ -587,13 +592,37 @@ def _to_allowed_transition(transition: Transition) -> AllowedTransitionRead:
 
 
 def _to_activity_entry(
-    entry: IncidentEvent | IncidentNote,
+    entry: incident_service.ActivityRow,
     labels: dict[str, str],
+    user: User,
+    now: datetime,
 ) -> ActivityEntry:
-    """Render one timeline entry, whichever table it came from.
+    """Render one timeline entry, whichever of the three tables it came from.
 
-    `labels` maps a user id to a name, for the events that record one.
+    `labels` maps a user id to a name, for the events that record one. `user`
+    and `now` are here for one field on one kind — whether the caller may
+    still correct a rating they left — and are passed in rather than read,
+    because `now` read per entry would give two rows on the same timeline
+    different answers about the same fifteen minutes.
+
+    Every row that reaches here is one the caller may see: the two filters in
+    `services/visibility.py` have already been applied to the queries behind
+    it, so this function chooses a shape and never an audience.
     """
+    if isinstance(entry, IncidentFeedback):
+        return ActivityEntry(
+            kind="feedback",
+            id=entry.id,
+            created_at=entry.created_at,
+            actor=_user_summary(entry.author),
+            rating=entry.rating,
+            comment=entry.comment,
+            rated_user=_user_summary(entry.rated_user),
+            resolution_round=entry.resolution_round,
+            edited_at=entry.edited_at,
+            can_edit=feedback_service.can_modify(entry, user, now),
+        )
+
     if isinstance(entry, IncidentNote):
         return ActivityEntry(
             kind="note",

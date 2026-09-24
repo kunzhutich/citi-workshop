@@ -280,6 +280,12 @@ class IncidentRead(IncidentListItem):
     can_assign: bool = Field(description="May assign or unassign this ticket.")
     can_add_note: bool = Field(description="May add a note.")
     can_add_internal_note: bool = Field(description="May add a staff-only note.")
+    can_give_feedback: bool = Field(
+        description=(
+            "May rate the current repair. False once rated, once the "
+            "fourteen-day window has passed, and for everybody but the reporter."
+        ),
+    )
 
     # Not on `IncidentListItem`, deliberately. `is_watching` is per-caller and
     # `watcher_count` costs a loaded collection, and a page of twenty-five

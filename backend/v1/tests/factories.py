@@ -30,6 +30,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -213,6 +214,7 @@ def make_incident(
     assigned_at: datetime | None = None,
     acknowledged_at: datetime | None = None,
     resolved_at: datetime | None = None,
+    resolved_by: User | None = None,
     closed_at: datetime | None = None,
     close_reason: CloseReason | None = None,
     reopen_count: int = 0,
@@ -227,6 +229,12 @@ def make_incident(
     constraint requires one, and a test about workload counts should not have
     to know that. An escalated one is given a reason and a timestamp for the
     same reason — the columns are meant to travel together.
+
+    `resolved_by` defaults to the assignee when the incident is being placed
+    in a resolved-or-later state, because that is what
+    `_apply_transition_effects` would have written and a test about feedback
+    should not have to restate it. A test about the *difference* between the
+    two — a ticket reassigned after it was resolved — passes both.
 
     `created_at` and `escalated_at` are settable because the M7 reports measure
     *durations*: a test that states "the median time to resolve is 10.5 hours"
@@ -255,6 +263,12 @@ def make_incident(
         assigned_at=assigned_at or (utc_now() if assignee is not None else None),
         acknowledged_at=acknowledged_at,
         resolved_at=resolved_at,
+        resolved_by_id=_resolver_id(
+            resolved_by=resolved_by,
+            assignee=assignee,
+            status=status,
+            resolved_at=resolved_at,
+        ),
         closed_at=closed_at,
         close_reason=close_reason,
         reopen_count=reopen_count,
@@ -265,6 +279,69 @@ def make_incident(
     session.flush()
     session.refresh(incident)
     return incident
+
+
+def _resolver_id(
+    *,
+    resolved_by: User | None,
+    assignee: User | None,
+    status: IncidentStatus,
+    resolved_at: datetime | None,
+) -> uuid.UUID | None:
+    """Return who a fabricated incident should record as having resolved it.
+
+    An explicit `resolved_by` always wins. Otherwise the assignee, but only
+    where the incident is actually in a resolved state — a ticket placed
+    straight into OPEN or IN_PROGRESS has not been fixed by anybody, and
+    giving it a resolver would let a test assert feedback is available on a
+    ticket the application would never have allowed it on.
+    """
+    if resolved_by is not None:
+        return resolved_by.id
+    if assignee is None:
+        return None
+    has_been_resolved = resolved_at is not None or status in (
+        IncidentStatus.RESOLVED,
+        IncidentStatus.CLOSED,
+    )
+    return assignee.id if has_been_resolved else None
+
+
+def make_feedback(
+    session: Session,
+    *,
+    incident: Incident,
+    author: User,
+    rated_user: User,
+    rating: int = 4,
+    comment: str = "Sorted it out the same afternoon.",
+    resolution_round: int = 1,
+    created_at: datetime | None = None,
+) -> IncidentFeedback:
+    """Insert one rating directly.
+
+    Bypasses `services/feedback.py` on purpose, in the same way `make_watcher`
+    bypasses the watch endpoint: a test of who may *read* a rating needs one to
+    exist, not a second exercise of the rules that create one.
+
+    `created_at` is settable because the edit window is fifteen minutes from
+    it, and a test of a rating that has gone cold cannot wait.
+    """
+    feedback = IncidentFeedback(
+        incident_id=incident.id,
+        author_id=author.id,
+        rated_user_id=rated_user.id,
+        rating=rating,
+        comment=comment,
+        resolution_round=resolution_round,
+    )
+    session.add(feedback)
+    session.flush()
+    if created_at is not None:
+        feedback.created_at = created_at
+        session.flush()
+    session.refresh(feedback)
+    return feedback
 
 
 def make_event(

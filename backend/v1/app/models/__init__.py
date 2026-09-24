@@ -11,6 +11,7 @@ from app.models.building import Building
 from app.models.category import Category
 from app.models.engineer_profile import EngineerProfile
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.login_attempt import LoginAttempt
@@ -29,6 +30,7 @@ __all__ = [
     "Floor",
     "Incident",
     "IncidentEvent",
+    "IncidentFeedback",
     "IncidentNote",
     "IncidentWatcher",
     "LoginAttempt",
