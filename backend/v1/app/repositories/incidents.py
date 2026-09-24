@@ -230,7 +230,7 @@ def _order_by(filters: IncidentFilters) -> tuple[Any, ...]:
 
     if filters.sort is None and filters.q and parse_ticket_number(filters.q) is None:
         rank = func.ts_rank(Incident.search_vector, _tsquery(filters.q))
-        return terms + (rank.desc(), Incident.created_at.desc())
+        return (*terms, rank.desc(), Incident.created_at.desc())
 
     return terms + _SORT_TERMS[filters.sort or IncidentSort.CREATED_AT_DESC]
 
