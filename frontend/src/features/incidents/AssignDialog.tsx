@@ -227,13 +227,19 @@ function EngineerRow({
                   <Chip
                     key={id}
                     size="small"
-                    variant={matches ? 'filled' : 'outlined'}
+                    // Filled, both of them — grey for what they cover, green
+                    // for the one this ticket needs. The non-matching chips
+                    // were outlined at first, which made them look exactly
+                    // like the outlined level chip two inches to the left:
+                    // one row, two kinds of fact, one appearance. Filled grey
+                    // is also what the engineer roster already draws these in.
                     color={matches ? 'success' : 'default'}
                     label={groupNames.get(id) ?? 'Unknown group'}
-                    // Colour alone would leave a green chip meaning nothing to
-                    // a red-green reader, and this is the one thing on the row
-                    // they are looking for. The filled/outlined difference is
-                    // a second channel, and the title says it in words.
+                    // Green is not the only channel. The grey is a pale fill
+                    // with dark text and the green is a dark fill with white
+                    // text, so the pair differs in lightness as well as hue —
+                    // which is what survives a red-green deficiency — and the
+                    // title says it in words as well.
                     title={matches ? "This ticket's category" : undefined}
                   />
                 );
