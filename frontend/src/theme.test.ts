@@ -128,3 +128,81 @@ describe('the status palette against the surfaces it is drawn on', () => {
     );
   });
 });
+
+/**
+ * The one focus ring, and the controls it has had to be lifted off.
+ *
+ * S6 gave the application a single global ring — `body :focus-visible`, three
+ * brown pixels on everything — and twice since, the element it landed on has
+ * turned out not to be the control. D46 records the first: inside a text field
+ * the focusable element is the bare `<input>`, so the app bar's search box drew
+ * a hard rectangle inside its own rounded outline. A date picker is the second,
+ * and worse, because its focusable elements are the day, the month and the year
+ * *separately*, so the ring boxed whichever two characters a reader clicked.
+ *
+ * Both fixes have the same two-rule shape — take the ring off the focusable
+ * element, put it back on the field around it — and both are one selector away
+ * from silently doing nothing at all. That is what is pinned here: not the
+ * strings, which `DateRangeFields.test.tsx` checks against a real picker, but
+ * that the two rules exist, that they are each other's halves, and that the
+ * ring a picker draws is the same one as everywhere else.
+ */
+describe('the focus ring a date picker draws', () => {
+  /**
+   * `CssBaseline`'s global rules, as the object Material UI hands to Emotion.
+   *
+   * The theme states them as a function of itself, because the ring is painted
+   * in `palette.primary.main` rather than in a literal. Calling it here is what
+   * lets a test read the same values the browser is given.
+   */
+  function baselineRules(): Record<string, { outline?: string; outlineOffset?: number }> {
+    const overrides = theme.components?.MuiCssBaseline?.styleOverrides;
+    if (typeof overrides !== 'function') {
+      throw new Error('CssBaseline no longer states its rules as a function of the theme');
+    }
+    return overrides(theme) as Record<string, { outline?: string; outlineOffset?: number }>;
+  }
+
+  const rules = baselineRules();
+
+  /** The rule every other focusable thing in the application is ringed by. */
+  const GLOBAL_RING = 'body :focus-visible';
+
+  /** Found rather than named, so a renamed class fails rather than diverges. */
+  const suppressed =
+    Object.keys(rules).find(
+      (selector) => selector.includes('Pickers') && rules[selector].outline === 'none',
+    ) ?? '';
+
+  it('takes the global ring off a picker section', () => {
+    // The reported fault: a picker's focusable elements are its day, month and
+    // year sections individually, so the global rule boxed whichever two
+    // characters the reader had clicked on.
+    expect(suppressed).not.toBe('');
+    expect(suppressed).toContain(':focus-visible');
+  });
+
+  it('puts no ring back, which is the part that needs saying', () => {
+    // Two replacements were tried and both were wrong on screen — one drew
+    // through the field's floating label, one drew a hard rectangle inside a
+    // rounded one (D46's own fault, reintroduced). There was nothing to
+    // replace: a focused picker field already goes from a 1px notch to a 2px
+    // `primary.main` one, exactly like every other outlined field here, none
+    // of which wears a ring either.
+    //
+    // A suppression with no replacement is what S6 was raised to stop, so it
+    // is asserted deliberately rather than left as an absence somebody tidies
+    // away. `DateRangeFields.test.tsx` holds the other half: that the field is
+    // marked `Mui-focused`, which is what that notch is drawn from.
+    const pickerRules = Object.keys(rules).filter((selector) => selector.includes('Pickers'));
+    expect(pickerRules).toEqual([suppressed]);
+  });
+
+  it('leaves every other ring in the application alone', () => {
+    // The blast radius. S6 found this app had no visible focus at all and an
+    // axe run said nothing about it, so the global rule is the one thing here
+    // that must not be narrowed by accident.
+    expect(rules[GLOBAL_RING].outline).toContain(theme.palette.primary.main);
+    expect(rules[GLOBAL_RING].outline).toContain('3px');
+  });
+});

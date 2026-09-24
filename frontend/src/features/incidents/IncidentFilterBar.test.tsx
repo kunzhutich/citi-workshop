@@ -139,6 +139,41 @@ function engineerControl(): HTMLElement | null {
 }
 
 /**
+ * Every control on the bar, named and in the order the grid lays them out.
+ *
+ * DOM order *is* the layout here: `FilterRow` is a plain `auto-fit` grid with
+ * no explicit placement, so the order these appear in the markup is the order
+ * they are read in, wrapped into however many columns the bar's own width
+ * gives it (D44). Nothing else in the file would notice a control moving.
+ *
+ * Each item is named by the label a reader sees on it. Two class names rather
+ * than `<label>`, and the reason is worth knowing: a `TextField select` has no
+ * focusable input for a label to point at, so Material UI renders its
+ * `InputLabel` as a plain `<div>` and hangs it off `aria-labelledby` instead —
+ * five of the nine controls here would have come back nameless. The switch is
+ * named by `FormControlLabel`'s own `<label>`, which reads "Escalated" because
+ * a checkbox contributes no text of its own — and not by the class that sounds
+ * right, `MuiFormControlLabel-label`, which Material UI only adds to a label it
+ * had to wrap in a `Typography` itself. This bar passes one ready-made.
+ *
+ * Read off the grid's children rather than by querying for each control in
+ * turn, so that a control appearing where no test expected one shows up as an
+ * extra entry rather than as nothing at all.
+ */
+function controlOrder(): string[] {
+  const field = screen.getByRole('textbox', { name: 'Search' }).closest('.MuiFormControl-root');
+  const grid = field?.parentElement;
+  if (!grid) {
+    throw new Error('the search field is not inside the controls grid');
+  }
+  return [...grid.children].map(
+    (item) =>
+      item.querySelector('.MuiFormLabel-root, .MuiFormControlLabel-root')?.textContent ??
+      '(unlabelled)',
+  );
+}
+
+/**
  * An instant on this machine, from wall-clock parts.
  *
  * The suite runs wherever it runs — CI is not in the same zone as a VDI — and
@@ -176,10 +211,11 @@ function localParts(iso: string | null): number[] {
  * The date a picker is currently showing, as [year, month, day].
  *
  * Read off the sections rather than off the field's text, because the text is
- * `DateRangeFields`' business: it prints `20 Sep 2026` today and printed
- * `09/20/2026` last week, and neither is the claim being made here. A section's
- * `aria-valuenow` is the date the control is actually holding, and it is what a
- * screen reader announces.
+ * `DateRangeFields`' business: it prints `09/20/2026` today, printed
+ * `20 Sep 2026` in between, and neither is the claim being made here. A
+ * section's `aria-valuenow` is the date the control is actually holding
+ * whatever grammar it is written in, and it is what a screen reader announces —
+ * which is why these tests survived both of those changes untouched.
  */
 function shownDate(fieldLabel: string): number[] {
   const field = screen.getByRole('group', { name: fieldLabel });
@@ -479,5 +515,67 @@ describe('a control the screen has already decided', () => {
 
     expect(engineerControl()).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Where the two ends of the range sit among everything else.
+ *
+ * The bar is one `auto-fit` grid, so a control's position is decided by nothing
+ * but its position in this file, and the reflow is decided by two numbers that
+ * vary independently: how many columns the bar's width allows, and how many
+ * controls the screen's preset leaves in it. A range whose two ends wrap onto
+ * different rows reads as two unrelated date fields, and putting the escalated
+ * switch in front of them is what keeps them adjacent *and* last.
+ *
+ * Adjacency is what is pinned, because it is the part that is a decision.
+ * Whether the pair also shares a row is arithmetic over those two numbers — six
+ * columns at 1440px against seven, eight or nine controls — and asserting it
+ * would mean asserting a column count jsdom does not have: there is no layout
+ * here, so a test claiming "on their own line" would be claiming something it
+ * cannot see. That belongs to the eye and to `responsive.spec.ts`.
+ */
+describe('the order the controls are laid out in', () => {
+  it('puts the escalated switch ahead of the range, and the range last', async () => {
+    await renderBar(makeAdmin());
+    await screen.findByRole('combobox', { name: 'Engineer' });
+
+    // The whole row, not "escalated comes before from". A pairwise assertion
+    // stays true when a control is dropped, renamed or duplicated, and the
+    // count is half the claim: nine items is what makes six columns put the
+    // last three on the second row.
+    expect(controlOrder()).toEqual([
+      'Search',
+      'Status',
+      'Priority',
+      'Category',
+      'Building',
+      'Engineer',
+      'Escalated',
+      'Reported from',
+      'Reported to',
+    ]);
+  });
+
+  it('keeps them last on a screen whose preset has taken two controls away', async () => {
+    // `/unassigned`, the narrowest bar in the application: it pins both the
+    // status and the assignee, so seven items reach the grid rather than nine.
+    // The same two must still be the last two — this is the ordering rule
+    // applied to a different set of controls, which is the case a hand-written
+    // order would get wrong.
+    await renderBar(makeEngineer('LEAD'), '/unassigned', {
+      assignee_id: 'unassigned',
+      status: ['OPEN'],
+    });
+
+    expect(controlOrder()).toEqual([
+      'Search',
+      'Priority',
+      'Category',
+      'Building',
+      'Escalated',
+      'Reported from',
+      'Reported to',
+    ]);
   });
 });

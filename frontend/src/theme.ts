@@ -253,6 +253,52 @@ export const theme = createTheme({
           outlineOffset: 2,
         },
         /*
+         * ...and the same fault again on a date field, one level smaller —
+         * but this one needed **no** replacement ring, which took two wrong
+         * answers to find out.
+         *
+         * `@mui/x-date-pickers` builds a field from three `contenteditable`
+         * spans, one per section, each a `role="spinbutton"` and each its own
+         * focus target. The global rule matched precisely those, so clicking a
+         * date drew a 3px brown rectangle around whichever two characters the
+         * reader had landed on. That much is D46's app-bar search box exactly.
+         *
+         * D46's fix was to move the ring out to the field. Tried here, and
+         * wrong on screen both times: the field's floating label sits *on* its
+         * top border (`translate(14px, -9px)`), and an outline paints last, so
+         * a ring on the bordered root drew a line straight through the word
+         * "From", and moving it in to the sections box turned it into a hard
+         * rectangle inside a rounded one — the very shape D46 was written to
+         * remove. Neither is visible to a test: jsdom has no layout, and both
+         * versions passed.
+         *
+         * What the third look found is that **there was never anything to
+         * replace.** Measured on the running app, a focused picker field goes
+         * from a 1px `rgba(0,0,0,0.23)` notch to a **2px `primary.main`** one —
+         * and so does every other outlined field in this application, none of
+         * which wears an outline ring either. The picker was already showing
+         * focus the way the rest of the app does; the global rule was adding a
+         * second, worse indicator on top of it. So this rule takes that away
+         * and stops.
+         *
+         * Which section is active is shown by the component too:
+         * `syncSelectionToDOM` puts the browser's own text selection over the
+         * active section's characters as focus reaches it. That is what a
+         * reader arrowing from month to day follows.
+         *
+         * **The one thing to be careful of** is that this is a suppression
+         * with no replacement, which is what S6 was raised to stop. It is
+         * defensible only because the indication it uncovers is real,
+         * measured, and the same one the whole application uses. If Material
+         * UI ever stops thickening that notch, this becomes a field with no
+         * focus indication at all — which is why `DateRangeFields.test.tsx`
+         * asserts the focused field is marked `Mui-focused`, the class that
+         * notch is drawn from.
+         */
+        'body .MuiPickersSectionList-sectionContent:focus-visible': {
+          outline: 'none',
+        },
+        /*
          * Honour the operating system's reduced-motion setting. Everything
          * here animates for polish rather than meaning, so there is nothing to
          * lose by turning it off for someone who asked.

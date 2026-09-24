@@ -168,11 +168,13 @@ describe('what a picked date writes', () => {
     await renderBar('/?range=custom');
 
     const to = screen.getByRole('group', { name: 'To' });
-    // Sections are day, month, year — `FIELD_FORMAT` is `DD MMM YYYY`, and a
-    // picker's format is also its input grammar. Typing starts at the first
-    // section and Material UI advances as each one fills.
-    await userEvent.click(within(to).getByRole('spinbutton', { name: 'Day' }));
-    for (const key of ['1', '2', '0', '3', '2', '0', '2', '6']) {
+    // Sections are month, day, year: `DateRangeFields` states no `format`, so
+    // the field's grammar is whatever the dayjs adapter's locale gives, which
+    // for `en` is `MM/DD/YYYY`. The section is reached by its name rather than
+    // by its position, so a future format change fails the *click* here rather
+    // than quietly typing a month into a day.
+    await userEvent.click(within(to).getByRole('spinbutton', { name: 'Month' }));
+    for (const key of ['0', '3', '1', '2', '2', '0', '2', '6']) {
       await userEvent.keyboard(key);
     }
 
@@ -188,7 +190,7 @@ describe('what a picked date writes', () => {
     // sign of it would have been a dashboard that flickered. Nothing but the
     // assertion below catches that — which is why it is on the whole write
     // log rather than on the last entry in it.
-    expect(to).toHaveTextContent('12 Mar 2026');
+    expect(to).toHaveTextContent('03/12/2026');
     expect(written).toEqual([{ to: '2026-03-12' }]);
   });
 

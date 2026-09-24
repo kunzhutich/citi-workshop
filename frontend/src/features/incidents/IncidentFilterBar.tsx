@@ -369,19 +369,25 @@ function FilterControls({ controls, showEngineerFilter, fixed }: FilterControlsP
         </TextField>
       ) : null}
 
-      {/* Two grid items, not one: `DateRangeFields` renders a fragment so that
-          each picker gets a column of its own here. `fullWidth` for the same
-          reason the selects do not set a width — in this grid the column
-          decides, and a control that sizes itself is what D44 is about. */}
-      <DateRangeFields
-        fromLabel="Reported from"
-        toLabel="Reported to"
-        from={calendarDayOf(filters.createdFrom)}
-        to={calendarDayOf(filters.createdTo)}
-        onChange={(range) => setFilters(toCreatedFilters(range))}
-        fullWidth
-      />
+      {/* Ahead of the two pickers rather than after them, so that "Reported
+          from" and "Reported to" are the last two items in the grid: a range
+          whose two ends land on different rows reads as two unrelated fields
+          rather than as one range.
 
+          It improves the odds rather than guaranteeing anything, and the
+          reason is D44. `FilterRow` is `auto-fit` on the width this bar
+          actually has, so the number of columns follows the window, and the
+          number of controls follows the screen's preset — My queue and the
+          engineer page draw eight of these, `/unassigned` seven, an admin's
+          full list nine. The pair shares a row unless the column count divides
+          the position of the first of them. At 1440px, which is six columns,
+          that is the eight-control screens fixed and `/unassigned` traded
+          away; both are in this phase's summary.
+
+          The Clear button stays inside this box rather than becoming a grid
+          item of its own, and not for tidiness: it appears with `activeCount`,
+          so a tenth item would shift every column boundary the moment a reader
+          applied a filter. */}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center' }}>
         <FormControlLabel
           control={
@@ -399,6 +405,19 @@ function FilterControls({ controls, showEngineerFilter, fixed }: FilterControlsP
           </Button>
         ) : null}
       </Box>
+
+      {/* Two grid items, not one: `DateRangeFields` renders a fragment so that
+          each picker gets a column of its own here. `fullWidth` for the same
+          reason the selects do not set a width — in this grid the column
+          decides, and a control that sizes itself is what D44 is about. */}
+      <DateRangeFields
+        fromLabel="Reported from"
+        toLabel="Reported to"
+        from={calendarDayOf(filters.createdFrom)}
+        to={calendarDayOf(filters.createdTo)}
+        onChange={(range) => setFilters(toCreatedFilters(range))}
+        fullWidth
+      />
     </FilterRow>
   );
 }

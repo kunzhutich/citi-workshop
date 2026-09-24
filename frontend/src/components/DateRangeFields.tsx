@@ -15,33 +15,6 @@ import { useState } from 'react';
  */
 const DAY_FORMAT = 'YYYY-MM-DD';
 
-/**
- * How a chosen day is *shown* in the field, which is not how it is stored.
- *
- * **Stated rather than left to the adapter, because the adapter's answer is
- * ambiguous.** dayjs's default locale is `en`, so a picker left alone renders
- * `09/01/2026` — which is the first of September to some readers and the ninth
- * of January to others, and nothing on screen says which. That sat directly
- * beside a heading reading "Counted over Sep 1, 2026 – Sep 20, 2026": the same
- * value, printed two ways, one of them unreadable.
- *
- * A month abbreviation cannot be misread, and it is the form the rest of the
- * application already uses — `formatDate` in `display/time.ts` asks
- * `toLocaleDateString` for a short month for exactly this reason. It is not
- * *identical* to that helper, which follows the reader's own locale and cannot
- * here: a picker's format is also its input grammar, and a field whose section
- * order changed with the browser would be a different control in different
- * hands. Unambiguous everywhere beats familiar somewhere.
- *
- * Numbers still type — Material UI's month section takes digits whatever it
- * prints, so 1-2 then 0-3 fills "12 Mar". What does change is the *order* the
- * sections are filled in, day first rather than month, because a picker's
- * format is also its input grammar. That is the cost of this line and the only
- * one; it is paid once, by everybody, in exchange for a field nobody can
- * misread.
- */
-const FIELD_FORMAT = 'DD MMM YYYY';
-
 export interface DateRangeFieldsProps {
   /** Start of the range as `YYYY-MM-DD`, or `''` when unset. */
   from: string;
@@ -109,6 +82,20 @@ export interface DateRangeFieldsProps {
  * wrapper would make them one item of it, so a grid caller would get two fields
  * crammed into one column.
  *
+ * **No `format` prop: the adapter decides how a day is written.** dayjs's
+ * default locale is `en`, so both fields print and parse `MM/DD/YYYY`. That is
+ * one decision and not two, because a picker's format is also its *input
+ * grammar* — the same string sets the order the sections are typed in.
+ *
+ * One was stated here between D60 and now, and has been taken out. The visible
+ * reason is the placeholder: Material UI *derives* it from the format rather
+ * than printing the format back, and what it derives from a three-letter month
+ * is the four-letter one, so every empty field read `DD MMMM YYYY`. What the
+ * override bought and what taking it out costs are the decision log's business
+ * rather than this file's. The rule that belongs here is smaller — nothing
+ * overrides the adapter, in one place, for all three filter bars, so the three
+ * cannot drift into three different grammars.
+ *
  * **`size="small"` is set here on purpose, and the reason is not the obvious
  * one.** `theme.ts` gives every `MuiTextField` `{ fullWidth: true, size:
  * 'medium' }`, and the expectation is that the picker inherits it. It does
@@ -161,7 +148,6 @@ export function DateRangeFields({
     <>
       <DatePicker
         label={fromLabel}
-        format={FIELD_FORMAT}
         value={fromDraft}
         onChange={(value, context) => {
           setFromDraft(value);
@@ -171,7 +157,6 @@ export function DateRangeFields({
       />
       <DatePicker
         label={toLabel}
-        format={FIELD_FORMAT}
         value={toDraft}
         onChange={(value, context) => {
           setToDraft(value);
