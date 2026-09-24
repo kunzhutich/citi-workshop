@@ -1,7 +1,10 @@
 import ApartmentIcon from '@mui/icons-material/Apartment';
 import AppsIcon from '@mui/icons-material/Apps';
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import ComputerIcon from '@mui/icons-material/Computer';
+import HealthAndSafetyIcon from '@mui/icons-material/HealthAndSafety';
 import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
+import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import MeetingRoomIcon from '@mui/icons-material/MeetingRoom';
 import WifiIcon from '@mui/icons-material/Wifi';
 import type { SvgIconProps } from '@mui/material/SvgIcon';
@@ -28,7 +31,10 @@ import type { ComponentType } from 'react';
 const ICONS: Record<string, ComponentType<SvgIconProps>> = {
   Apartment: ApartmentIcon,
   Apps: AppsIcon,
+  CleaningServices: CleaningServicesIcon,
   Computer: ComputerIcon,
+  HealthAndSafety: HealthAndSafetyIcon,
+  LocalShipping: LocalShippingIcon,
   MeetingRoom: MeetingRoomIcon,
   Wifi: WifiIcon,
 };

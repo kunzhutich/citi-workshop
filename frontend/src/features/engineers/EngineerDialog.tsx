@@ -172,6 +172,13 @@ export function EngineerDialog({
                 },
                 displayEmpty: true,
               },
+              // `displayEmpty` draws "None" inside the field before anything
+              // is chosen, and an unshrunk label is drawn in the same place —
+              // the two overlapped into one unreadable word on first open.
+              // Pinning the label up is what the ticket list's status and
+              // priority filters already do; this is the same fix, and the
+              // same comment is in `IncidentFilterBar`. §6.2.
+              inputLabel: { shrink: true },
             }}
           >
             {(categories.data?.groups ?? []).map((group) => (

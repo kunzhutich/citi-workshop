@@ -126,6 +126,57 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
             "Other",
         ),
     ),
+    #
+    # The three below were added for §6.2 of the redesign brief, which asks for
+    # more specialty tags than the original five. A specialty *is* a category
+    # group — `services/engineers.py::_require_group_ids` refuses anything else
+    # — so the only way to offer an engineer more of them is to have more
+    # groups, and a group an employee cannot report against would be a tag with
+    # nothing behind it. Each therefore carries its own subcategories and earns
+    # its place on the report questionnaire as well as in the engineer dialog.
+    #
+    # `seed_categories` inserts what is missing and leaves what exists alone,
+    # so running `migrate` against a database that predates these adds them
+    # without touching a renamed hint or a reordered group.
+    #
+    CategoryGroupSeed(
+        name="Cleaning & Waste",
+        hint="Spills, bins, recycling, supplies",
+        icon="CleaningServices",
+        location_detail=LocationDetail.FLOOR,
+        subcategories=(
+            "Spill/Stain",
+            "Bins/Recycling",
+            "Restroom Supplies",
+            "Pest Control",
+            "Other",
+        ),
+    ),
+    CategoryGroupSeed(
+        name="Safety & Security",
+        hint="Alarms, doors, lighting outages, hazards",
+        icon="HealthAndSafety",
+        location_detail=LocationDetail.FLOOR,
+        subcategories=(
+            "Alarm/Detector",
+            "Door/Lock",
+            "Emergency Lighting",
+            "First Aid/Equipment",
+            "Other",
+        ),
+    ),
+    CategoryGroupSeed(
+        name="Deliveries & Moves",
+        hint="Post, deliveries, desk moves, disposal",
+        icon="LocalShipping",
+        location_detail=LocationDetail.SEAT,
+        subcategories=(
+            "Post/Parcel",
+            "Desk Move",
+            "Equipment Disposal",
+            "Other",
+        ),
+    ),
 )
 
 

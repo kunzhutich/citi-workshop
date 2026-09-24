@@ -8,8 +8,11 @@ from app.models.category import Category
 from app.models.enums import LocationDetail
 from app.seed.categories import CATEGORY_GROUPS, seed_categories
 
-EXPECTED_GROUPS = 5
-EXPECTED_SUBCATEGORIES = 32
+# Counted from the seed itself rather than written down twice. Three groups
+# were added in §6.2 and these two literals failed four tests between them,
+# which is the whole argument for deriving them.
+EXPECTED_GROUPS = len(CATEGORY_GROUPS)
+EXPECTED_SUBCATEGORIES = sum(len(group.subcategories) for group in CATEGORY_GROUPS)
 
 
 @pytest.fixture(autouse=True)
