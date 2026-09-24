@@ -1,3 +1,4 @@
+import BadgeOutlinedIcon from '@mui/icons-material/BadgeOutlined';
 import LockResetIcon from '@mui/icons-material/LockReset';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Avatar from '@mui/material/Avatar';
@@ -15,10 +16,12 @@ import { useNavigate } from 'react-router-dom';
 import type { CurrentUser } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { paths } from '../routes';
+import { profilePathFor } from './navigation';
 import { describeRole, initialsOf } from './roleLabels';
 
 /**
- * Avatar menu in the top bar: who you are, change password, log out.
+ * Avatar menu in the top bar: who you are, your own page, change password, log
+ * out.
  *
  * Signing out navigates rather than waiting for a guard to bounce the user:
  * the request is already gone, and the login screen should appear at once.
@@ -29,6 +32,9 @@ export function UserMenu({ user }: { user: CurrentUser }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
 
   const close = () => setAnchor(null);
+  // Engineers only, and the rule is shared with the mobile drawer so the two
+  // account surfaces cannot disagree. See `profilePathFor`.
+  const profilePath = profilePathFor(user);
 
   async function handleSignOut(): Promise<void> {
     close();
@@ -70,6 +76,20 @@ export function UserMenu({ user }: { user: CurrentUser }) {
         </MenuItem>
 
         <Divider />
+
+        {profilePath ? (
+          <MenuItem
+            onClick={() => {
+              close();
+              void navigate(profilePath);
+            }}
+          >
+            <ListItemIcon>
+              <BadgeOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>My profile</ListItemText>
+          </MenuItem>
+        ) : null}
 
         <MenuItem
           onClick={() => {

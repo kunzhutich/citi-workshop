@@ -1,3 +1,4 @@
+import BadgeOutlinedIcon from '@mui/icons-material/BadgeOutlined';
 import LockResetIcon from '@mui/icons-material/LockReset';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Avatar from '@mui/material/Avatar';
@@ -14,6 +15,7 @@ import { useNavigate } from 'react-router-dom';
 import type { CurrentUser } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { paths } from '../routes';
+import { profilePathFor } from './navigation';
 import { describeRole, initialsOf } from './roleLabels';
 
 export interface DrawerAccountSectionProps {
@@ -37,6 +39,10 @@ export interface DrawerAccountSectionProps {
 export function DrawerAccountSection({ user, onNavigate }: DrawerAccountSectionProps) {
   const { signOut } = useAuth();
   const navigate = useNavigate();
+  // The same rule the desktop avatar menu uses, from the one place that holds
+  // it — otherwise an engineer could reach their own page on a laptop and not
+  // on a phone. See `profilePathFor`.
+  const profilePath = profilePathFor(user);
 
   async function handleSignOut(): Promise<void> {
     onNavigate();
@@ -66,6 +72,23 @@ export function DrawerAccountSection({ user, onNavigate }: DrawerAccountSectionP
       {/* `ListItem` wrappers: a `ListItemButton` is a `<button>` or an `<a>`,
           and neither is a legal direct child of the `<ul>` a `List` renders. */}
       <List disablePadding sx={{ px: 1.5, pb: 1.5 }}>
+        {profilePath ? (
+          <ListItem disablePadding sx={{ display: 'block' }}>
+            <ListItemButton
+              onClick={() => {
+                onNavigate();
+                void navigate(profilePath);
+              }}
+              sx={{ borderRadius: 1.5 }}
+            >
+              <ListItemIcon sx={{ minWidth: 40 }}>
+                <BadgeOutlinedIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary="My profile" />
+            </ListItemButton>
+          </ListItem>
+        ) : null}
+
         <ListItem disablePadding sx={{ display: 'block' }}>
           <ListItemButton
             onClick={() => {
