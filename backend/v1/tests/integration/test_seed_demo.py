@@ -45,6 +45,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -52,6 +53,7 @@ from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
 from app.models.watcher import IncidentWatcher
+from app.schemas.feedback import MAX_RATING, MIN_RATING
 from app.schemas.report import ReportScope, ReportWindow
 from app.seed.categories import CATEGORY_GROUPS, seed_categories
 from app.seed.demo import (
@@ -64,6 +66,7 @@ from app.seed.demo import (
     seed_demo,
 )
 from app.services import reporting
+from app.services.feedback import FEEDBACK_WINDOW
 
 #: Small enough to be quick, big enough that every path in `PATH_WEIGHTS` is
 #: taken at least once. The seed is fixed, so "at least once" is a fact about
@@ -508,6 +511,136 @@ def test_running_it_twice_changes_nothing_and_says_so(
     assert "does not top up or refresh" in second.detail
     assert second.incidents == 0
     assert db_session.scalars(select(func.count()).select_from(Incident)).one() == before
+
+
+# --- Ratings -----------------------------------------------------------------
+
+
+#: The band the seeded response rate must fall in — rated repairs over
+#: repairs that could have been rated.
+#:
+#: **A band and not `0 < rated < rateable`**, which is what this test asserted
+#: first and which was very nearly worthless. Some ratings are dropped for a
+#: second reason — `_write_feedback` also skips one that would land outside
+#: the fourteen-day window or after `now` — so "fewer rated than rateable" is
+#: true however high `RATED_SHARE` goes. Setting it to 1.0 and re-running was
+#: what showed that: the strict inequality still passed, at a measured ratio
+#: of **0.935**. Against the real 0.45 the ratio measures **0.488**, so the
+#: bounds below separate the two with room on each side.
+MIN_RATED_SHARE = 0.2
+MAX_RATED_SHARE = 0.8
+
+
+def test_it_leaves_ratings_on_some_of_the_repairs(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Some, and not all: a demo where everybody rates hides the response rate.
+
+    The upper bound is the half of this that earns its keep. A generator that
+    rated every eligible ticket would make the response rate on an engineer's
+    page read 100% for ever, quietly teaching a reviewer that the figure never
+    moves — and the naive way of ruling that out does not, which is why the
+    bound is a ratio. See `MAX_RATED_SHARE`.
+    """
+    result, _ = seeded
+
+    rows = db_session.scalars(select(IncidentFeedback)).all()
+    rateable = db_session.scalars(
+        select(func.count()).select_from(Incident).where(Incident.resolved_by_id.is_not(None))
+    ).one()
+
+    assert result.feedback > 0
+    assert len(rows) == result.feedback
+    assert rateable > 0
+
+    share = result.feedback / rateable
+    assert MIN_RATED_SHARE <= share <= MAX_RATED_SHARE, share
+
+
+def test_every_rating_is_one_the_application_would_have_allowed(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Four properties, each asserted rather than counted.
+
+    A seeded row the API could not have produced is worse than no row at all:
+    it demonstrates behaviour the system does not have, and it is exactly the
+    shape of defect D35 records — a generator asserted by how many rows it
+    wrote rather than by what is in them.
+
+    The four are the whole of `services/feedback.can_give_feedback`: the
+    author is the reporter, the subject is whoever resolved it, the score is
+    on the scale, and the rating falls inside the window and before `now`.
+    """
+    _, now = seeded
+
+    rows = db_session.scalars(select(IncidentFeedback)).all()
+    incidents = {
+        incident.id: incident
+        for incident in db_session.scalars(
+            select(Incident).where(Incident.id.in_([row.incident_id for row in rows]))
+        ).all()
+    }
+    assert rows
+
+    for row in rows:
+        incident = incidents[row.incident_id]
+        assert row.author_id == incident.reporter_id, incident.reference
+        assert row.rated_user_id == incident.resolved_by_id, incident.reference
+        assert MIN_RATING <= row.rating <= MAX_RATING, incident.reference
+        assert incident.resolved_at is not None
+        assert row.created_at >= incident.resolved_at, incident.reference
+        assert row.created_at - incident.resolved_at <= FEEDBACK_WINDOW, incident.reference
+        assert row.created_at <= now, incident.reference
+
+
+def test_the_scores_are_spread_rather_than_all_the_same(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """A distribution chart drawn from one repeated score is a single bar.
+
+    Both halves matter. At least three distinct scores, so the chart has a
+    shape; and at least one at or below 2, because the low-rating case is the
+    one every reader of this feature wants to look at and a demo world without
+    one has nothing to show them.
+    """
+    scores = Counter(row.rating for row in db_session.scalars(select(IncidentFeedback)).all())
+
+    assert len(scores) >= 3, scores
+    assert sum(count for score, count in scores.items() if score <= 2) > 0, scores
+
+
+def test_every_rating_told_the_engineer_it_is_about(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """The replay asked `app/notifications.py` rather than inventing a recipient.
+
+    One FEEDBACK_RECEIVED row per rating, addressed to `rated_user_id` — with
+    the exception the rule table itself makes: an engineer who reported a
+    fault and then fixed it is both the author and the subject, and `plan()`
+    drops a recipient who is also the actor. That exception is subtracted here
+    rather than ignored, so this stays an equality.
+    """
+    ratings = db_session.scalars(select(IncidentFeedback)).all()
+    told = db_session.scalars(
+        select(Notification).where(Notification.type == NotificationType.FEEDBACK_RECEIVED)
+    ).all()
+
+    self_rated = {
+        (row.incident_id, row.rated_user_id)
+        for row in ratings
+        if row.author_id == row.rated_user_id
+    }
+    expected = {
+        (row.incident_id, row.rated_user_id)
+        for row in ratings
+        if (row.incident_id, row.rated_user_id) not in self_rated
+    }
+
+    assert {(row.incident_id, row.user_id) for row in told} == expected
 
 
 # --- The demo inbox ----------------------------------------------------------
