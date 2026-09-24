@@ -119,7 +119,8 @@ export type NotificationType =
   | 'STATUS_CHANGED'
   | 'ASSIGNED'
   | 'NOTE_ADDED'
-  | 'ESCALATION_CLEARED';
+  | 'ESCALATION_CLEARED'
+  | 'WATCHED_RESOLVED';
 
 /** `app.models.enums.SeatType`. */
 export type SeatType = 'DESK' | 'MEETING_ROOM' | 'COMMON_AREA' | 'OTHER';

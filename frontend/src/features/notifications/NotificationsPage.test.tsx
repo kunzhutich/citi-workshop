@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import type { AppNotification } from '../../api/notifications';
-import type { Page } from '../../api/types';
+import type { NotificationType, Page } from '../../api/types';
+import { backendEnumMembers } from '../../test/backendEnums';
 import { renderWithAuth } from '../../test/renderWithProviders';
 
 /**
@@ -250,4 +251,37 @@ it('explains a failure instead of showing an empty inbox', async () => {
     /could not be loaded|went wrong|network/i,
   );
   expect(screen.queryByText('No notifications yet')).not.toBeInTheDocument();
+});
+
+/**
+ * Every kind of notification the backend can actually send, rendered.
+ *
+ * **Parametrised over `app/models/enums.py`, not over `api/types.ts`.** A test
+ * driven by the frontend's own union agrees with that union, including when
+ * the union is wrong — and it was: S4 added `WATCHED_RESOLVED` to the backend
+ * enum, the union kept its four members, `NOTIFICATION_ICONS` stayed
+ * exhaustive against four, `tsc` passed, this file passed, and the inbox threw
+ * *"Element type is invalid"* for every reader who had one. The icon lookup
+ * returned `undefined` and React was handed it to render.
+ *
+ * `api/enumMirrors.test.ts` is what stops the union drifting again. This is
+ * the second half of the same answer, and it is the half that would have
+ * failed *on this screen*: it renders a row of every kind that can arrive and
+ * asserts the row is really there, so a member with no icon cannot pass by
+ * being a member nobody wrote a case for.
+ *
+ * The message is deliberately not the assertion — that would pass on a row
+ * whose icon blew up, because the throw happens inside the icon element. The
+ * assertion is on the rendered `listitem`, which only exists if the whole row
+ * rendered.
+ */
+it.each(backendEnumMembers('NotificationType'))('renders a %s row without throwing', async (type) => {
+  fetchNotificationsMock.mockResolvedValue(
+    page([makeNotification({ type: type as NotificationType, message: `A ${type} happened.` })]),
+  );
+
+  renderWithAuth(<NotificationsPage />);
+
+  const row = await screen.findByRole('listitem');
+  expect(within(row).getByText(`A ${type} happened.`)).toBeInTheDocument();
 });

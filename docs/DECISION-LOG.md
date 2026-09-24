@@ -4244,3 +4244,85 @@ show "0 others affected" everywhere until somebody presses the button, because
 `seed_demo` refuses to run where data exists — the local demo world has 269
 watchers, the cloud one has none.
 
+## D69 — The inbox crashed, and the type system was satisfied
+
+**Reported by the owner:** clicking the bell throws *"Element type is invalid…
+Check the render method of `NotificationRow`."* Reproduced before touching
+anything — the screen is caught by the error boundary and replaced with
+"Something went wrong on this screen."
+
+### What happened
+
+S4 added `WATCHED_RESOLVED` to `app/models/enums.py::NotificationType`. The
+frontend's `NotificationType` is a **hand-written union** in `api/types.ts`,
+and it kept its four members. `NOTIFICATION_ICONS` is
+`Record<NotificationType, ComponentType>` — exhaustive *by design*, so that
+adding a kind without deciding what it looks like is a compile error rather
+than a blank square.
+
+It was exhaustive, and it was complete, and it was wrong: exhaustive **against
+the union**, and the union no longer described the API. `NOTIFICATION_ICONS[
+'WATCHED_RESOLVED']` returned `undefined`, and `<Icon />` with an undefined
+component is the error React reports. `tsc` passed. 441 frontend tests passed.
+The backend's own suite passed. The demo database had 163 rows of the new kind
+waiting.
+
+### The fix is not the fifth icon
+
+The icon took one line. The question worth answering is what would have caught
+it, because **nothing inside `frontend/` could have.** The two halves are
+different languages with different type systems, and the only check that can
+see both is one that reads both.
+
+Three were considered.
+
+**Generate the TypeScript from the OpenAPI document.** The real answer, and too
+large for this: it replaces a hand-written `api/types.ts` that carries a
+paragraph of prose on almost every field, and those paragraphs are a
+substantial part of what makes this codebase readable.
+
+**Fetch `/api/v1/openapi.json` in a test and compare.** Better at checking what
+a *deployed pair* agree on; worse here. It needs a running server, so it cannot
+be part of the unit suite, and it passes on a branch that has changed the enum
+and not yet restarted uvicorn — which is the exact moment the drift is born.
+
+**Read both source files.** Chosen. `src/test/backendEnums.ts` parses
+`class X(StrEnum)` blocks out of the Python; `src/api/enumMirrors.test.ts`
+compares all **twelve** mirrored enums against their unions. It fails on the
+commit that creates the problem, needs nothing running, and takes under a
+second.
+
+Parsing Python with a regular expression is a real cost and is written down as
+one. It is tolerable because the shape is rigid and machine-checked by
+`ruff format` — and because the parse is **asserted**: `EXPECTED_ENUM_COUNT`
+and a "finds a union for every enum" case mean a parser that quietly stopped
+matching cannot report that all nought enums agree. That is the D24/D25/D35/D40
+shape, and it is the failure mode a test like this is most prone to.
+
+### And a screen test over the real enum
+
+The owner's steer, and it is the half that fails *on the screen*:
+`NotificationsPage.test.tsx` now renders one row per member of
+`backendEnumMembers('NotificationType')` — the backend's list, not the
+frontend's. A test parametrised over the frontend union agrees with that union,
+including when the union is wrong.
+
+The assertion is on the rendered `listitem` rather than on the message, because
+the throw happens inside the icon element: a test that only looked for the text
+could pass on a row whose icon had blown up.
+
+**Verified both ways.** Reverting the union fails
+`enumMirrors.test.ts` with `expected [ 'ASSIGNED', …(3) ] to deeply equal
+[ 'ASSIGNED', …(4) ]`, naming `WATCHED_RESOLVED` as the missing member.
+Removing the icon fails the render test with the production error verbatim:
+*"Element type is invalid: expected a string … but got: undefined."*
+
+### The blast radius this leaves closed
+
+Twenty `Record<SomeBackendEnum, …>` maps live across eleven files — chip
+colours, status labels, priority ramps, the workflow stepper's step index,
+event wording. Every one of them had the same exposure, and every one of them
+is now covered by the twelve mirror comparisons rather than by anybody
+remembering. **Adding a member to a backend enum now fails the frontend
+suite**, which is the property that was missing.
+
