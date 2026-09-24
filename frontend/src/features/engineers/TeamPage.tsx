@@ -74,7 +74,27 @@ export function TeamPage() {
             description="No open ticket is waiting for an owner."
           />
         ) : (
-          <Box sx={{ display: 'grid', gap: 1.5 }}>
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1.5,
+              // Three columns on a desktop, one on a phone. This is a queue to
+              // triage rather than a list to read: twenty-five full-width rows
+              // is most of a 1440px screen spent on one ticket at a time, and
+              // a lead deciding who gets what wants as many of them in view at
+              // once as will still fit a title.
+              //
+              // `auto-fit` against a minimum rather than a breakpoint, for the
+              // reason D44 records: this grid sits inside the shell's content
+              // box, which is 248px of drawer and the page padding narrower
+              // than the window, so a rule written against the window's width
+              // would be wrong by that much. At the 300px floor it is three
+              // columns on a desktop, two on a tablet and one on a phone,
+              // which is the same answer arrived at honestly.
+              gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+              alignItems: 'start',
+            }}
+          >
             {/*
               §5.7: the same row the engineer home screen draws, with Assign
               in place of Pick up. It used to be a card of its own with its

@@ -45,7 +45,20 @@ export function AuthCard({ title, subtitle, children, footer }: AuthCardProps) {
             component="img"
             src={acmeLogoDark}
             alt="ACME Facilities"
-            sx={{ display: 'block', height: { xs: 32, md: 40 }, width: 'auto', mb: 1.5 }}
+            sx={{
+              // Centred and roughly twice the app bar's height. These screens
+              // are a narrow column on an otherwise empty page, so the mark is
+              // the only thing above the fold that is not a form — it can
+              // carry the page rather than label it. `mx: 'auto'` centres it
+              // alone; the heading under it stays left-aligned with the fields
+              // it belongs to, because a centred heading over left-aligned
+              // inputs reads as two columns that failed to line up.
+              display: 'block',
+              mx: 'auto',
+              height: { xs: 64, md: 84 },
+              width: 'auto',
+              mb: 3,
+            }}
           />
           <Typography variant="h1">{title}</Typography>
           {subtitle ? (
