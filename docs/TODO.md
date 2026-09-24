@@ -59,45 +59,42 @@ and the hooks to call it — one row per user, a JSON column. `dashboardLayout.t
 is the only file that touches storage, deliberately, so the frontend side of
 the move is one file. Reasoning: [D58](DECISION-LOG.md#d58--section-5-the-per-persona-screens-and-one-backend-flag).
 
-## 4. Feedback, part 2 — autoclose, and ratings on the engineer's page
+## 4. Feedback and auto-close — what is left
 
-**S7 shipped the rating itself** (see
-[D71](DECISION-LOG.md#d71--feedback-a-rating-belongs-to-a-repair-not-to-a-ticket)).
-Three things were deliberately left for a second pass, and one of them has a
-constraint worth knowing before you plan it.
+**S7 shipped in two passes**: the rating itself
+([D71](DECISION-LOG.md#d71--feedback-a-rating-belongs-to-a-repair-not-to-a-ticket)),
+then the engineer's rating, the reviews page and auto-close
+([D72](DECISION-LOG.md#d72--auto-close-with-no-scheduler-and-where-a-sweep-is-allowed-to-live)).
+What is deliberately not done:
 
-**Autoclose a RESOLVED ticket after seven days of silence**, with the timer
-reset by a public note. There is **no scheduler available**: the IAM boundary
-grants no `events:*` and no `scheduler:*`, SQS's maximum message delay is
-fifteen minutes, and Aurora sleeps at `min_capacity = 0`. So it has to be a
-bounded sweep on a request path that already runs — `WHERE status = 'RESOLVED'
-AND resolved_at < …` behind a partial index, which returns no rows almost
-every time and writes only when there is something to close. That is the
-pattern `app/repositories/login_attempts.py::purge_expired` already uses and
-explains. Add `close_stale` to `app/services/ops.py` as well, so a demo can
-force one.
+**Nothing says when a ticket will close itself.** `autoclose.next_deadline`
+exists and nothing renders it. "Closes in three days" on a resolved ticket
+would tell the reporter that doing nothing has a consequence, which is the
+whole point of a deadline they cannot see today.
 
-`incident_events.actor_id` is already nullable, so a system-performed close
-needs no invented "System" user — but `perform_transition` has no path that
-resolves no human actor, and that is the one genuinely new mechanism. A
-`CloseReason.SYSTEM_CLOSED` member would make "closed automatically" a fact in
-the data rather than an inference from a null.
+**Moderating a review.** There is no way to delete one and no admin override
+on the fifteen-minute edit window, unlike notes. Settle the policy first — is
+a deleted review still counted in the average? is the engineer told? — then it
+is a `deleted_at` column, an exclusion in `apply_feedback_visibility` beside
+the note one, a route, and a test that a deleted review leaves the timeline.
 
-**Ratings on the engineer's page.** The visual shape is already argued: one
-more `StatTile` in the existing grid (it takes `to`, so it can be a link),
-with the response rate as its caption because an average without its `n` is a
-lie; a clickable rating distribution below it built from `BreakdownChart`,
-whose form language it already matches; and the individual reviews behind a
-`?reviews=2` URL parameter opening a `ResponsiveDialog`, so the view is
-linkable and the browser's back button closes it.
+**Watchers cannot rate.** The table is keyed `(incident_id, resolution_round)`;
+letting the people who said "I'm affected too" rate the repair means
+`(incident_id, resolution_round, author_id)` and widening
+`can_give_feedback`'s first line.
 
-**An engineer may already open any other engineer's page** — the route and
-`GET /reports/engineers/{id}` are both staff-wide. The owner's rule is that
-engineers see each other's *scores* but not each other's *reviews*, so the
-aggregate can go on the page as it stands and the reviews drawer needs the
-admin/lead/self gate. `apply_feedback_visibility` already holds that rule for
-the rows; the report that computes the average deliberately does not go
-through it, because a number is not a review.
+**Ratings reach no report but the engineer's own page.** Satisfaction by
+category, by location, or against response time are each one aggregate in
+`repositories/reports.py` — and "which problems leave people unhappy even when
+we fix them" is a genuinely different answer from "which problems happen
+most".
+
+**The engineer reports still count `resolved_in_period` two ways across the
+application.** `engineer_detail` moved to `resolved_by_id` in S7 part 2 because
+its satisfaction ratio needed both halves to mean the same thing;
+`engineer_workload` still counts by `assignee_id`, correctly, because it
+answers "who is free right now". Worth knowing before adding a third report
+that joins them.
 
 ---
 

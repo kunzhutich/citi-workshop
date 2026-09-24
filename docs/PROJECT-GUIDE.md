@@ -54,7 +54,9 @@ list the rules R7, S4 and S7 introduced**, and on a detail those phases changed,
 own sections are right and this one is stale. Each carries a rule-to-file map of its own
 for exactly that reason. S7 is also the one phase that *widened* something §3 describes:
 `services/visibility.py` has three filters now, not two, and the third is the first that
-reads the row rather than only the reader.*
+reads the row rather than only the reader. S7's second pass added the other thing §3
+could not predict: `app/workflow.py` has a twelfth row held by `Actor.SYSTEM`, which is
+the first move in the application that no user may make.*
 
 *The older phase sections are the opposite case: where one of them disagrees with this
 part, this part is right, because a phase section is a snapshot of a morning and the
@@ -67,9 +69,9 @@ notifications) are the stretch phases that followed, **R1**–**R7** the redesig
 [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built, and
 [docs/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
 
-**The system in numbers, as it finally stands:** 14 tables over 7 Alembic revisions ·
-50 paths / 72 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
-transitions · 6 notification rules · 3 visibility filters.
+**The system in numbers, as it finally stands:** 14 tables over 8 Alembic revisions ·
+51 paths / 73 operations under `/api/v1` on one Lambda · 8 reports · 12 workflow
+transitions · 6 notification rules · 3 visibility filters · 5 ops actions.
 
 ---
 
@@ -9456,3 +9458,162 @@ line would widen from "the reporter" to "the reporter or a watcher".
 | **Response rate** | Rated repairs over repairs that could have been rated. The number that says whether an average is worth reading. |
 | **`ON CONFLICT DO NOTHING`** | PostgreSQL's "insert unless the key exists". Here it returns no id, which the service turns into the same 409 the pre-check raises. |
 | **WCAG 1.4.11** | The contrast rule for non-text graphics: 3:1. Why the stars had to leave Material UI's default amber. |
+
+---
+
+## Phase S7 part 2 — The engineer's rating, the reviews page, and auto-close
+
+*Everything S7 part 1 left for a second pass, plus the auto-close the owner
+asked for once part 1 had shown that a cron was not available.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `alembic/versions/0008_system_closed.py` | One `ALTER TYPE`: the close reason nobody chose. |
+| `app/workflow.py` | `Actor.SYSTEM`, one transition row, `AUTOCLOSE_AFTER` and `autoclose_deadline` — the quiet clock and the note that restarts it. |
+| `app/models/incident.py` | `last_public_note_at`, the one input that guard needs. |
+| `app/services/autoclose.py` | The sweep, and why it cannot be a scheduled job. |
+| `app/services/incident_service.py` | `apply_system_transition` — a move with no user behind it. |
+| `app/repositories/incidents.py` | `list_autoclose_candidates`: a permissive prefilter, locked with `SKIP LOCKED`. |
+| `app/routers/incidents.py` | `GET /incidents` runs the sweep. A GET that writes, said out loud. |
+| `app/services/ops.py` | `close_stale`, so a demo can force one and see what it did. |
+| `app/repositories/reports.py` | `engineer_satisfaction`, `engineer_reviews`, and `engineer_detail` moved onto `resolved_by_id`. |
+| `app/services/visibility.py` | `sees_every_rating` — one definition of "admin or lead", now that two places ask. |
+| `frontend/src/components/RatingStars.tsx` | A score, drawn as stars and *said in words*. |
+| `frontend/src/features/engineers/EngineerReviewsPage.tsx` | The reviews, the distribution, and the filter they double as. |
+
+### 2. Why it is shaped this way
+
+The full reasoning is
+[D72](DECISION-LOG.md#d72--auto-close-with-no-scheduler-and-where-a-sweep-is-allowed-to-live);
+the four decisions a reader most needs:
+
+**Auto-close is a sweep on a request path** because the IAM boundary grants no
+`events:*`, no `scheduler:*` and no `cluster-pg:` ARN for `pg_cron`. The only
+true timer available — an SQS message re-enqueuing itself every fifteen
+minutes — needs new Terraform and fails silently. `login_attempts` reached the
+same conclusion in S6 and the same answer.
+
+**The move is a row in `app/workflow.py`, held by `Actor.SYSTEM`.**
+`resolve_actors` takes a `User` and can never return SYSTEM, so the row is
+legal and offered to nobody — no button, no `allowed-transitions` entry, and
+no `if` anywhere outside the table.
+
+**`engineer_detail` counts by `resolved_by_id` now.** A satisfaction ratio
+beside the counts forced it: a rating belongs to whoever resolved the ticket,
+so a denominator counted by the live assignee would have made "18 of 26
+resolved rated" a ratio between two different meanings of one word. Measured
+first — every resolved ticket in the demo world had the two ids equal, so it
+moved no number.
+
+**Scores are public to staff; sentences are not.** One filter,
+`apply_feedback_visibility`, applied to the query. `can_read_reviews` only
+decides whether a link is drawn.
+
+### 3. How the pieces connect
+
+An overdue ticket closing itself:
+
+```
+anybody opens a ticket list          GET /api/v1/incidents
+  ↓ routers/incidents.list_incidents  ← the write is declared here, not hidden
+  ↓ services/autoclose.close_stale
+      ├─ repositories.list_autoclose_candidates
+      │     status = RESOLVED AND resolved_at <= now - 7d
+      │     ORDER BY resolved_at LIMIT 50 FOR UPDATE SKIP LOCKED
+      │     (a permissive prefilter — the rule is the guard)
+      ├─ workflow.check_guard(row, incident, now)
+      │     └─ autoclose_deadline: max(resolved_at, last public note) + 7d
+      │        → skip the ones a conversation is holding open
+      └─ incident_service.apply_system_transition
+            ├─ _apply_transition_effects  ← the same function every closure uses
+            └─ add_event(actor_id=None, created_at=now)
+  ↓ session.commit()                  ← before the read, so a closure survives it
+  ↓ the list query runs and the response is built
+```
+
+An admin reading somebody's reviews:
+
+```
+engineer page: stars + "17 of 41 resolved rated in this period"
+  ← can_read_reviews on /reports/engineers/{id} decided the link exists
+  ↓ /engineers/:id/reviews?range=30d   ← the period travels in the query string
+  ↓ useEngineerDetailReport            the same figures, so the header agrees
+  ↓ useEngineerReviews                 GET /reports/engineers/{id}/reviews
+      └─ apply_feedback_visibility on the query
+            admin or lead → everything; the engineer → their own; a peer → none
+  ↓ click a bar in the distribution → ?rating=2 → the request, not the rendered rows
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How long a resolved ticket may stay quiet | `app/workflow.py` | `AUTOCLOSE_AFTER` |
+| When a ticket becomes due | `app/workflow.py` | `autoclose_deadline` — the note restarts it |
+| Which note restarts it | `app/models/incident.py` | `last_public_note_at` — PUBLIC and not deleted |
+| That the move exists at all, and who may make it | `app/workflow.py` | the `Actor.SYSTEM` row in `TRANSITIONS` |
+| That no human can make it | `app/workflow.py` | `resolve_actors` takes a `User` and never returns SYSTEM |
+| What a closure does to the row | `app/services/incident_service.py` | `_apply_transition_effects` — the same one every closure uses |
+| A move with no user behind it | `app/services/incident_service.py` | `apply_system_transition` — no permission check, no guard check |
+| Where the sweep runs, and how many at once | `app/services/autoclose.py` | `close_stale`, `SWEEP_LIMIT` |
+| That concurrent sweeps do not collide | `app/repositories/incidents.py` | `list_autoclose_candidates` — `FOR UPDATE SKIP LOCKED` |
+| That the sweep tells nobody | `app/services/autoclose.py` | the absence of a `notification_service.record` call, and its docstring |
+| An engineer's average, and its response rate | `app/repositories/reports.py` | `engineer_satisfaction`; `_mean_score` in `services/reporting.py` |
+| Which timestamp the rating window filters on | `app/repositories/reports.py` | `engineer_satisfaction` — `Incident.resolved_at`, not the rating's |
+| Who may read the *sentences* | `app/services/visibility.py` | `apply_feedback_visibility`, `sees_every_rating` |
+| Whether the link to them is drawn | `app/services/reporting.py` | `can_read_reviews` on `engineer_detail` |
+| Which repairs count as an engineer's | `app/repositories/reports.py` | `engineer_detail` — `resolved_by_id` |
+| That the demo world settles under its own rules | `app/seed/demo.py` | the `autoclose.close_stale` call before `_summarise` |
+| Every score is reachable in the demo | `app/seed/demo.py` | `RATING_WEIGHTS` — no zero, asserted |
+| The star's colour | `frontend/src/theme.ts` | `MuiRating.styleOverrides.iconFilled` |
+| The score in words | `RatingStars.tsx`, `FeedbackDialog.tsx`, `ActivityTimeline.tsx` | `SCORE_WORDING` — pinned across the last two by a test |
+
+### 5. How to change it
+
+**To change how long a ticket stays quiet** — `AUTOCLOSE_AFTER` in
+`app/workflow.py`. Not `REOPEN_WINDOW`, which is seven days by coincidence and
+answers a different question.
+
+**To make something else restart the clock** — `autoclose_deadline` is the
+only place that decides, and it is a pure function of a loaded row. Whatever
+you add has to be readable off the incident, and
+`list_autoclose_candidates` must stay a *superset* of what the guard allows.
+
+**To run the sweep somewhere else as well** — call `autoclose.close_stale` and
+commit. It is idempotent by status: a closed ticket is not a candidate.
+
+**To show "closes in three days"** — `autoclose.next_deadline` already returns
+it and nothing renders it.
+
+### 6. Gotchas
+
+- **`GET /incidents` writes.** It is the only read endpoint in the application
+  that does, it is declared in the route's docstring, and it is why that
+  handler commits.
+- **The prefilter is deliberately wrong-ish.** It selects tickets the guard
+  will refuse, for ever, every sweep. That is the cost of keeping the rule in
+  one language.
+- **A `FOR UPDATE` select cannot carry an eager load.** PostgreSQL will not
+  lock the far side of an outer join, so `list_autoclose_candidates` locks
+  first and loads `notes` in a second statement.
+- **`add_event(created_at=…)` has exactly one caller.** The default is
+  `clock_timestamp()` so several rows in one request are ordered rather than
+  identical (revision 0003); only the system path passes a value, because its
+  `now` is authoritative and also went into `closed_at`.
+- **The seed sweeps itself.** If it did not, the first page load would close
+  eighteen tickets and make the figures the seed had just printed wrong.
+- **`RATING_WEIGHTS` may not contain a zero.** A score with no weight is a row
+  on the reviews filter that can never have anything behind it.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Sweep** | Work done on a request that was going to happen anyway, because no scheduler exists to do it on a timer. `login_attempts` cleans itself the same way. |
+| **Prefilter** | A cheap, index-friendly query that returns a superset, leaving the real rule to a guard that runs in Python. |
+| **`FOR UPDATE SKIP LOCKED`** | PostgreSQL's "lock these rows, and silently pass over any another transaction already holds". Turns two racing sweeps into two disjoint ones. |
+| **`Actor.SYSTEM`** | The capacity the application acts in when nobody does. Holds one transition row and no user can ever hold it. |
+| **Quiet clock** | Time since the later of the repair and the last public note. What auto-close measures. |
+| **Response rate** | Rated repairs over repairs that could have been rated — the number that says whether an average is worth reading. |

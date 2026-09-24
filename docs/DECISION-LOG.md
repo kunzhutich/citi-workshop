@@ -4656,3 +4656,140 @@ so a system-performed close is representable without inventing a System user.
 **Reversible.** The migration downgrades cleanly (the enum value stays, as in
 0006); the feature is additive apart from the resolution notification's
 wording, which is one function.
+
+## D72 — Auto-close with no scheduler, and where a sweep is allowed to live
+
+The owner asked for auto-close after D71 recorded that it could not be a cron.
+It can be, and this is what it cost.
+
+### What is actually available, enumerated
+
+`infra/policy.tftpl` grants no `events:*` and no `scheduler:*`, so **no
+EventBridge rule can be created**. `rds:*` covers `cluster:`, `db:`, `secgrp:`
+and `subgrp:` ARNs and **not `cluster-pg:`**, so no custom cluster parameter
+group and therefore no `pg_cron`. There is no `elasticache:*`, and nowhere to
+run a worker process even if there were: no `ecs:*`, no `eks:*`, and `ec2:` is
+`Describe*`/`Get*`, so no instance. The whole toolbox is `sqs:*` and
+`lambda:*`, both scoped to `coding-workshop*1bd1dfd7*`.
+
+**The only true timer available** is an SQS message that re-enqueues itself
+every fifteen minutes — the maximum `DelaySeconds` — carrying the next sweep's
+due time so that Aurora is woken once a day rather than ninety-six times. It
+was costed and rejected: it needs a queue and an event-source mapping in
+`infra/`, which is outside CLAUDE.md's permitted edits and would need the
+owner's sign-off, and it is a perpetual-motion machine that **fails silently**
+— one poison message or a drained queue and auto-close stops with nothing to
+say so.
+
+### The sweep, and the precedent it follows
+
+So the rule is evaluated on a path that already runs, which is the answer this
+codebase reached once before and wrote down in `purge_expired` in
+`repositories/login_attempts.py`: *"A background sweeper would be the
+conventional answer and is not available here."*
+
+`GET /incidents` is the host, and **it is a GET that writes**. That is stated
+in the route's own docstring rather than hidden in the service, because a
+reader of `list_incidents` should not have to discover it. It is that route
+because every persona reaches it, and the sweep is not scoped to the page
+being listed — so one visit by anybody brings the whole estate current.
+
+**What it costs, plainly:** a ticket closes when somebody next opens the
+application, not at the stroke of its deadline. The only way one stays open is
+for nobody to use the system at all, in which case nothing was urgent.
+
+`close_stale` is also an ops action, for two reasons that are not the same: a
+demo should not depend on somebody having browsed first, and on the request
+path the sweep is silent — the invoke is the only way to see what it did.
+
+### Four things that had to be true
+
+**It must not be a second idea of what CLOSED means.** The closure goes
+through `_apply_transition_effects`, keyed on the status being entered, with a
+real `Transition` row. So a field added to that function is not a field this
+one forgets.
+
+**The row is in `app/workflow.py`, and needed a new actor.** `Actor.SYSTEM`
+holds exactly one row, and `resolve_actors` — which takes a `User` — can never
+return it. So the move is legal, offered to nobody, absent from
+`allowed-transitions` and never drawn as a button, without one `if` outside
+the table saying so.
+
+*Correcting something written an hour earlier:* the first version left SYSTEM
+out of `ACTOR_PRECEDENCE` with a comment calling the absence "load-bearing".
+That was wrong — `_highest_precedence` walks that tuple to resolve *any* actor
+set, so leaving SYSTEM out made `select_transition` raise on the one caller
+that uses it. It is in the tuple; its position means nothing, because it can
+never be one of several rows a caller matched.
+
+**A public note restarts the clock.** `workflow.autoclose_deadline` measures
+from the later of `resolved_at` and the last public note, because a ticket
+closing itself in the middle of a conversation is what makes an automatic
+close feel like a filing error rather than housekeeping. **An INTERNAL note
+does not**: the reporter cannot see one, so staff talking among themselves is
+not evidence anybody is waiting, and a ticket held open by a conversation its
+reporter is not party to would be held open invisibly.
+
+**`FOR UPDATE SKIP LOCKED` on the candidate query.** The sweep runs on an
+ordinary request path, so two requests can be inside it at once — one Lambda
+container handles one invocation, but a local uvicorn does not. Without the
+lock both select the same overdue ticket, both pass the guard, and the ticket
+closes twice: harmless on the incident row, and a duplicate in an append-only
+log that is meant to be the record.
+
+### The prefilter is permissive and says so
+
+The SQL asks the cheap half — resolved, and resolved longer ago than the
+window — and the guard decides exactly. Expressing the note rule in SQL as
+well would put one rule in two languages, and the version that drifts is the
+one nobody reads. A ticket resolved months ago whose reporter wrote yesterday
+is selected every sweep and refused every sweep; that is a handful of rows and
+a free comparison.
+
+### It notifies nobody, and that is a decision
+
+The reporter was told when the ticket was resolved and asked to confirm the
+fix. Being told a week later that the system tidied up is an interruption
+about something nobody did and nothing they can act on — their rating window
+is open for another week either way (D71). It is the same call
+`app/notifications.py` already makes for CREATED, ESCALATED and
+PRIORITY_CHANGED: not everything worth an audit row is worth interrupting
+somebody with (D31).
+
+### SYSTEM_CLOSED, rather than reusing ADMIN_CLOSED
+
+One fewer migration and a lie in every report that groups by close reason. An
+admin deciding a ticket is finished and nobody deciding anything are different
+events, and the second is the one somebody auditing a quiet estate wants to
+count separately. `incident_events.actor_id` was already nullable, so the
+audit row needs no invented "System" account — a real row somebody could try
+to sign in as.
+
+### The seed had to settle under its own rules
+
+The generator walks each ticket's history and stops, so it left **eighteen of
+thirty-one** resolved tickets months old — which the first page anybody opened
+would have closed, making every status figure the seed had just reported wrong
+within a minute. `seed_demo` now runs the real sweep before it summarises. The
+demo world is a world the application could have produced: RESOLVED 31 → 16,
+seventeen tickets carrying SYSTEM_CLOSED.
+
+That surfaced two small things worth recording. `result.events` was counted
+before the sweep and under-reported by the number of closures —
+`test_every_event_is_backdated_and_in_order` compares the two and caught it.
+And the closure's audit row took `clock_timestamp()` while `closed_at` took
+the sweep's `now`, so the two disagreed by a second; `add_event` now takes an
+optional `created_at` and this is its only caller, because the default —
+`clock_timestamp()`, so several rows in one request are ordered rather than
+identical — is what revision 0003 exists for and must stay the default.
+
+### Not done
+
+**The reopen window and the quiet window are both seven days and are separate
+constants.** They are two different clocks that happen to agree, and tying
+them together would mean changing how long somebody may reopen a ticket in
+order to change how long it waits to be closed.
+
+Nothing on any screen says "closes in three days". `autoclose.next_deadline`
+exists and nothing renders it; a countdown on a resolved ticket is a
+reasonable next step and was not asked for.
