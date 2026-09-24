@@ -40,6 +40,29 @@ export interface IncidentsPageProps {
    * reported, and a problem is somewhere — the building they are standing in.
    */
   defaultToOwnBuilding?: boolean;
+  /**
+   * Render as a section of a larger page rather than as the screen itself.
+   *
+   * The one thing it changes is the heading. `PageHeader` renders an `h1` by
+   * construction — that is its whole job, "one `h1` per page, in the same
+   * place" — and the engineer page already has one, its subject's name. Two
+   * `h1`s in one document is an accessibility defect, and **not one the axe
+   * scan would have reported**: `e2e/accessibility.spec.ts` filters to the
+   * `wcag2a`/`wcag2aa` tags, the only rule about this is the best-practice
+   * `page-has-heading-one`, and that one complains about *none* rather than
+   * about two. So an embedded list titles itself with an `h2` instead, and
+   * keeps the title and description props doing the same job they do on a
+   * screen of their own.
+   *
+   * A boolean rather than a heading level, because the level is not really the
+   * question: a list that is not the page must not use `PageHeader` at all,
+   * and every page in this application nests its sections exactly one deep.
+   *
+   * Everything else — the filter bar, the paging, the table and card list, the
+   * empty state — is deliberately untouched. Those are the reason to reuse
+   * this component instead of building a second ticket table.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -61,6 +84,7 @@ export function IncidentsPage({
   emptyDescription,
   offerReport = false,
   defaultToOwnBuilding = false,
+  embedded = false,
 }: IncidentsPageProps) {
   const { isMobile } = useBreakpoint();
   const { user } = useAuth();
@@ -124,9 +148,24 @@ export function IncidentsPage({
         it genuinely helps: "you have reported nothing yet" is the moment to
         put the button in front of someone.
       */}
-      <PageHeader title={title} description={description} />
+      {embedded ? (
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h2" component="h2">
+            {title}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: '72ch' }}>
+            {description}
+          </Typography>
+        </Box>
+      ) : (
+        <PageHeader title={title} description={description} />
+      )}
 
-      <IncidentFilterBar controls={controls} />
+      {/* The preset goes to the bar as well as to the query. A control over a
+          value this screen already fixes would write the URL and change
+          nothing, because `toQuery` applies the preset last on purpose — see
+          `fixedByPreset`. */}
+      <IncidentFilterBar controls={controls} preset={preset} />
 
       <QueryState
         isPending={active.isPending}

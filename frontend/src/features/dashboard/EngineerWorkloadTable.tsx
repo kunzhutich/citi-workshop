@@ -13,6 +13,7 @@ import { Link as RouterLink } from 'react-router-dom';
 
 import type { EngineerWorkload } from '../../api/reports';
 import { EmptyState } from '../../components/QueryState';
+import { useRowNavigation } from '../../components/rowNavigation';
 import { availabilityLabel } from '../../display/labels';
 import { engineerPath } from '../../routes';
 import { levelLabel } from '../../layout/roleLabels';
@@ -38,9 +39,13 @@ export interface EngineerWorkloadTableProps {
  * period. Putting the period in that one column's header, rather than in a
  * footnote, is what stops a reader carrying the date range across the whole row.
  *
- * Every engineer's name links to their live queue, and the resolved count links
- * to the tickets they resolved — the latter carrying the same dates the column
- * was computed over, so the list and the number agree.
+ * **The row opens the engineer's page; the two links on the right keep their
+ * own destinations.** The capacity bar goes to that person's live queue and the
+ * resolved count to the tickets behind that number, the latter carrying the
+ * same dates the column was computed over so the list and the number agree.
+ * Both are anchors, which is exactly what the row's click handler declines to
+ * act on — see `components/rowNavigation.ts`. The name stays a link too, so
+ * the row is reachable without a pointer.
  */
 export function EngineerWorkloadTable({
   engineers,
@@ -49,6 +54,8 @@ export function EngineerWorkloadTable({
   buildingId,
   isStale = false,
 }: EngineerWorkloadTableProps) {
+  const openRow = useRowNavigation();
+
   if (engineers.length === 0) {
     return (
       <Card>
@@ -96,7 +103,12 @@ export function EngineerWorkloadTable({
             </TableHead>
             <TableBody>
               {engineers.map((engineer) => (
-                <TableRow key={engineer.user_id} hover>
+                <TableRow
+                  key={engineer.user_id}
+                  hover
+                  onClick={(event) => openRow(event, engineerPath(engineer.user_id))}
+                  sx={{ cursor: 'pointer' }}
+                >
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>
                     {/*
                       §6.1: the name goes to the person, not to a filtered

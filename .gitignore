@@ -261,3 +261,14 @@ tfplan
 
 # Claude Code local settings (permissions, not project code)
 .claude/
+
+# The React app's own images are source, not a build artefact.
+#
+# `assets` above arrives from the upstream Python template's "Flask stuff"
+# block, and a bare pattern matches a directory of that name at *any* depth —
+# so `frontend/src/assets/`, which CLAUDE.md names as where images go, was
+# silently untracked. `git add` said so; nothing else would have. The
+# directory has to be un-ignored before its contents, because git does not
+# descend into an excluded directory to find a negation inside it.
+!frontend/src/assets/
+!frontend/src/assets/**

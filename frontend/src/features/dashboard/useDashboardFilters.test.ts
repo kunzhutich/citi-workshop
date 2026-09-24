@@ -1,3 +1,6 @@
+import { act, renderHook } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +9,7 @@ import {
   RANGE_PRESETS,
   rangeLabel,
   resolvePeriod,
+  useDashboardFilters,
   type DashboardFilters,
 } from './useDashboardFilters';
 
@@ -77,6 +81,22 @@ describe('a custom range', () => {
     expect(new Date(period.to ?? '').getDate()).toBe(7);
   });
 
+  it('leaves an end out rather than inventing one when the URL is nonsense', () => {
+    // `from` and `to` come out of the address bar, so they can be anything a
+    // hand-edit or a truncated paste leaves there. This used to throw
+    // `RangeError: Invalid time value` out of `toISOString`, which took the
+    // whole dashboard to the error boundary — a screen lost to a bad link.
+    // Widening to an unfiltered end is also the safe direction: the reader
+    // sees more than they asked for rather than silently less.
+    const period = resolvePeriod(
+      filters({ rangeId: CUSTOM_RANGE_ID, from: 'nonsense', to: '2026-13-45' }),
+      NOW,
+    );
+
+    expect(period.from).toBeUndefined();
+    expect(period.to).toBeUndefined();
+  });
+
   it('leaves an end out rather than inventing one', () => {
     const period = resolvePeriod(filters({ rangeId: CUSTOM_RANGE_ID, from: '2026-09-01' }), NOW);
 
@@ -92,5 +112,49 @@ describe('the label a reader sees', () => {
 
   it('says a custom range is one', () => {
     expect(rangeLabel(filters({ rangeId: CUSTOM_RANGE_ID }))).toBe('Custom range');
+  });
+});
+
+/**
+ * The address bar can have a second tenant, and this hook is not its landlord.
+ *
+ * The engineer page runs this hook *and* `useIncidentFilters` at once: a
+ * period over the charts, a ticket table underneath with filters of its own.
+ * Each hook used to rebuild the query string from its own view of the world,
+ * so whichever wrote last erased the other. These two tests are the ones that
+ * fail when `keepForeignParams` is taken out — verified by reverting it: the
+ * first reads `''` for `status` instead of `OPEN`, the second loses `page`.
+ */
+describe('writing the URL beside another filter hook', () => {
+  /** Render the hook with the location, so a test can read what it wrote. */
+  function renderDashboardFilters(initialEntry: string) {
+    return renderHook(() => ({ controls: useDashboardFilters(NOW), location: useLocation() }), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(MemoryRouter, { initialEntries: [initialEntry] }, children),
+    });
+  }
+
+  it('leaves the ticket list its filters when the period changes', () => {
+    const { result } = renderDashboardFilters('/engineers/e1?status=OPEN&sort=-priority');
+
+    act(() => result.current.controls.setFilters({ rangeId: '90d' }));
+
+    const params = new URLSearchParams(result.current.location.search);
+    expect(params.get('range')).toBe('90d');
+    expect(params.get('status')).toBe('OPEN');
+    expect(params.get('sort')).toBe('-priority');
+  });
+
+  it('still clears its own filter rather than merging over it', () => {
+    // The other half of the rule, and the reason this is an owned-parameter
+    // list instead of a merge: a merge cannot tell "cleared" from "not mine",
+    // so the building would be impossible to remove.
+    const { result } = renderDashboardFilters('/engineers/e1?building_id=b1&page=4');
+
+    act(() => result.current.controls.setFilters({ buildingId: '' }));
+
+    const params = new URLSearchParams(result.current.location.search);
+    expect(params.get('building_id')).toBeNull();
+    expect(params.get('page')).toBe('4');
   });
 });

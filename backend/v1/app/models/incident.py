@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from app.models.note import IncidentNote
     from app.models.seat import Seat
     from app.models.user import User
+    from app.models.watcher import IncidentWatcher
 
 #: Human-facing ticket numbers come from a dedicated sequence rather than from
 #: a count or the UUID, so they are stable, gap-tolerant and never reused.
@@ -206,6 +207,19 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="incident",
         cascade="all, delete-orphan",
         order_by="IncidentEvent.created_at",
+    )
+    # Everyone who pressed "I'm affected too". Deliberately **one-way**: there
+    # is no `IncidentWatcher.incident` back-reference, unlike `notes` and
+    # `events` above. Nothing needs to walk from a watch row back to its
+    # ticket, and the absence is what lets `app/seed/demo.py` hang watchers on
+    # a throwaway `Incident` to replay a notification without a backref
+    # cascading that transient object into the session.
+    #
+    # Eager-loaded by `repositories/incidents._detail_loaders`, which is what
+    # makes `incident.watchers` an ordinary attribute by the time
+    # `app/notifications.py` reads it — that module does no database access.
+    watchers: Mapped[list["IncidentWatcher"]] = relationship(
+        cascade="all, delete-orphan",
     )
 
     @property

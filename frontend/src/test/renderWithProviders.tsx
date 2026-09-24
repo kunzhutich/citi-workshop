@@ -1,4 +1,6 @@
 import { createTheme, ThemeProvider } from '@mui/material/styles';
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderResult } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
@@ -105,11 +107,17 @@ function Providers({ children, route }: { children: ReactNode; route: TestRoute 
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={testTheme}>
-        <MemoryRouter initialEntries={[route]}>
-          {/* Real, not stubbed: a screen that confirms something through the
-              snackbar should have that assertion available to its test. */}
-          <SnackbarProvider>{children}</SnackbarProvider>
-        </MemoryRouter>
+        {/* Mirrors `main.tsx`. Without it a date picker throws on render
+            rather than rendering wrongly, so this is not an optional nicety:
+            any test of a screen that has one would fail on the provider
+            instead of on the screen. */}
+        <LocalizationProvider dateAdapter={AdapterDayjs}>
+          <MemoryRouter initialEntries={[route]}>
+            {/* Real, not stubbed: a screen that confirms something through the
+                snackbar should have that assertion available to its test. */}
+            <SnackbarProvider>{children}</SnackbarProvider>
+          </MemoryRouter>
+        </LocalizationProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

@@ -1,4 +1,6 @@
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
+import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -36,6 +38,7 @@ import {
   useEscalateIncident,
   useIncident,
   usePickUpIncident,
+  useSetWatching,
   useTransition,
   useUpdateIncident,
 } from './hooks';
@@ -90,6 +93,16 @@ export function IncidentDetailPage() {
 
   const ticket = incident.data;
 
+  // Whether other people may subscribe to a problem of this kind. Read from
+  // the category tree, which is where the API publishes the flag — never
+  // guessed from the category's name or its `location_detail`. See
+  // `watchers.ts`.
+  const setWatching = useSetWatching();
+  // Off the ticket, not out of the tree: the tree has no deactivated
+  // categories in it, and a ticket filed against one that has since been
+  // retired would lose a toggle its watchers still need. See `watchers.ts`.
+  const allowsWatchers = ticket?.category.allows_watchers ?? false;
+
   return (
     <Box>
       {/* Named and aimed by `backTarget.ts`, from the state the link that
@@ -131,6 +144,34 @@ export function IncidentDetailPage() {
                 </Box>
                 <PriorityChip priority={ticket.priority} />
                 {ticket.is_escalated ? <EscalatedFlag reason={ticket.escalation_reason} /> : null}
+
+                {/*
+                  The other half of "I'm affected too", and the half that makes
+                  it safe to offer: somebody who subscribed from the report
+                  questionnaire has to be able to stop. One button beside the
+                  chips rather than a section of its own — `is_watching` is one
+                  fact about this ticket and it belongs where the rest of them
+                  are. `watcher_count` is deliberately not drawn here: the
+                  count's reader is the hotspot report, not the person deciding
+                  whether to follow.
+                */}
+                {allowsWatchers ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={
+                      ticket.is_watching ? (
+                        <NotificationsActiveOutlinedIcon />
+                      ) : (
+                        <NotificationsNoneOutlinedIcon />
+                      )
+                    }
+                    loading={setWatching.isPending}
+                    onClick={() => toggleWatching(ticket.is_watching)}
+                  >
+                    {ticket.is_watching ? 'Stop following' : "I'm affected too"}
+                  </Button>
+                ) : null}
               </Box>
             </Box>
 
@@ -347,6 +388,30 @@ export function IncidentDetailPage() {
       </QueryState>
     </Box>
   );
+
+  /**
+   * Subscribe to this ticket, or stop.
+   *
+   * The current state is passed in rather than read from `ticket` here,
+   * because this helper is hoisted out of the render that had it narrowed to
+   * a loaded ticket — and the answer has to be the one the button was drawn
+   * from, not whatever a re-fetch left behind between the click and the call.
+   */
+  function toggleWatching(isWatching: boolean) {
+    const watching = !isWatching;
+    setWatching.mutate(
+      { id: incidentId, watching },
+      {
+        onSuccess: () =>
+          notify(
+            watching
+              ? "You will be told when this ticket moves. Thanks — it helps us see what's affecting most people."
+              : 'You will no longer be told about this ticket.',
+          ),
+        onError: () => notify('Could not change whether you follow this ticket.', 'error'),
+      },
+    );
+  }
 
   /** Take this ticket for yourself, reporting any capacity warning. */
   async function pickUpTicket() {

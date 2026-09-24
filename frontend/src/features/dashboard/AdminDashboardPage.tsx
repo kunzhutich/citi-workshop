@@ -17,7 +17,7 @@ import { useFacilityTree } from '../facilities/hooks';
 import { useIncidents } from '../incidents/hooks';
 import { BlockedByReasonPanel } from './BlockedByReasonPanel';
 import { BreakdownChart, type BreakdownDatum } from './BreakdownChart';
-import { CATEGORICAL_SLICES, PRIORITY_SLICES } from './chartPalette';
+import { PRIORITY_SLICES } from './chartPalette';
 import { CommunicationPanel } from './CommunicationPanel';
 import { DashboardFilterBar } from './DashboardFilterBar';
 import { EngineerWorkloadTable } from './EngineerWorkloadTable';
@@ -234,16 +234,20 @@ export function AdminDashboardPage() {
             shape="pie"
             isStale={locations.isFetching}
             emptyMessage="Nothing was reported in this period"
-            data={(locations.data?.buildings ?? []).map((building, index) => ({
+            // No `color` per row, deliberately: buildings have no inherent
+            // order and no identity a colour could follow, so the chart
+            // assigns the validated categorical order itself and folds past
+            // the three it clears — `foldToCategoricalSlices`. This used to
+            // hand out `CATEGORICAL_SLICES[index % 3]` under a comment saying
+            // it was capped at three, which the `%` made untrue: a fourth
+            // building would have been painted the same blue as the first,
+            // and the demo world has exactly three, so nothing would have
+            // shown it.
+            data={(locations.data?.buildings ?? []).map((building) => ({
               key: building.building_id,
               label: building.building_code,
               value: building.count,
               href: periodListLink(scope, { buildingId: building.building_id }),
-              // By position in a sorted list, which is the one case where that
-              // is honest: buildings have no inherent order and no identity a
-              // colour could follow, so the alternative is a hash of a UUID.
-              // Capped at three by the palette — see CATEGORICAL_SLICES.
-              color: CATEGORICAL_SLICES[index % CATEGORICAL_SLICES.length],
             }))}
           />
         </QueryState>

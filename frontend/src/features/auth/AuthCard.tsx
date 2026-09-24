@@ -6,6 +6,8 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
 
+import acmeLogoDark from '../../assets/acme-logo-dark.png';
+
 export interface AuthCardProps {
   title: string;
   subtitle?: string;
@@ -28,9 +30,36 @@ export function AuthCard({ title, subtitle, children, footer }: AuthCardProps) {
     <Container maxWidth="sm" sx={{ py: { xs: 4, md: 8 } }}>
       <Stack spacing={3}>
         <Box>
-          <Typography variant="overline" color="primary" sx={{ fontWeight: 700 }}>
-            ACME Facilities
-          </Typography>
+          {/*
+            The dark mark, because the page behind it is the cream
+            `background.default`; the app bar's light one would disappear into
+            it.
+
+            It replaces the "ACME Facilities" overline rather than joining it,
+            so the name is said once. `alt` still carries that name: nothing
+            else on these screens says whose application this is, the heading
+            under it is "Sign in" rather than the brand, and so the mark is
+            content here and not decoration.
+          */}
+          <Box
+            component="img"
+            src={acmeLogoDark}
+            alt="ACME Facilities"
+            sx={{
+              // Centred and roughly twice the app bar's height. These screens
+              // are a narrow column on an otherwise empty page, so the mark is
+              // the only thing above the fold that is not a form — it can
+              // carry the page rather than label it. `mx: 'auto'` centres it
+              // alone; the heading under it stays left-aligned with the fields
+              // it belongs to, because a centred heading over left-aligned
+              // inputs reads as two columns that failed to line up.
+              display: 'block',
+              mx: 'auto',
+              height: { xs: 64, md: 84 },
+              width: 'auto',
+              mb: 3,
+            }}
+          />
           <Typography variant="h1">{title}</Typography>
           {subtitle ? (
             <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>

@@ -45,7 +45,7 @@ individually with what was seen, in
 | --- | --- |
 | **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 12 tables, 45 paths / 65 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
-| **Tests** | **1,219 passing** — 825 backend (pytest) · 312 frontend (Vitest) · 82 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
+| **Tests** | **1,466 passing** — 897 backend (pytest) · 477 frontend (Vitest) · 92 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
 | **Docs** | [Review guide](./docs/REVIEW-GUIDE.md) · [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
 
 **Contents** — [What it does](#what-it-does) · [Architecture](#architecture) ·
@@ -63,7 +63,13 @@ Three personas, one ticket.
 - **Employee** — reports an issue through a guided questionnaire (what kind of problem →
   which one → where → tell us more → how urgent), watches their tickets, and confirms or
   rejects the fix. Self-registration is open to `@acme.inc` addresses and always produces
-  an employee.
+  an employee. Because the questionnaire asks *where* before it asks for a title, it can
+  answer "is this already reported?" before anybody has typed anything: the panel between
+  those two questions shows unfinished tickets of the same kind nearby — same desk before
+  same floor before same building, and it says which — and, for problems that were fixed
+  before, what the engineer wrote down. It never blocks the report. For the kinds of
+  problem other people share, it also offers **"I'm affected too"**, which is a
+  subscription to the resolution rather than a second ticket.
 - **Engineer** — works a queue. Seniors and leads pick up unassigned tickets in their
   specialties; leads also assign their team. Engineers see internal notes that employees
   never do.
@@ -77,9 +83,10 @@ Everybody also has an **inbox**. A bell in the app bar carries an unread badge a
 to `/notifications` — a full page, not a dropdown, so it pages, filters to unread and
 survives a deep link. A notification is created when a ticket you reported or hold
 changes status, gains an owner, gets a public update from staff, or has its escalation
-cleared — and never when you did the thing yourself. An internal note never produces one.
-Who hears about what is a table of four rules in `backend/v1/app/notifications.py`, not
-four copies of an `if`.
+cleared — and, since S4, when a ticket you said affected you too is **resolved**. Never
+when you did the thing yourself; an internal note never produces one. Who hears about
+what is a table of five rules in `backend/v1/app/notifications.py`, not five copies of
+an `if`.
 
 The badge asks the server for one integer every thirty seconds and stops while the tab is
 unfocused. That is not a preference: a Lambda behind a Function URL cannot hold a
@@ -87,15 +94,16 @@ connection open, so there was no websocket to reject ([D30](./docs/DECISION-LOG.
 
 ### The data model
 
-**Twelve tables**, created by five Alembic revisions (`0001` → `0005`). Ten arrived with
-the initial schema; `login_attempts` came with S6's login lockout and `notifications`
-with S1.
+**Thirteen tables**, created by six Alembic revisions (`0001` → `0006`). Ten arrived with
+the initial schema; `login_attempts` came with S6's login lockout, `notifications`
+with S1, and `incident_watchers` with S4's "I'm affected too".
 
 Two conventions are declared once in `app/models/base.py` and then inherited, and the
 exceptions are the interesting part. `UUIDPrimaryKeyMixin` gives a table a surrogate
-`id`; **ten of the twelve use it**, and the two that do not are `engineer_profiles`
-(keyed on `user_id`) and `login_attempts` (keyed on the email address).
-`TimestampMixin` gives `created_at` and `updated_at`; **eight of the twelve use it**, and
+`id`; **ten of the thirteen use it**, and the three that do not are `engineer_profiles`
+(keyed on `user_id`), `login_attempts` (keyed on the email address) and
+`incident_watchers` (keyed on the pair, so one person cannot follow one ticket twice).
+`TimestampMixin` gives `created_at` and `updated_at`; **eight of the thirteen use it**, and
 the write-once tables omit `updated_at` to say so in the schema.
 
 | Table | What it holds | Added in |
@@ -103,7 +111,7 @@ the write-once tables omit `updated_at` to say so in the schema.
 | `buildings` | Sites. The top of the location tree | `0001` |
 | `floors` | Levels within a building | `0001` |
 | `seats` | Desks and meeting rooms on a floor — a seat is either, and the category decides which the form asks for | `0001` |
-| `categories` | A **two-level** tree: 5 groups, 32 subcategories. A subcategory declares the location detail its reports need | `0001` |
+| `categories` | A **two-level** tree: 8 groups, 46 subcategories. A subcategory declares the location detail its reports need, and whether other people may subscribe to its tickets | `0001` |
 | `users` | One row per person, carrying the role (`EMPLOYEE` / `ENGINEER` / `FACILITY_ADMIN`), the bcrypt hash and `must_change_password` | `0001` |
 | `engineer_profiles` | The engineer-only half of a user: level, specialties, availability, `max_active_tickets`. Keys on `user_id` — it is an extension of a user, not an identity of its own | `0001` |
 | `refresh_tokens` | Hashed refresh tokens, rotated on every use, with reuse detection | `0001` |
@@ -112,6 +120,7 @@ the write-once tables omit `updated_at` to say so in the schema.
 | `incident_events` | **Append-only.** Every accepted transition writes one, with from/to and reason. Every timing metric and every blocked age is read out of here rather than stored on the ticket | `0001` |
 | `login_attempts` | One row per email address, counting failed sign-ins for the lockout. Keyed on the `CITEXT` address, with **no foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./docs/DECISION-LOG.md)) | `0004` (S6) |
 | `notifications` | One row per thing a person was told: recipient, `NotificationType`, the incident it is about, the rendered sentence, and `read_at` | `0005` (S1) |
+| `incident_watchers` | One row per person who said a ticket affects them too. Keyed on the **pair**, so one person cannot follow one ticket twice, and told only when it is resolved | `0006` (S4) |
 
 Full schema: [BUILD-PLAN §3](./docs/BUILD-PLAN.md); the narrative version, in the order
 that makes the tables make sense, is [PROJECT-GUIDE Part I](./docs/PROJECT-GUIDE.md).

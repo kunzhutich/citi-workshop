@@ -35,26 +35,37 @@ code and is the one thing a reader cannot reconstruct.
 
 # Part I — The system as a whole
 
-*This part was first written in M8 and has been kept current through S6 and S1, the two
-stretch phases that shipped after it. It reads the codebase as it finally stands. The
-phase sections in [Part II](#part-ii--the-build-phase-by-phase) are a chronology: they
-record what was built when, and what was being argued about at the time. This part is a
-description: it assumes you have never seen any of it and owes you no history.*
+*This part was first written in M8 and kept current through S6 and S1. It is a
+description rather than a chronology: it assumes you have never seen any of this and
+owes you no history, where the phase sections in
+[Part II](#part-ii--the-build-phase-by-phase) record what was built when and what was
+being argued about at the time.*
 
 *Every file path, function name and route below was checked against the code — not only
 that the identifier exists somewhere, but that it is **defined in the file named beside
 it**, which is the stricter question and the one that catches an imported name posing as
-a local one. Where this part and a phase section disagree, this part is right: a phase
-section is a snapshot of a morning, and the oldest of them are six phases back.*
+a local one.*
+
+***Read this with one caveat.** The redesign phases R1–R7 and the stretch item S4 landed
+after this part was last revised, and only the figures below were brought forward.
+Nothing here has been contradicted — the architecture did not move, and every rule
+described below still lives where it says — but **§3's rule-to-file map does not list
+the rules R7 and S4 introduced**, and on a detail those two phases changed, their own
+sections are right and this one is stale. Each carries a rule-to-file map of its own for
+exactly that reason. The older phase sections are the opposite case: where one of them
+disagrees with this part, this part is right, because a phase section is a snapshot of a
+morning and the oldest are eight phases back.*
 
 *The build is finished. **M1**–**M8** are the MVP; **S6** (hardening) and **S1** (in-app
-notifications) are the two stretch phases that followed. Nothing further is planned, and
-the [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built.*
+notifications) are the stretch phases that followed, **R1**–**R7** the redesign, and
+**S4** (similar-ticket suggestions) the last stretch item. The
+[review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built, and
+[docs/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
 
-**The system in numbers, as it finally stands:** 12 tables over 5 Alembic revisions ·
-45 paths / 65 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
-transitions · 4 notification rules · 1,219 passing tests (825 pytest, 312 vitest,
-82 Playwright, plus 10 deliberate viewport skips).
+**The system in numbers, as it finally stands:** 13 tables over 6 Alembic revisions ·
+48 paths / 69 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
+transitions · 5 notification rules · 1,466 passing tests (897 pytest, 477 vitest,
+92 Playwright, plus 10 deliberate viewport skips).
 
 ---
 
@@ -8884,3 +8895,394 @@ tool.
 | **Aliased self-join** | `aliased(Category)` lets one table appear twice in a query. Incidents are filed against a subcategory; the group is its parent row in the same table. |
 | **Zero denominator** | A rate with nothing to divide. Returned as `None` and rendered as a dash, never as 0%, which would read as a perfect record. |
 | **Top-up** | Seeding more data into an already-seeded database. Not supported: `seed_demo` refuses, so a dataset cannot be silently doubled. |
+
+## Phase R7 — Shared filters, clickable rows, a rebuilt engineer page, and the mark
+
+*Six items the owner listed, plus four defects the work uncovered. Three of the four
+were found by looking at the screen rather than by a test: a pie with eight
+identically-coloured slices, a filter control that wrote the address bar and changed
+nothing, and a `frontend/src/assets/` directory that `git` had been silently ignoring
+since the scaffold.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `components/DateRangeFields.tsx` | **New.** The two ends of a date range as MUI pickers. Shares a *value contract* — two `YYYY-MM-DD` strings in and out — not markup; renders a fragment so each caller lays the pair out itself. |
+| `components/rowNavigation.ts` | **New.** `useRowNavigation()` — the rule for a clickable `<table>` row, lifted out of `IncidentTable` once a second and third table wanted it. |
+| `components/stretchedLink.ts` | The three fragments are `satisfies SxProps<Theme>` now, so a caller can compose one with a style of its own. |
+| `main.tsx`, `test/renderWithProviders.tsx` | One `LocalizationProvider` each, at the root. Without the second, any test of a screen with a picker throws on the provider. |
+| `features/dashboard/DashboardFilterBar.tsx` | Native `type="date"` inputs gone; the pair reveals through `Collapse`. `note` accepts `false` for "no caption at all". |
+| `features/dashboard/useDashboardFilters.ts` | `OWNED_PARAMS` — writes only its own query parameters. Custom-range ends are guarded against a URL that holds something that is not a date. |
+| `features/incidents/useIncidentFilters.ts` | The matching `OWNED_PARAMS`, including in `reset()`. |
+| `features/incidents/IncidentFilterBar.tsx` | A reported-between range for everyone, an engineer filter for admins and leads, and `fixedByPreset` — which leaves out any control the screen's own preset already decides. |
+| `features/incidents/AppliedFilterChips.tsx` | One rule: a chip only for a filter this reader has no control for. |
+| `display/time.ts` | `startOfDayInstant`, `endOfDayInstant`, `calendarDayOf` — the day↔instant conversions, beside the `parseCalendarDay` rule they depend on. |
+| `features/dashboard/chartPalette.ts` | `REMAINDER_SLICE`, `foldToCategoricalSlices()` — D57's "a fourth folds into Other", as a function. |
+| `features/dashboard/BreakdownChart.tsx` | A categorical pie folds; the table twin does not. `BreakdownDatum.href` is optional, for a slice that stands for several rows. |
+| `features/dashboard/ScopeHeading.tsx` | `ScopeLabel` — the two tenses in three words, for a column with no room for a heading. `actions` and `datesShownElsewhere`, both defaulting to the dashboard's behaviour. |
+| `features/dashboard/StatTile.tsx` | `stack` on `StatTileGrid`, because `minmax` cannot express "never more than one". |
+| `features/dashboard/NeedsAttentionPanel.tsx` | Rows take the D55 stretched link; Assign is larger and centred on desktop only. |
+| `features/dashboard/EngineerWorkloadTable.tsx`, `features/engineers/EngineerRoster.tsx` | Whole rows open the engineer's page. The roster's Edit button is gone. |
+| `features/engineers/EngineerDialog.tsx` | Creation only. Removing Edit made its whole edit half unreachable. |
+| `features/engineers/EngineerDetailPage.tsx` | Rebuilt: a 30/70 split above the divider with the live queue in two columns, the period controls beside the heading they scope, tiles-and-pie below, then the ticket table. |
+| `features/incidents/IncidentsPage.tsx` | `embedded`, which swaps the `h1` for an `h2`. Passes its `preset` to the filter bar. |
+| `theme.ts` | `MuiTableCell.sizeSmall` vertical padding, which is every table in the application. |
+| `layout/AppShell.tsx`, `features/auth/AuthCard.tsx`, `assets/*.png` | The ACME mark, light on the app bar and dark on the signed-out screens. |
+| `.gitignore` | `frontend/src/assets/` un-ignored — the upstream Python template's bare `assets` pattern matched it. |
+
+Decisions: [D60](DECISION-LOG.md#d60--date-pickers-the-library-that-came-with-them-and-what-they-cost),
+[D61](DECISION-LOG.md#d61--three-more-clickable-rows-and-the-rule-moved-out-of-the-first-one),
+[D62](DECISION-LOG.md#d62--two-filter-hooks-in-one-address-bar-and-who-owns-which-parameter),
+[D63](DECISION-LOG.md#d63--two-filters-that-already-existed-given-controls-and-the-one-that-was-lying),
+[D64](DECISION-LOG.md#d64--table-density-set-once-and-the-five-screens-it-reached),
+[D65](DECISION-LOG.md#d65--section-f-the-mark-replaces-the-word-and-the-png-is-not-the-file-we-were-given),
+[D66](DECISION-LOG.md#d66--the-engineer-page-rearranged-and-a-pie-that-had-no-colours).
+
+### 2. Why it is shaped this way
+
+**The shared thing about a date range is the value contract, not the markup.** Three
+filter bars ask the same question and two of them store the answer differently — the
+dashboard keeps calendar days in the URL so a link means the same period in another
+timezone, the ticket list keeps full ISO instants because the same parameter carries a
+dashboard window computed to the second. `DateRangeFields` therefore speaks days in
+both directions and each caller converts at its own edge. The rejected alternative was a
+`mode` flag on the component: one more thing to get wrong at three call sites, to save
+two lines at each.
+
+**No `Dayjs` crosses that boundary.** The moment a library object reaches a caller,
+every caller has to reason about timezones and about which date library this project
+uses. Parsing in and formatting out costs two lines and keeps it contained — and it is
+why swapping dayjs for something else would be a one-file change.
+
+**A hook, not a predicate, for the clickable row.** `components/rowNavigation.ts` could
+have exported `shouldIgnoreRowClick(event)` and left `void navigate(…)` at each call
+site. What belongs in one place is not only which clicks to decline but *that a row click
+navigates at all*; splitting them is half a decision in three files, free to drift from
+the other half.
+
+**Two filter hooks on one screen forced an ownership rule.** Both used to rebuild the
+query string from their own view of the world, which is correct while one of them is the
+only writer — and every screen was, until the engineer page embedded a ticket list. Each
+now declares `OWNED_PARAMS` and carries the rest across. Stated as an owned *set* rather
+than as a merge, because clearing a filter has to remove its parameter and a merge cannot
+tell "the reader cleared this" from "this is not mine".
+
+**The scope labels replaced a sentence, not a heading.** D9 splits this application's
+reports into present-tense and period-scoped, and D14 made the admin dashboard say which
+is which in two headings with two sentences. The engineer page's halves sit side by side,
+where neither has room for a sentence — so `ScopeLabel` is the same two tenses and the
+same two icons in three words. (The owner's review then reproportioned those halves to
+30/70 and put the live queue in two columns; `ScopeLabel` did not move, and the reasoning
+below is unchanged by it. D70.) It names no dates, deliberately: D14 and D24 are firm that
+a period may only be stated from the response's own `window`, and a label has none.
+
+**A pie whose slices have no inherent identity gets its colours from the chart; one whose
+slices carry meaning brings its own.** That is the line `BreakdownChart` draws, and it is
+what makes the fold safe: the priority ramp is an ordered scale with four known members
+and must never be folded or reordered, and it supplies colours, so it is not.
+
+### 3. How the pieces connect
+
+One real journey, hop by hop: **an admin on the dashboard clicks a row in Engineer
+workload, then narrows that engineer's period to the last 7 days.**
+
+1. **The row click.** `features/dashboard/EngineerWorkloadTable.tsx` gives each `<tr>`
+   `onClick={(event) => openRow(event, engineerPath(engineer.user_id))}`. `openRow` is
+   `useRowNavigation()` from `components/rowNavigation.ts`, which declines three kinds of
+   click — one already handled, one that landed on an `a`/`button`/`input`, and one that
+   ends a text selection — and otherwise calls React Router's `navigate`. The engineer's
+   name stays a real `<a>`, which is what keeps the row reachable by keyboard.
+2. **The route.** `App.tsx` maps `/engineers/:userId` to `EngineerDetailPage`, inside
+   `RequireRole` for staff. The guard is a courtesy; the enforcement is the `STAFF_ONLY`
+   dependency on the report route below.
+3. **Two hooks, one address bar.** `EngineerDetailPage` calls `useDashboardFilters()` for
+   the period and renders `IncidentsPage` for the ticket table, which calls
+   `useIncidentFilters()`. Both read and write `?…`; each writes only its `OWNED_PARAMS`.
+4. **The live half asks nothing about the period.** `useIncidents({ assignee_id, status:
+   ['OPEN','IN_PROGRESS','BLOCKED'] })` → `api/incidents.ts` → `GET /api/v1/incidents`.
+   No dates, because "what are they holding" is a question about now — D9's rule, and the
+   reason the `ScopeLabel kind="current"` sits above it.
+5. **The period half.** `useEngineerDetailReport(userId, periodParams)` →
+   `api/reports.ts` → `GET /api/v1/reports/engineers/{id}?from=…&to=…`.
+6. **Across the network.** The Vite dev proxy forwards `/api` unchanged to uvicorn;
+   deployed, CloudFront's `/api/v1*` behaviour forwards the full path to the Lambda's
+   Function URL. Same path in both, which is why local and deployed agree.
+7. **In the API.** `app/routers/reports.py::get_engineer_detail`, `dependencies=[STAFF_ONLY]`
+   — an employee is refused here, not by the absence of a link. →
+   `app/services/reporting.py::engineer_detail` → `app/repositories/reports.py`, which
+   counts resolved/closed/reopened in the window and joins subcategories to their parent
+   group for the breakdown.
+8. **Back in the browser.** TanStack Query caches under `queryKeys.reports.engineerDetail`.
+   `PeriodScopeHeading` reads its dates from **`report.data.window`** — the server's, not
+   the picker's — except on this screen, where `datesShownElsewhere` swaps the sentence
+   for the dateless `ScopeLabel` because the control is an inch away.
+9. **The chart.** `BreakdownChart` is given eight rows and no colours, so
+   `foldToCategoricalSlices` takes the top three in the validated order and folds the rest
+   into one neutral. The table twin still gets all eight, with their links.
+10. **Now the reader picks "Last 7 days".** `DashboardFilterBar`'s select calls
+    `setFilters({ rangeId: '7d' })`. `useDashboardFilters` deletes only its own
+    parameters from a copy of the current query string, writes `range=7d`, and
+    `setSearchParams(…, { replace: true })`. The ticket table's `status` and `page`
+    survive, which is D62.
+11. **What re-renders.** `periodParams` changes → the report's query key changes → the
+    tiles and the pie refetch and move. The live queue's key did not change, so it does
+    not. That is the split the two scope labels are describing, made true by the query
+    keys rather than by a comment.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which query parameters a filter hook may rewrite | `features/dashboard/useDashboardFilters.ts`, `features/incidents/useIncidentFilters.ts` | `OWNED_PARAMS` in each |
+| A calendar day is local midnight, not UTC midnight | `display/time.ts` | `parseCalendarDay`, and the three helpers built on it |
+| What a date picker may write, and when | `components/DateRangeFields.tsx` | `serialise` — nothing until the picker says it is a date |
+| How a date range is printed and typed in a field | `components/DateRangeFields.tsx` | nothing — the adapter decides, and no caller may override it (D70) |
+| Which clicks a clickable table row declines | `components/rowNavigation.ts` | `useRowNavigation` |
+| Which surface gets which click mechanism | `components/rowNavigation.ts`, `components/stretchedLink.ts` | tables the first, cards the second (D55, D58 §5.5) |
+| Who may filter by engineer | `features/incidents/IncidentFilterBar.tsx` | `mayFilterByEngineer`; the API enforces `GET /engineers`, not the filter |
+| Which controls a screen's preset makes pointless | `features/incidents/IncidentFilterBar.tsx` | `fixedByPreset` |
+| Whether a filter gets a chip | `features/incidents/AppliedFilterChips.tsx` | only where the reader has no control |
+| How many colours a categorical pie may use | `features/dashboard/chartPalette.ts` | `CATEGORICAL_SLICES`, `foldToCategoricalSlices` |
+| Whether a chart folds | `features/dashboard/BreakdownChart.tsx` | `slices` — a caller's own colours mean no fold |
+| Which half of a screen a widget belongs to | `features/dashboard/ScopeHeading.tsx` | `ScopeLabel`, `SCOPE_MARKS` |
+| Whether a period heading states its dates | `features/dashboard/ScopeHeading.tsx` | `datesShownElsewhere`, default false |
+| Whether a ticket list is a page or a section | `features/incidents/IncidentsPage.tsx` | `embedded` |
+| Every table's row height | `theme.ts` | `MuiTableCell.styleOverrides.sizeSmall` |
+
+### 5. How to change it
+
+- **To add a date range to a fourth screen:** render `DateRangeFields` with two
+  `YYYY-MM-DD` strings and an `onChange`. If that screen stores instants, convert with
+  `startOfDayInstant` / `endOfDayInstant` / `calendarDayOf` from `display/time.ts` — do
+  not write the conversion again. Lay the two fields out yourself; the component is a
+  fragment.
+- **To add a query parameter to a filter hook:** add it to that hook's `OWNED_PARAMS` in
+  the same edit, or it will be dropped the next time the *other* hook writes.
+- **To make a new table's rows clickable:** `const openRow = useRowNavigation()`, then
+  `onClick={(event) => openRow(event, path)}` and `sx={{ cursor: 'pointer' }}`. Keep one
+  real link in the row. For a card, use `stretchedLink` instead — all three of its pieces.
+- **To add a control to the ticket filter bar:** put it in `FilterControls`, and if a
+  screen's preset could fix its value, add that to `fixedByPreset` — otherwise it will
+  write the URL and change nothing.
+- **To make a chart a pie:** pass `shape="pie"`. Supply per-row colours only if the rows
+  are an ordered scale; otherwise pass none and let it fold.
+- **To change every table's density:** `theme.ts`, `MuiTableCell`. It reaches five
+  screens, so look at all of them.
+
+### 6. Gotchas
+
+- **The owner's review changed four things here; read D70 beside this section.** The
+  30/70 split and the two ticket columns, the date pickers' format override removed, the
+  per-section focus ring removed with nothing put back, and the escalated flag moved
+  ahead of the date range. The reasoning in each case is in the log, and two of them were
+  only findable in a browser.
+- **`frontend/src/assets/` was not tracked by git.** The upstream Python `.gitignore`'s
+  "Flask stuff" block carries a bare `assets`, which matches a directory of that name at
+  any depth. `git add` was the only thing that would ever have said so. Un-ignored
+  narrowly, and the directory has to be un-ignored before its contents because git does
+  not descend into an excluded directory to find a negation inside it.
+- **`theme.ts` does not reach a date picker.** Its field slot renders
+  `MuiPickersTextField`, a different component from `MuiTextField`, so `defaultProps`,
+  `styleOverrides` and `variants` keyed on the latter never apply. The fix a reader would
+  reach for first — editing the theme — does nothing.
+- **jsdom always renders the *mobile* date picker.** `test/viewport.ts`'s `matchMedia`
+  stub understands `min-width`/`max-width` only, so `@media (pointer: fine)` is false.
+  Unit tests exercise the right value contract; the desktop popper has no test and was
+  checked by eye.
+- **jsdom cannot test a stretched link.** No layout, no hit testing, so an overlay with
+  no geometry is never what a click meets. The three pieces are asserted directly
+  instead — including `z-index` on the actions, which is the only way to catch the
+  failure the arrangement exists to prevent.
+- **A browser check can report a failure that is not there.** `page.mouse.click` takes
+  *viewport* coordinates; the attention panel was two thousand pixels down the page, so
+  the first click landed on nothing and looked like a broken overlay.
+- **A `<Typography>` rendered with `false` inside it is still a box.** Its margin left
+  eight pixels of unexplained gap, which is why `note === false` renders nothing at all
+  rather than an empty element.
+- **`sx={[a, b]}` does not compile when `a` is typed `SxProps<Theme>`.** An element of
+  the array form may not itself be an array, and that annotation says it might be.
+  `satisfies SxProps<Theme>` checks the same thing and keeps the literal type.
+- **The axe scan would not have caught two `h1`s.** `page-has-heading-one` is a
+  best-practice rule, excluded by the suite's `wcag2a`/`wcag2aa` filter, and it fires on
+  *none* rather than on two.
+- **`resolvePeriod` used to throw on a hand-edited URL.** It appended `T00:00:00` to
+  whatever the query string held, and `new Date('nonsenseT00:00:00').toISOString()`
+  raises `RangeError` — which took the whole dashboard to the error boundary.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Adapter (date)** | The shim between MUI's pickers and a date library. `AdapterDayjs` is ours; one `LocalizationProvider` at the root supplies it to every picker. |
+| **dayjs** | A small date library, the alternative to date-fns here. Named in BUILD-PLAN §1 and what MUI's examples use. |
+| **`satisfies`** | A TypeScript operator that checks a value against a type *without* widening the value to it — so a style fragment stays a concrete object and can be composed. |
+| **Stretched link** | One real `<a>` grown over a card by an absolutely positioned `::after`, with the buttons lifted above it. Keeps the markup valid and gives one tab stop (D55). |
+| **Owned parameter** | A query-string key a hook may rewrite in full. Everything else in the URL belongs to a co-tenant and is carried across (D62). |
+| **Fold (a pie)** | Keeping the top few categories and collapsing the rest into one neutral slice, so a chart never uses more colours than its palette validated. |
+| **All-pairs chart** | One where every mark touches every other — a pie, because each slice touches two neighbours and the legend. It is why three colours is the cap and not six. |
+| **Relief case** | A palette validator's term for a colour that fails a contrast gate but is legal because labels or a table view carry the meaning instead. |
+| **Preset (a list screen)** | The API filters that make a screen what it is — `{ mine: 'assigned' }` for My queue. Applied *after* the reader's filters so a screen cannot be filtered into being a different screen. |
+
+## Phase S4 — Similar-ticket suggestions, and "I'm affected too"
+
+*The stretch item that answers a problem the brief itself names. Its business case is
+one sentence: the questionnaire asks **where** before it asks for a **title**, so a
+duplicate can be caught before anybody has typed anything or invested effort worth
+abandoning.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/repositories/incidents.py` | `list_live_suggestions`, `list_resolved_suggestions`, `_specificity_band`. Reuses the existing visibility statement and filters; no new search machinery. |
+| `app/services/incident_service.py` | `live_suggestions` — assembles both lists and their caps. |
+| `app/routers/incidents.py` | `GET /incidents/suggestions`, declared **before** `/{incident_id}`; `POST`/`DELETE /incidents/{id}/watchers`. |
+| `app/schemas/incident.py` | `SuggestionMatch`, `SUGGESTION_SPECIFICITY`, `SuggestionQuery`, `LiveSuggestion`, `ResolvedSuggestion`, `IncidentSuggestions`, `WatchStatus`; `is_watching`/`watcher_count` on `IncidentRead`; `allows_watchers` on `CategorySummary`. |
+| `app/models/watcher.py` | **New.** `IncidentWatcher`, keyed on the pair. No `TimestampMixin` — nothing on the row can change. |
+| `app/models/category.py` | `allows_watchers`. |
+| `app/models/enums.py` | `NotificationType.WATCHED_RESOLVED`, `ACTIVE_INCIDENT_STATUSES`. |
+| `app/notifications.py` | `Audience.WATCHER`, `CAPACITY_HOLDERS`, `users_in_capacity`, the `WATCHED_RESOLVED` rule and `_is_a_resolution`. |
+| `app/services/watchers.py` | **New.** `status_of`, `add`, `remove` — one function computes `{watching, watcher_count}` for every caller. |
+| `app/services/categories.py`, `app/schemas/category.py` | The flag is admin-editable, and refused on a group. |
+| `app/seed/categories.py` | `shared_subcategories` on `CategoryGroupSeed` — the mapping keyed on `(group, subcategory)`. |
+| `app/seed/demo.py` | Watchers in the demo world, and the notification replay that goes with them. |
+| `alembic/versions/0006_watchers.py` | **New.** The table, the column, the enum member, and a one-time backfill of the 17 pairs. |
+| `api/incidents.ts`, `api/types.ts`, `api/queryKeys.ts` | `fetchIncidentSuggestions`, `watchIncident`, `unwatchIncident`, the mirrors, and a key under the `['incidents']` prefix. |
+| `features/incidents/SuggestionPanel.tsx` | **New.** The panel, its two groups, the match chip and the subscribe control. |
+| `features/incidents/watchers.ts` | **New.** `allowsWatchers(tree, categoryId)` — for the screen that has no ticket yet. |
+| `features/incidents/ReportPage.tsx` | The panel, between questions 3 and 4. |
+| `features/incidents/IncidentDetailPage.tsx` | The watch toggle, reading the flag off the ticket. |
+
+Decisions: [D67](DECISION-LOG.md#d67--s4-part-1-suggesting-the-ticket-somebody-is-about-to-duplicate),
+[D68](DECISION-LOG.md#d68--s4-part-2-im-affected-too-and-the-audience-more-than-one-person-holds).
+
+### 2. Why it is shaped this way
+
+**Specificity and recency are two ORDER BY terms and never one score.** Blended, a
+week-old exact-seat match loses to something vague from this morning — and those are
+different claims. The band integer is `SELECT`ed as well as sorted on, indexed into
+`SUGGESTION_SPECIFICITY`, so the number the rows are ordered by and the `match` word the
+response carries are one fact read twice.
+
+**`match` describes the overlap, not either side's precision.** A request with no seat
+can never yield a SEAT match, even when the candidate has one: the strongest true thing
+you can say to that reporter is "somebody reported this on your floor".
+
+**Floor and seat rank; only category and building filter.** Making them `WHERE` clauses
+is the mistake that empties the panel for the first person to report a fault at their
+own desk.
+
+**`location_detail` could not have been the watcher flag**, and the two counter-examples
+are why: Software is BUILDING-level and an operating-system fault is one person's;
+Hardware is FLOOR-level and a printer is shared while a keyboard is not. Precision of
+location and sharedness of a problem are different questions, so the flag is its own
+per-subcategory column.
+
+**The suggestion panel is advisory and says so.** A false positive that stops a real
+report is far worse than a duplicate, and a panel that reads as an obstacle gets routed
+around by people who then stop reporting at all.
+
+### 3. How the pieces connect
+
+**An employee chooses "Temperature/HVAC" and "Level 3", presses "I'm affected too", and
+is told weeks later when it is fixed.**
+
+1. **`ReportPage`** holds five `useState` answers. Choosing a subcategory sets
+   `categoryId`; completing the location sets `location`. The panel is mounted after
+   question 3 and *revealed* with `showDetails`.
+2. **`useIncidentSuggestions`** is `enabled` on subcategory **and** building — so for a
+   FLOOR- or SEAT-level group the request goes out when the building is chosen, before
+   the location is complete, and the answer is usually in hand when the panel opens.
+3. `api/incidents.ts` → `GET /api/v1/incidents/suggestions?category_id&building_id&floor_id`.
+4. **`routers/incidents.py`** — any signed-in user; the route is declared before
+   `/{incident_id}` or the word `suggestions` is parsed as a UUID.
+5. **`repositories/incidents.py`** runs two queries over the ordinary visibility
+   statement: one restricted to `ACTIVE_INCIDENT_STATUSES`, one to resolved rows that
+   **have** a `resolution_summary`. Both order by the specificity band, then recency.
+6. **`SuggestionPanel`** draws two groups. Each card leads with a `MatchChip` — filled
+   for SEAT, outlined otherwise — and the reference is the link, opening in a **new
+   tab**, because following it in place would unmount the form and lose five answers.
+7. **The subscribe control** appears only where `allowsWatchers(tree, categoryId)` is
+   true. Pressing it → `POST /incidents/{id}/watchers` → `services/watchers.add` →
+   `ON CONFLICT DO NOTHING` → `status_of` → `{watching: true, watcher_count: 3}`, and the
+   card says "We'll keep you posted. 3 people are affected."
+8. **Weeks later an engineer resolves that ticket.**
+   `services/incident_service.perform_transition` calls `notification_service.record`
+   twice, unconditionally: `STATUS_CHANGED`, then `WATCHED_RESOLVED`.
+9. **`app/notifications.py`** decides both. `WATCHED_RESOLVED` carries
+   `applies=_is_a_resolution`, so it fires on RESOLVED and on nothing else.
+   `users_in_capacity(WATCHER, incident)` reads `incident.watchers` — an attribute,
+   eager-loaded by `_detail_loaders()`, no query — and `_the_watchers` drops anybody who
+   is already the reporter or the assignee.
+10. **The inbox.** One row per watcher, message stored verbatim; the bell's badge picks
+    it up on its next thirty-second poll.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How a suggestion is ranked | `app/repositories/incidents.py` | `_specificity_band` + the recency term per list |
+| What the three bands mean | `app/schemas/incident.py` | `SUGGESTION_SPECIFICITY`, `SuggestionMatch` |
+| Which statuses count as "still open" | `app/models/enums.py` | `ACTIVE_INCIDENT_STATUSES` |
+| That a resolved suggestion must have a summary | `app/repositories/incidents.py` | the `WHERE`, not a later filter |
+| Which subcategories may be subscribed to | `categories.allows_watchers` | seeded by `app/seed/categories.py`, backfilled once by `0006` |
+| That the seed never overwrites an admin's edit | `app/seed/categories.py` | it sets the flag only on rows it inserts |
+| Who is told when a ticket resolves | `app/notifications.py` | the `WATCHED_RESOLVED` rule + `_the_watchers` |
+| When that rule fires | `app/notifications.py` | `_is_a_resolution` — RESOLVED only, never CLOSED |
+| That one person gets one notification | `app/notifications.py` | `already_told` in `plan()`, **plus** `_the_watchers`' exclusion across two calls |
+| Whether subscribing is allowed | `app/services/watchers.py` | `add` raises `WATCHERS_NOT_ALLOWED`; `remove` is ungated |
+| `watching` / `watcher_count`, everywhere | `app/services/watchers.py` | `status_of` |
+| Whether the UI offers the control (no ticket yet) | `features/incidents/watchers.ts` | `allowsWatchers` |
+| Whether the UI offers it (ticket in hand) | `features/incidents/IncidentDetailPage.tsx` | `ticket.category.allows_watchers` |
+
+### 5. How to change it
+
+- **To make a subcategory shared:** an admin edits it. To change the *starting* values,
+  edit `shared_subcategories` in `app/seed/categories.py` — but note that only affects
+  databases seeded after the change; an existing one keeps whatever it has, on purpose.
+- **To add a fourth specificity band** (same building *and* same reporter, say): add it
+  to `SUGGESTION_SPECIFICITY`, add its `WHEN` to `_specificity_band` in the same order,
+  and the response's `match` follows without another edit.
+- **To notify watchers of something else:** add a rule to `RULES` with a
+  `Audience.WATCHER` message and its own `applies`, and call `record` for it. Do not add
+  an audience to an existing rule unless every audience on that rule wants the same
+  condition.
+- **To give a new audience more than one person:** add a lookup to `CAPACITY_HOLDERS`
+  returning a tuple. `plan()` needs no change.
+
+### 6. Gotchas
+
+- **`ALTER TYPE … ADD VALUE` and one transaction.** PostgreSQL will not let a newly
+  added enum value be *used* in the transaction that added it, and Alembic runs a
+  revision in one. Adding it is fine; `0006` adds `WATCHED_RESOLVED` and writes no row
+  with it. The downgrade **cannot remove it** — the table and column go and come back,
+  the enum member stays, and the re-upgrade is clean only because the `ADD VALUE` is
+  written `IF NOT EXISTS`.
+- **The backfill runs against an empty table in every test run**, so a statement that
+  matched nothing would be indistinguishable from success. That is the D24/D25 shape
+  exactly, and there is a test that applies the backfill to real rows.
+- **`resolved_at` is nullable.** A ticket resolved → reopened → closed keeps its summary
+  and loses its timestamp, so the resolved list sorts `NULLS LAST` rather than assuming.
+- **The category tree has no deactivated categories in it.** Any screen holding a ticket
+  must read `incident.category.allows_watchers` rather than looking its subcategory up,
+  or a retired subcategory silently takes the toggle away from people already watching.
+- **A suggestion link opens in a new tab**, alone among ticket links in this
+  application. Following it in place unmounts `ReportPage` and the browser's back button
+  restores the route, not the five answers.
+- **`already_told` spans one `plan()` call.** A resolution fires two rules, so "one
+  person, one notification" needed an exclusion in `_the_watchers` as well.
+- **Adding a `NotificationType` member breaks `test_it_fills_an_inbox`**, which asserts
+  the demo inbox covers the whole enum. That is the test doing its job: a kind of
+  notification the demo world never produces is one nobody has looked at.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Watcher** | Somebody who pressed "I'm affected too" on a ticket they did not report. Told when it is **resolved**, and nothing else. |
+| **Specificity band** | Which of same-seat / same-floor / same-building a suggestion matched on. An absolute sort term, and the `match` field, from one tuple. |
+| **`ON CONFLICT DO NOTHING`** | PostgreSQL's "insert unless the key already exists". Closes the read-then-write window a double-clicked button lands in. |
+| **Backfill** | A migration statement that writes values into rows that already existed. `0006`'s runs once, when the column is created, so it cannot overwrite a decision. |
+| **Capacity** | The role somebody holds *on one ticket* — reporter, assignee, watcher. Not their role in the application. |
+| **Precondition (`applies`)** | A condition on a whole notification rule, checked before any recipient is worked out. What makes `WATCHED_RESOLVED` fire on one status and not on five. |

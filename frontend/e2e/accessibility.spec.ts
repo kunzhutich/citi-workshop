@@ -342,7 +342,15 @@ test.describe('what a screen reader is given instead of a picture', () => {
     // Each chart is one labelled image rather than a few hundred unlabelled
     // SVG nodes. `role="img"` also makes the subtree presentational, so the
     // axis ticks are not read out in emission order.
-    const charts = adminPage.getByRole('img');
+    //
+    // **Scoped to `main`, since R7.** This used to be every `role="img"` in
+    // the application, under a comment saying that all of them were charts.
+    // That stopped being true the moment the app bar's wordmark became the
+    // ACME mark: a real `<img>`, correctly named "ACME Facilities", and not a
+    // chart. Narrowing to the content region keeps the claim this test is
+    // actually making — every image a screen reader meets *inside a screen*
+    // is a chart and says so — and still fails if a chart loses its label.
+    const charts = adminPage.getByRole('main').getByRole('img');
     await expect(charts, 'the dashboard should have drawn its charts').not.toHaveCount(0);
     for (const chart of await charts.all()) {
       const label = await chart.getAttribute('aria-label');

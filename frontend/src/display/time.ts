@@ -7,6 +7,13 @@
  *
  * `now` is a parameter rather than a call to `Date.now()` inside, so a test can
  * state the moment it is measuring from instead of arranging for one.
+ *
+ * The last three functions go the other way and are not rendering at all: they
+ * convert between an instant and the calendar day it falls on, which is the
+ * arithmetic a date picker forces on any filter whose API takes instants. They
+ * live here because the rule they all depend on — that a calendar day means
+ * local midnight and not UTC midnight — is `parseCalendarDay`'s, and a second
+ * copy of that rule is exactly the off-by-one day its comment describes.
  */
 
 const MINUTE = 60_000;
@@ -133,4 +140,62 @@ export function formatDayLong(day: string): string {
     month: 'short',
     year: 'numeric',
   });
+}
+
+/**
+ * A calendar day as the instant its local day begins.
+ *
+ * For a filter that is stored as an instant but asked for as a day. The ticket
+ * list's `created_from` is one: the same parameter carries a dashboard window
+ * computed to the second, and the API compares it against `created_at` with
+ * `>=`. Someone who picks 23 September means that day from its first minute in
+ * their own zone, so the day is resolved through `parseCalendarDay` rather than
+ * by pasting `T00:00:00Z` on the end of it.
+ *
+ * `useDashboardFilters.ts` had two private functions of this shape, written
+ * before this module had these, and now calls these instead. It keeps a guard
+ * of its own around them: its two ends come out of the address bar, where a
+ * hand-edit can leave something that is not a date, and these helpers throw on
+ * one rather than guessing. Deciding what an unreadable filter means belongs
+ * to the query being built, not to the arithmetic.
+ */
+export function startOfDayInstant(day: string): string {
+  return parseCalendarDay(day).toISOString();
+}
+
+/**
+ * A calendar day as the last instant of its local day.
+ *
+ * The milliseconds are the point. `created_to` is compared with `<=`, so a day
+ * left at its own midnight would exclude every ticket reported during the day
+ * the reader named — which is the day they were asking about.
+ */
+export function endOfDayInstant(day: string): string {
+  const end = parseCalendarDay(day);
+  end.setHours(23, 59, 59, 999);
+  return end.toISOString();
+}
+
+/**
+ * The local calendar day an instant falls on, as `YYYY-MM-DD`.
+ *
+ * The way back, for a date picker that has to show what a stored instant means.
+ * **Not `iso.slice(0, 10)`, and not `toISOString().slice(0, 10)`** — both read
+ * the UTC day, so a filter widened to a local day that began at 07:00 UTC comes
+ * back as the day before in any zone east of Greenwich, and the picker would
+ * show a date the reader never chose.
+ *
+ * `''` for anything unparseable, `''` included, because `''` is what a picker
+ * takes for "no date". "The instant in your address bar is malformed" is not
+ * something a reader looking at a filter bar can act on; an empty field says
+ * the same thing in a form they can.
+ */
+export function calendarDayOf(iso: string): string {
+  const value = new Date(iso);
+  if (Number.isNaN(value.getTime())) {
+    return '';
+  }
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${value.getFullYear()}-${month}-${day}`;
 }

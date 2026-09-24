@@ -134,19 +134,30 @@ class NotificationType(StrEnum):
     ticket being created, a priority being edited and an escalation being
     *raised* all write events and send nobody a notification. Which capacity
     hears about each of these is decided in ``app/notifications.py``.
+
+    It is also not a list of *triggers*. WATCHED_RESOLVED and STATUS_CHANGED
+    are both caused by the same action — a ticket moving — and are two members
+    because they are told to different people for different reasons.
     """
 
     STATUS_CHANGED = "STATUS_CHANGED"
     ASSIGNED = "ASSIGNED"
     NOTE_ADDED = "NOTE_ADDED"
     ESCALATION_CLEARED = "ESCALATION_CLEARED"
+    #: A ticket somebody subscribed to with "I'm affected too" was resolved.
+    #: Separate from STATUS_CHANGED rather than an audience on it, because the
+    #: two triggers differ: the reporter and the assignee hear about every
+    #: move, and a watcher hears about exactly one. See ``app/notifications.py``.
+    WATCHED_RESOLVED = "WATCHED_RESOLVED"
 
 
 #: PostgreSQL type name -> Python enum. The single source of truth for which
 #: enum types exist. Revision 0001 creates and drops every type listed here at
 #: the time it was written; a type added later is created by the migration that
 #: adds it (``notification_type`` by revision 0005), because 0001 has already
-#: run everywhere it is ever going to run.
+#: run everywhere it is ever going to run. A *member* added later is likewise
+#: an ``ALTER TYPE ... ADD VALUE`` in its own revision (WATCHED_RESOLVED by
+#: revision 0006), never a quiet edit to the one that created the type.
 ENUM_TYPES: dict[str, type[StrEnum]] = {
     "user_role": UserRole,
     "engineer_level": EngineerLevel,

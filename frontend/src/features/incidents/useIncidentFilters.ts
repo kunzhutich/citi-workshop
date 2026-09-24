@@ -32,20 +32,22 @@ export interface IncidentFilters {
   page: number;
 
   /**
-   * The four filters below have no control on the filter bar.
+   * The four filters below arrived from the dashboard's links rather than from
+   * the filter bar.
    *
    * They exist because M7's dashboard links into this list, and a link is only
    * honest if the list it opens really is the set of tickets the tile counted.
    * A KPI tile reading "Unassigned · 13" over a thirty-day period has to land
-   * on thirteen tickets, which needs an assignee filter and a date range that
-   * the bar never offered.
+   * on thirteen tickets, which needs an assignee filter and a date range the
+   * bar did not offer.
    *
-   * They are not hidden. `AppliedFilterChips` renders one removable chip for
-   * each of them above the list, so a reader who arrived from a chart can see
-   * exactly what was applied on their behalf and take it off. Giving them full
-   * controls in the bar was the alternative: rejected because a subcategory
-   * select and two date pickers are four more controls for everyone, to serve
-   * a case that only ever arrives by link.
+   * M7 gave them no controls at all and one removable chip each, on the
+   * grounds that four more controls for everyone was a high price for a case
+   * that only ever arrives by link. R7 revisited that for two of them: the
+   * reported-between range is a control for everybody now, and the assignee is
+   * one for the readers who may read the engineer roster. `AppliedFilterChips`
+   * draws a chip only where the reader has no control for the filter, so the
+   * subcategory — which still has none — is the one that always has a chip.
    */
 
   /** A subcategory, from drilling into a category group's chart. */
@@ -98,7 +100,7 @@ export function useIncidentFilters(): IncidentFilterControls {
         next.page = 1;
       }
 
-      const params = new URLSearchParams();
+      const params = keepForeignParams(searchParams);
       if (next.q) {
         params.set('q', next.q);
       }
@@ -140,12 +142,16 @@ export function useIncidentFilters(): IncidentFilterControls {
       // user and the page they arrived from.
       setSearchParams(params, { replace: true });
     },
-    [filters, setSearchParams],
+    [filters, searchParams, setSearchParams],
   );
 
+  // Clear drops this list's own filters and nothing else. On the engineer
+  // page the address bar also carries that screen's period, and a Clear
+  // button under a ticket table that silently reset the charts above it would
+  // be doing something nobody asked for.
   const reset = useCallback(() => {
-    setSearchParams(new URLSearchParams(), { replace: true });
-  }, [setSearchParams]);
+    setSearchParams(keepForeignParams(searchParams), { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const activeCount =
     (filters.q ? 1 : 0) +
@@ -161,6 +167,50 @@ export function useIncidentFilters(): IncidentFilterControls {
     (filters.createdFrom || filters.createdTo ? 1 : 0);
 
   return { filters, setFilters, reset, activeCount };
+}
+
+/**
+ * Which query parameters this hook owns, and therefore rewrites in full.
+ *
+ * Everything else in the address bar belongs to somebody else and is carried
+ * across untouched. Both filter hooks used to build a *fresh* `URLSearchParams`
+ * from their own view of the world, which is correct on a screen where one of
+ * them is the only writer — and every screen was, until R7 put a ticket list
+ * inside the engineer page. There, changing the status filter reset that
+ * screen's period to the default and changing the period dropped the status
+ * filter: two hooks each convinced the URL was theirs alone.
+ *
+ * Stated as the owned set rather than as "merge what changed", because a
+ * filter being *cleared* has to remove its parameter, and a merge cannot tell
+ * "cleared" from "not mine". See the matching list in `useDashboardFilters.ts`.
+ *
+ * `building_id` and `group_id` appear in both lists deliberately: on the one
+ * screen that runs both hooks they are the same filter asked twice, and a
+ * reader who narrows the page to SFO-1 means it for the charts and the table
+ * alike.
+ */
+const OWNED_PARAMS = [
+  'q',
+  'status',
+  'priority',
+  'group_id',
+  'building_id',
+  'is_escalated',
+  'sort',
+  'page',
+  'category_id',
+  'assignee_id',
+  'created_from',
+  'created_to',
+] as const;
+
+/** Every parameter except the ones above, so a co-tenant's state survives. */
+function keepForeignParams(current: URLSearchParams): URLSearchParams {
+  const params = new URLSearchParams(current);
+  for (const name of OWNED_PARAMS) {
+    params.delete(name);
+  }
+  return params;
 }
 
 /**

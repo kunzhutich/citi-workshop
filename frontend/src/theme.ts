@@ -253,6 +253,52 @@ export const theme = createTheme({
           outlineOffset: 2,
         },
         /*
+         * ...and the same fault again on a date field, one level smaller —
+         * but this one needed **no** replacement ring, which took two wrong
+         * answers to find out.
+         *
+         * `@mui/x-date-pickers` builds a field from three `contenteditable`
+         * spans, one per section, each a `role="spinbutton"` and each its own
+         * focus target. The global rule matched precisely those, so clicking a
+         * date drew a 3px brown rectangle around whichever two characters the
+         * reader had landed on. That much is D46's app-bar search box exactly.
+         *
+         * D46's fix was to move the ring out to the field. Tried here, and
+         * wrong on screen both times: the field's floating label sits *on* its
+         * top border (`translate(14px, -9px)`), and an outline paints last, so
+         * a ring on the bordered root drew a line straight through the word
+         * "From", and moving it in to the sections box turned it into a hard
+         * rectangle inside a rounded one — the very shape D46 was written to
+         * remove. Neither is visible to a test: jsdom has no layout, and both
+         * versions passed.
+         *
+         * What the third look found is that **there was never anything to
+         * replace.** Measured on the running app, a focused picker field goes
+         * from a 1px `rgba(0,0,0,0.23)` notch to a **2px `primary.main`** one —
+         * and so does every other outlined field in this application, none of
+         * which wears an outline ring either. The picker was already showing
+         * focus the way the rest of the app does; the global rule was adding a
+         * second, worse indicator on top of it. So this rule takes that away
+         * and stops.
+         *
+         * Which section is active is shown by the component too:
+         * `syncSelectionToDOM` puts the browser's own text selection over the
+         * active section's characters as focus reaches it. That is what a
+         * reader arrowing from month to day follows.
+         *
+         * **The one thing to be careful of** is that this is a suppression
+         * with no replacement, which is what S6 was raised to stop. It is
+         * defensible only because the indication it uncovers is real,
+         * measured, and the same one the whole application uses. If Material
+         * UI ever stops thickening that notch, this becomes a field with no
+         * focus indication at all — which is why `DateRangeFields.test.tsx`
+         * asserts the focused field is marked `Mui-focused`, the class that
+         * notch is drawn from.
+         */
+        'body .MuiPickersSectionList-sectionContent:focus-visible': {
+          outline: 'none',
+        },
+        /*
          * Honour the operating system's reduced-motion setting. Everything
          * here animates for polish rather than meaning, so there is nothing to
          * lose by turning it off for someone who asked.
@@ -324,6 +370,45 @@ export const theme = createTheme({
     },
     MuiCard: {
       defaultProps: { variant: 'outlined' },
+    },
+    MuiTableCell: {
+      styleOverrides: {
+        /*
+         * Room to breathe in every table at once.
+         *
+         * Material UI's dense cell is `6px 16px`, and every table in this
+         * application is `size="small"` — the ticket list, the engineer
+         * roster, the users page's sections, the facilities floors, and the
+         * dashboard's workload, blocked-by-reason, flow and breakdown tables.
+         * At 6px a row carrying two chips is 24px of chip in a 37px row,
+         * which reads as a wall rather than as a list of things.
+         *
+         * **Here and not in eight `sx` props**, per CLAUDE.md: a default is
+         * the only version of this change that cannot be half-applied. The
+         * cost of that is the other side of the same coin — it lands on five
+         * screens at once, including three nobody asked about — so all of
+         * them were looked at, at 1440px and at 375px, rather than only the
+         * ticket list this started from.
+         *
+         * **Vertical only.** The horizontal padding is what sets a table's
+         * column rhythm, and `IncidentTable`'s fixed column widths are
+         * measured against it (`COLUMN_WIDTHS`); widening it would push
+         * Assignee and Updated off a 1440px screen, which is the exact defect
+         * that comment records having fixed.
+         *
+         * **The same on a phone, deliberately.** More row height is not
+         * automatically better at 375px — it is more scrolling — but the
+         * tables that survive to a phone are the ones whose cells *wrap*: a
+         * roster row is a name over an email over chips, and cramped
+         * horizontal rules between wrapped blocks is where the density read
+         * worst, not best. The ticket list does not appear here at all below
+         * 900px; it is `IncidentCardList` there.
+         */
+        sizeSmall: ({ theme: current }) => ({
+          paddingTop: current.spacing(1.25),
+          paddingBottom: current.spacing(1.25),
+        }),
+      },
     },
     MuiDrawer: {
       styleOverrides: {

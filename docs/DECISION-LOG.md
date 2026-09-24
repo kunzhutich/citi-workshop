@@ -3337,3 +3337,1121 @@ server still holds a pool against.
 
 It is local only. Aurora is `publicly_accessible = false` and unreachable from
 here, which is the intended blast radius.
+
+## D60 — Date pickers, the library that came with them, and what they cost
+
+**§A of the phase brief.** `DashboardFilterBar.tsx` was the only file in the
+application with `type="date"` inputs. It is used by the admin dashboard *and*
+the engineer page, and §C adds the ticket lists, so it was treated as a shared
+component from the start rather than as the dashboard's.
+
+### dayjs, and one `LocalizationProvider`
+
+`@mui/x-date-pickers` needs a date library. **dayjs**, on three grounds and
+none of them taste: it is the smaller of the two serious candidates, it is what
+`BUILD-PLAN.md` §1 named for this project before anything was written, and it
+is the adapter MUI's own examples use, so the next person to read this file
+finds the documentation matching it.
+
+**One provider, at the root in `main.tsx`**, and mirrored in
+`test/renderWithProviders.tsx`. Not one per screen: every picker in the
+application should parse and print dates the same way, and a provider per
+screen is how two screens quietly end up on different adapters. The mirror is
+not optional either — without it a picker *throws* rather than rendering
+wrongly, so any test of a screen with one would fail on the provider instead of
+on the screen.
+
+### `components/DateRangeFields.tsx`, and where the conversion lives
+
+The shared thing is **not the markup, it is the value contract**: two
+`YYYY-MM-DD` strings in, two out, `''` for unset, and nothing written while a
+date is still being typed. No `Dayjs` crosses the boundary in either
+direction — the moment one does, every caller has to reason about timezones and
+about which date library this project uses.
+
+That matters because the two consumers store ranges differently. The dashboard
+keeps calendar days in the URL, deliberately, so a link means the same period
+in another timezone; the ticket list keeps **full ISO instants**, because the
+same parameter carries a dashboard window computed to the second. Each converts
+at its own edge (§C put the day↔instant helpers in `display/time.ts`, beside
+`parseCalendarDay`, whose rule they depend on) rather than this component
+growing a flag.
+
+It renders a **fragment, not a wrapper**, so its two fields are two items of
+whatever layout the caller is running — a flex row on the dashboard, a grid
+column each inside `FilterRow`. A wrapper would make the pair one grid item.
+
+### Two things found by building it
+
+**The theme does not reach a picker, and the reason is not the obvious one.**
+`theme.ts` sets `MuiTextField` `defaultProps: { fullWidth: true, size:
+'medium' }`, and the expectation is that a picker's field inherits it. It does
+not: that slot renders `MuiPickersTextField`, a *different* component, so
+nothing keyed on `MuiTextField` reaches it at all. The visible outcome is the
+same — medium is also the picker's own default, so the field stood a size step
+taller than the small selects beside it — which is exactly what makes it worth
+writing down, because the fix a reader would reach for first is editing the
+theme, and that would do nothing. Both `size` and `fullWidth` are stated at the
+component.
+
+**Guarding on the picker's validity alone silently broke keyboard entry.**
+Typing a year fills the last section four times, so the field reports 12 March
+in years 2, 20, 202 and 2026 — and the first three are perfectly good dates
+that would each have gone into the address bar and taken eight report requests
+with them. Refusing them is right; refusing them *against a field driven
+straight off the stored string* is not, because Material UI resets the sections
+when a change is refused, so the month and day already entered were wiped and
+the date could never be finished. Fixed with a draft value held inside the
+component and resynchronised **during render**, the same pattern as
+`IncidentFilterBar`'s search box. Measured: four writes became one.
+
+### The field format is stated, not inherited
+
+dayjs's default locale renders `09/01/2026`, which is the first of September to
+some readers and the ninth of January to others — sitting an inch from a
+heading reading "Counted over Sep 1, 2026 – Sep 20, 2026", the same value
+printed two ways, one of them unreadable. The fields use `DD MMM YYYY`.
+
+Not `formatDate`'s exact output, which follows the reader's own locale and
+cannot here: **a picker's format is also its input grammar**, and a field whose
+section order changed with the browser would be a different control in
+different hands. Unambiguous everywhere beats familiar somewhere. The cost is
+paid once and is that sections fill day-first; digits still type.
+
+### `Collapse`, and the transition budget that already existed
+
+The two pickers are revealed by "Custom range…" through MUI `Collapse` rather
+than appearing and disappearing abruptly. `test/renderWithProviders.tsx`
+already zeroes every transition duration for jsdom — it exists because a
+`Collapse` added in R5 made three tests flaky in a parallel run — so this
+needed no new timeout and none was raised.
+
+`unmountOnExit` is kept, and **not** for the reason it looks like: measured,
+the accessibility tree is empty either way, because `Collapse` hides a closed
+child with `visibility: hidden`. What it actually buys is that a half-typed
+draft is discarded when the range closes.
+
+### What it cost, measured rather than estimated
+
+Built at `b45e7b6` in a throwaway worktree and again on this branch:
+
+```
+                        raw          gzipped
+before   index-*.js   1,318.21 kB    407.81 kB
+after    index-*.js   1,482.30 kB    457.14 kB
+delta                  +164.09 kB     +49.33 kB
+```
+
+That is `@mui/x-date-pickers` plus dayjs, and it is the whole of the phase's
+JavaScript growth to that point. The >500 kB chunk warning was already there
+and still is.
+
+**A correction while measuring:** `CLAUDE.md` records "994 kB raw against 309 kB
+gzipped" beside the CloudFront compression note. That figure is from D37 and
+predates R5 and R6; the baseline before this phase is 1,318 kB / 408 kB. The
+compression decision it supports is unaffected — the ratio is the same — but
+the numbers in that sentence are stale by about a third, and **only the owner
+should edit `CLAUDE.md`**, so it is recorded here instead.
+
+### Not done, and flagged rather than hidden
+
+**jsdom renders the *mobile* picker, always.** `test/viewport.ts`'s
+`matchMedia` stub understands `min-width` and `max-width` and nothing else, so
+`@media (pointer: fine)` is false and `DatePicker` resolves to
+`MobileDatePicker` — a modal, where a desktop browser gets an inline popper.
+The value contract is shared, so the unit tests are testing the right rule, but
+no test covers the desktop popper's appearance or placement. Closed by eye
+instead, in Chromium at 1440px and 375px: the popper anchors under its field,
+picks up the theme's brown for the selected day, and does not collide with the
+filter row. Fixing the stub is a real improvement and a change to a file every
+test in the suite depends on, which is not a thing to do in the tail of a UI
+phase.
+
+## D61 — Three more clickable rows, and the rule moved out of the first one
+
+**§B of the phase brief.** Two mechanisms already existed and each was chosen
+for a written reason: the stretched link of
+[D55](#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job)
+for cards, and a row click handler with the reference left as a real link for
+tables ([D58](#d58--section-5-the-per-persona-screens-and-one-backend-flag) §5.5).
+No third was invented and neither was swapped, which leaves the interesting
+part elsewhere.
+
+| Surface | Mechanism | Because |
+| --- | --- | --- |
+| `IncidentTable` | row `onClick` | a `<table>` |
+| `EngineerRoster` | row `onClick` | a `<table>` |
+| `EngineerWorkloadTable` | row `onClick` | a `<table>` |
+| `NeedsAttentionPanel` | stretched link | flex rows inside a card |
+
+### The rule is in `components/rowNavigation.ts`, and it is a hook
+
+`openRow` lived as a closure inside `IncidentTable` with a twenty-line comment
+above it. Two more tables wanted it, and three copies of one decision is the
+thing this project treats as a defect rather than a style preference.
+
+**A hook, not an exported `shouldIgnoreRowClick` predicate.** What is being
+kept in one place is not only *which clicks to decline* but *that a row click
+navigates at all*; handing out the exceptions and leaving `void navigate(…)` at
+three call sites is half a decision in three files, free to drift from the
+other half. Only the hook is exported, so no call site can take the predicate
+and hand-roll the rest.
+
+**The reasoning moved with it**, rather than staying behind in the file that no
+longer owns the rule. Worth saying because the opposite mistake was made last
+phase — two helpers inserted between a docstring and the function it described,
+type-checking and linting clean while documenting the wrong thing.
+
+**Something learned by deleting the guards one at a time**, and now written in
+the module: the `defaultPrevented` check and the interactive-selector check
+**overlap on anchors and nowhere else**. React Router's `Link` calls
+`preventDefault` before navigating, so a link is held by either guard alone,
+while a `<button>` prevents nothing and is held only by the selector. Delete
+`defaultPrevented` on its own and every test still passes — which is exactly
+how it could be removed in good faith as redundant, and it is not.
+
+### What went, and what replaced it
+
+**The roster's Edit button.** Every field it opened has lived on the engineer's
+own page since §6.1, so it was a second route to one mutation through a modal
+that could show none of the context the page shows. The row opens the page
+instead; Deactivate keeps its own job, because the selector guard declines a
+click that lands on a button.
+
+**`EngineerDialog` became create-only.** Removing the button made its whole
+edit half unreachable: `engineer` was null at the one remaining call site, so
+every `engineer ? … : …` branch, the availability field and the `onUpdate` prop
+were dead — and the call site had to satisfy that required prop with a resolved
+promise for a path nothing could reach. Deleted rather than commented, which is
+also what D59 says the dialog is for: you fill it in once, you get a temporary
+password, you are done.
+
+**`EngineerWorkloadTable`'s docstring was describing the wrong thing.** Its last
+paragraph still said "every engineer's name links to their live queue", which
+§6.1 reversed. Rewritten to the behaviour it now has.
+
+### The attention panel, and the one piece of `clickableCard` that was not taken
+
+`AttentionRow` takes the stretched link: the **reference** is the one real
+anchor and grows over the row, `RowActions` is lifted above the overlay. The
+reference and not the title, because `TicketTitle`'s own rule is that a title
+is always ink — what is clickable is the reference, or the row.
+
+`position: relative` is written inline rather than pulled in with
+`clickableCard`, and the comment says so, so it does not read as forgotten. The
+rest of that bundle is card chrome: its hover rule moves a *card's* border, and
+the only border a row has is the divider it shares with the row below; and its
+`:has(a:hover)` rule suppresses the link underline, which here is the one hover
+affordance a row inside a card has to say it is a target.
+
+**Assign is bigger and vertically centred on desktop only.** On a phone
+`RowActions` already gives every button the row's full width and stacks them
+(§4.5), where a larger button is no easier to hit and centring a full-width
+button means nothing. Both are conditioned on `useBreakpoint`.
+
+### What the tests can and cannot prove, and what closed the gap
+
+**jsdom cannot test the stretched link.** There is no layout and no hit
+testing, so an overlay with no geometry is never what a click meets: clicking
+the middle of a row and watching it navigate would be a test that can neither
+pass nor fail honestly. The three pieces are asserted directly instead —
+including `position: relative; z-index: 1` on the actions, which is D55's "worth
+a test rather than a comment" and is the *only* way to catch it, because a
+jsdom click succeeds whatever the z-index says.
+
+So it was closed in Chromium instead, and the first attempt **reported a
+failure that was not there**: the click missed because `page.mouse.click` takes
+viewport coordinates and the panel was two thousand pixels down the page, so it
+landed on nothing. Scrolled into view and re-measured with
+`document.elementFromPoint`, the overlay is what sits at every probe, and a
+click at 35%/72% of the row opens the ticket at 1440px and at 375px. On the
+phone one probe returns the Assign button rather than the link — which is the
+arrangement working, not failing, and is why the second point was needed to
+tell the two apart.
+
+Recorded because the shape recurs: **a negative result from a harness is a
+claim about the harness until it is checked.**
+
+### What it costs
+
+Text in an attention row can no longer be selected by dragging — the stated
+trade of the pattern, and these rows quote an escalation reason, which is more
+quotable than a ticket card. Accepted, documented at the component, and worth
+the owner's eyes.
+
+A deactivated engineer's Actions cell is now empty rather than holding Edit.
+The column only renders when a screen supplies actions, so it is a blank cell
+and not a missing column.
+
+## D62 — Two filter hooks in one address bar, and who owns which parameter
+
+**Found by building §D4**, which puts a ticket list inside the engineer page.
+That screen is the first to run `useDashboardFilters` and `useIncidentFilters`
+at the same time, and both of them wrote the query string the same way: build a
+**fresh** `URLSearchParams` from this hook's own view of the world and hand it
+to `setSearchParams`.
+
+That is correct on every screen built before now, because on every one of them
+exactly one hook was writing. Put both on one screen and the last writer wins
+outright — changing the date range dropped the list's status filter, and
+changing the status filter reset the period to the default and moved every
+figure on the page. Neither hook would look wrong on its own, which is why this
+is recorded rather than quietly patched.
+
+**Chosen: each hook declares the parameters it owns, and carries the rest
+across untouched.** `OWNED_PARAMS` in each file, deleted from a copy of the
+current query string before that hook writes its own values back.
+
+**Stated as an owned set rather than as "merge what changed", and that is the
+whole decision.** A merge looks simpler and cannot work: clearing a filter has
+to *remove* its parameter, and a merge has no way to tell "the reader cleared
+this" from "this belongs to somebody else". Both are absent from the hook's
+view. The owned list is what makes the difference expressible.
+
+**`building_id` and `group_id` are in both lists deliberately.** On the one
+screen that runs both hooks they are the same filter asked twice, and a reader
+who narrows the page to SFO-1 means it for the charts and for the table
+underneath them. Anything else would put two Building controls on one screen
+disagreeing with each other.
+
+**`reset()` is the case that would have been missed.** The ticket list's Clear
+button called `setSearchParams(new URLSearchParams())`, so on the engineer page
+it would have reset that screen's period as well — a button under a table
+silently changing the charts above it. It clears its own parameters now and
+nothing else.
+
+**What it costs.** Two lists that have to stay in step with the parameters each
+hook reads. A parameter added to one and forgotten in the other is silently
+dropped on the next write, which is the same class of fault this entry exists
+to fix, one level down. Each list carries a pointer to the other, and both are
+directly beneath the hook whose parameters they name.
+
+**Tests.** Five, across
+`features/dashboard/useDashboardFilters.test.ts` and
+`features/incidents/useIncidentFilters.test.tsx`, each asserting both halves —
+that the foreign parameter survives *and* that the hook's own one still
+clears. **Verified by reversion**, per the standing lesson of
+[D24](#d24--a-heading-is-not-a-signal-that-the-data-arrived) and
+[D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it):
+with `keepForeignParams` replaced by `new URLSearchParams()` all five fail, the
+dashboard pair reading `expected null to be 'OPEN'` and `expected null to be
+'4'`, the ticket-list trio `expected null to be '90d'`.
+
+**Reversible.** Yes, in two lines — one per hook.
+
+## D63 — Two filters that already existed, given controls, and the one that was lying
+
+**§C of the phase brief.** A reported-between range for everybody, and an
+engineer filter for admins and leads.
+
+Neither is a new *filter*. `createdFrom`, `createdTo` and `assigneeId` have
+been in `IncidentFilters` since M7, because the dashboard links into this list
+and a link is only honest if the list it opens is the set of tickets the tile
+counted. What they had was no control — M7 judged that four more controls for
+everyone was a high price for a case that only ever arrives by link, and gave
+them removable chips instead. R7 revisits that for two of the three.
+
+### The conversion, and where it lives
+
+The two ends are stored as **full ISO instants** and picked as **calendar
+days**, and those are not the same thing. The instants are not decoration: the
+same parameters carry a dashboard window computed to the second, so the
+conversion has to leave an end the reader did not touch *character for
+character* intact rather than rounding it to a midnight. `DateRangeFields`
+reports only the end that moved, which is what makes that possible, and there
+is a test for exactly it.
+
+The helpers went into `display/time.ts` — `startOfDayInstant`,
+`endOfDayInstant`, `calendarDayOf` — and the reason is stronger than "it is the
+date module". `startOfDayInstant` *is* `parseCalendarDay` plus `toISOString`,
+so writing it there keeps the rule those three depend on — **a calendar day
+means local midnight, not UTC midnight** — in the one place that already owns
+it. `calendarDayOf` reads the **local** day for the same reason: `.slice(0, 10)`
+on an ISO string reads the UTC day, so a filter widened to a local day that
+began at 07:00 UTC comes back as the day before east of Greenwich and the
+picker shows a date nobody chose.
+
+`useDashboardFilters` had two private functions of the same shape, written
+before that module had these. They are gone; it calls the shared ones and
+keeps only its own guard, because deciding that a URL contains something that
+is not a date is a question about the query being built rather than about
+arithmetic.
+
+### The engineer control, and a correction to the brief
+
+The phase brief said `GET /incidents?assignee_id=` answers an employee with
+403. **It does not.** Checked against the running API with two accounts:
+
+```
+employee  GET /incidents?assignee_id=<engineer>   200  + a filtered list
+employee  GET /incidents?created_from=…           200
+employee  GET /engineers                          403  ROLE_NOT_PERMITTED
+junior    GET /engineers                          200
+```
+
+That is not an oversight in the API — `app/routers/incidents.py` says in its
+first line that every signed-in user may read every ticket, because the brief
+wants an employee to be able to check whether a problem is already reported.
+
+So the honest framing, and the one the code carries: **the roster is the
+privileged thing, not the filter.** An employee is not shown the control
+because they could never fill it in — the list of engineers is what they may
+not have — and hiding it spares them a 403 they can do nothing about. A JUNIOR
+or SENIOR engineer *can* read the roster, so their exclusion is not a
+permission at all: it is the same line the Team page draws about who
+distributes work. Both halves are in `mayFilterByEngineer`'s docstring, because
+a comment saying "the API enforces this" would have been false.
+
+The roster request is `enabled`-gated on the same predicate, so a reader
+without the control never issues it, and it asks for the same 100 rows as the
+Team page and the assign dialog so all three share one cache entry.
+
+### The chips rule, generalised
+
+`AppliedFilterChips` existed *because* three filters had no control. Two of
+them now have one, so the rule is stated once and applies to all three:
+
+> **A chip is drawn only for a filter this reader has no control for, and never
+> beside a control showing the same value.**
+
+The date chip is gone outright. The assignee chip survives for everyone the
+engineer control is not drawn for — the employee following a dashboard link
+being exactly the case it was written for. The subcategory still has no control
+anywhere, so its chip is unconditional. The bar computes the rule once and
+passes it down as a boolean rather than letting the chips re-derive it: a chip
+and a control disagreeing about one filter is the failure mode, and two copies
+of the predicate is how you get there.
+
+### The filter that lied, which is the part nobody asked for
+
+`toQuery` applies a screen's preset **after** the reader's filters, deliberately
+— My queue narrowed to somebody else's tickets is not My queue. The
+consequence, once an engineer control exists, is that on `/unassigned`
+(`assignee_id: 'unassigned'`) and `/queue` (`mine: 'assigned'`, which
+`services/incident_service.py` resolves by *overwriting* `assignee_id` with the
+caller's own id) the control moved, the address bar moved, and the list did
+not. A LEAD meets that on two of their three ticket screens.
+
+`IncidentFilterBar` now takes the screen's `preset` and leaves out the controls
+it fixes. **A reading of the preset rather than a list of screens**, so a fifth
+list added next year gets the right bar without anybody remembering the file —
+and the engineer page's embedded list already got it without being thought
+about.
+
+**The inert Status control on `/unassigned` predates R7** and is fixed by the
+same reading. Keeping one lying control beside a fixed one would have been
+harder to explain than either, and the mechanism costs nothing once it exists.
+
+The chips follow: a screen that fixes the assignee draws neither the control
+nor a chip offering to remove it, because those are the same lie twice.
+
+### What is still open
+
+**Nothing hides a filter that is inert for a reason the preset does not
+express.** This fix reads `status`, `assignee_id` and `mine`; a preset that
+pinned something else would need a line here. Stated rather than generalised,
+because three is the whole set today and a framework for one more would be
+harder to read than the line it saved.
+
+## D64 — Table density, set once, and the five screens it reached
+
+**§E of the phase brief:** tables are cramped, the ticket tables worst.
+
+Material UI's dense cell is `6px 16px`, and **every table in this application
+is `size="small"`** — the ticket list, the engineer roster (which the Engineers
+and Team screens share), the users page's sectioned table, the facilities
+floor's places, and the dashboard's workload, blocked-by-reason, flow and
+breakdown tables. At 6px a ticket row carrying two chips is 24px of chip in a
+37px row, which reads as a wall rather than as a list of things.
+
+**One `MuiTableCell` default in `theme.ts`, not eight `sx` props.** CLAUDE.md
+says anything global belongs in the theme, and the reason bites here: a
+per-table `sx` is the version of this change that can be half-applied, and the
+two tables somebody forgets are the two that look broken next to the six that
+do not. `spacing(1.25)`, so it is 10px in the theme's units rather than a
+literal.
+
+The cost is the other side of the same coin — it lands on five screens at once,
+three of which nobody asked about — so all of them were measured and looked at,
+at 1440px and 375px:
+
+| Screen | Table | Row height |
+| --- | --- | --- |
+| Tickets | `IncidentTable` | 37 → **45px** (desktop only; a phone gets `IncidentCardList`) |
+| Engineers, Team | `EngineerRoster` | 55 → **63–73px** |
+| Users | sectioned table | 53 → **61px** data rows |
+| Facilities | places on a floor | 44 → **52px** |
+| Dashboard | workload | 43 → **51px** |
+
+**Vertical padding only.** The horizontal padding sets a table's column rhythm,
+and `IncidentTable`'s fixed `COLUMN_WIDTHS` are measured against it; widening
+it would push Assignee and Updated off a 1440px screen, which is the exact
+defect that file's comment records having fixed once already.
+
+**The same height on a phone, and that was not the obvious answer.** More row
+height at 375px is more scrolling, so the brief was right to flag it. What
+settles it is *which* tables survive to a phone: the ticket list is not one of
+them, and the ones that are — the roster, the users page — are the ones whose
+cells **wrap**. A roster row is a name over an email over a column of
+specialty chips, and cramped horizontal rules between wrapped blocks is where
+the old density read worst rather than best. Looked at: the roster at 375px is
+the screen the change helps most.
+
+**One thing deliberately left alone.** The users page's section header cell
+(`FACILITY ADMINS · 1`) carries its own `py: 1`, so it is now 8px against the
+data rows' 10px where it used to be 8 against 6 — a band that was slightly
+taller than its rows is now slightly tighter. Checked on screen: it reads as a
+tinted band rather than as a row, which is what the background and the
+`overline` type are doing, and the relative heights are not what carries it.
+Adding an override to restore the old order would be styling one table from
+two places to fix something nobody can see.
+
+## D65 — Section F: the mark replaces the word, and the PNG is not the file we were given
+
+**The owner** attached two versions of the ACME mark — black lettering on
+white, white lettering on brown — for the navbar and the login page, "each
+using whichever version has contrast against its background", with one
+constraint: **crop freely, but do not crop out the red peak.**
+
+### The crop, and why the supplied files could not be used as they are
+
+Both files are 1254×1254 with the mark floating in the middle. Trimmed to
+content they are 731×281 and 734×283 — the same mark, 2.6:1, the peak sitting
+above the wordmark. Nothing needed to come off to fit a toolbar, so the peak
+was never in danger: at 2.6:1 a 40px-tall mark is about 104px wide, which is
+less room than the words "ACME Facilities" took.
+
+What did need doing is the background. The navbar is `primary.main` `#73362a`
+and the page behind the login card is `background.default` `#f0eada`; both
+supplied files carry an opaque rectangle of their own. The brown one's
+background samples at `srgb(115,56,44)` against the theme's `(115,54,42)` —
+two levels per channel, invisible — so **recolouring its rectangle to the
+theme's exact brown** was a real option and the simplest one. Rejected: it
+makes the asset depend on a palette token by coincidence rather than by
+reference, and the day somebody adjusts the brown the logo grows a visible
+box. The failure is silent and nobody would look for it in an image.
+
+**Chosen: transparency, extracted differently for each file**, because the two
+are different problems.
+
+- **Dark mark** (content on white): alpha is the distance of the *darkest*
+  channel from white, stretched so the red peak reaches full opacity rather
+  than the 89% its own green channel would imply. Anti-aliasing survives, and
+  the mark composites correctly on any light surface.
+- **Light mark** (content on brown): the same arithmetic does not work, because
+  white lettering and a red peak sit at very different distances from the
+  background and one normalisation cannot serve both — the peak came out at
+  57% opacity. So the flat background is keyed out and **the anti-aliased
+  fringe keeps its brown**. On the surface this version is used on that fringe
+  is invisible; anywhere else it would show as a faint halo, which is a real
+  limitation and the reason the two files are not interchangeable.
+
+Both were then quantised to 64 colours: 101 kB → 14 kB and 52 kB → 10 kB, with
+no visible difference at any size either is drawn at. They are 720px wide,
+which is 2× the largest surface (the login mark at ~104px, so 2× covers a
+retina screen with room over).
+
+### The accessible name is the decision, not a detail
+
+In the app bar the image is the *whole* of a link to home. Its `alt` therefore
+**is** the link's accessible name: `alt=""` leaves a screen reader announcing
+"link" followed by nothing, and "ACME logo" describes the artwork rather than
+the destination. It stays `ACME Facilities`, which is what it always was —
+`AppShell.test.tsx` and two end-to-end specs find home by that exact name, and
+the fact that they still pass unchanged is the evidence the name still
+resolves.
+
+On the signed-out screens the mark replaces an `overline` reading the same
+words rather than joining it, so the company is named once. It is content
+there and not decoration: nothing else on those screens says whose application
+this is, and the heading beneath it says "Sign in".
+
+### What moved that nobody asked to move
+
+`fonts.ts` named weight 700 as "the `overline` on the signed-out screens".
+That `sx={{ fontWeight: 700 }}` was the only explicit 700 in `src/`, and the
+mark removed it. The weight is still asked for — it is
+`typography.fontWeightBold`, which every `<strong>` resolves to and which
+`theme.test.ts` pins — so the import stays and the sentence was corrected.
+Left alone it would have been a comment that is wrong in a file whose entire
+purpose is explaining which weights exist and why.
+
+### What to look at rather than take on trust
+
+The lettering is a hairline, and on the brown bar at 28–40px it reads as a
+light warm grey rather than white. That is the asset, not the rendering, and a
+logotype is exempt from the contrast rules that govern text — but it is dimmer
+than the bell and the menu button beside it, and if the owner wants it louder
+the answer is a different source file, not a CSS filter.
+
+## D66 — The engineer page rearranged, and a pie that had no colours
+
+**§D of the phase brief**, which is a layout rebuild rather than four edits, so
+it went to one worker whole.
+
+### The split, and what replaced the sentence that was carrying it
+
+The page was one stacked column: header, settings, filter bar, "What they got
+through", then the live queue at the bottom. It is now two halves side by side
+above the divider — settings on the left, the capacity bar and the live queue
+on the right — with the period controls moved down beside the heading they
+actually scope.
+
+That move is what created the problem worth recording. **The date range applies
+to the figures and never to what the engineer is holding right now** — D9's
+rule, and both halves of this page depend on it. The only thing making that
+boundary visible was the caption under the filter bar reading "Counted over
+24 Aug – 23 Sep 2026", and putting the control an inch from the heading makes
+that sentence a second statement of what the control already says.
+
+**Replaced with the dashboard's own pattern from D14**: a short scope label
+over each half — **"Right now"** above the capacity bar and the live queue,
+**"Over the selected period"** above the tiles and the chart. Same two tenses,
+same two icons, three words instead of a sentence, and each one sits *on* the
+thing it is about rather than in a line above everything.
+
+`ScopeLabel` deliberately **names no dates**. D14 and D24 are firm that a
+period may only be stated from the response's own `window`, and this component
+has none. "Over the selected period" claims only that whatever the control says
+was applied, which is true by construction.
+
+**The admin dashboard is protected by the default, not by care.**
+`datesShownElsewhere` is false unless asked, because the dashboard has nothing
+else on it that names the window — its filter bar says "Last 30 days", which is
+a control and not a claim — and removing that sentence there would undo D9 and
+D14 on the screen they were raised about. Two tests hold it: one on
+`ScopeHeading` directly and one through `AdminDashboardPage` against a real
+response. A test on only the engineer page would have passed with the caption
+deleted for everybody, which was verified by deleting it.
+
+**What this costs, and it is a real cost:** the engineer page no longer states
+the server's echoed window anywhere. The only statement of the period is the
+picker, which is a control. Nothing lies — `ScopeLabel` is dateless on purpose
+— but it is a step back from the D14 discipline, and flipping one flag restores
+the sentence if the owner disagrees.
+
+### The ticket table is `IncidentsPage`, with one prop
+
+`embedded`, defaulting to false, and it changes exactly one thing: the screen
+renders an `h2` and its description instead of `PageHeader`. Everything else —
+the filter bar, the table/card switch, the paging, the empty state — is
+untouched, which is the entire reason to reuse the component rather than build
+a second ticket table.
+
+A boolean rather than a heading level, because `PageHeader` renders an `h1` **by
+construction** — that is its stated job — so an embedded list must not use it
+at all; and because every page here nests sections exactly one deep.
+
+**Two `h1`s would not have been caught by the accessibility suite.**
+`e2e/accessibility.spec.ts` filters to `wcag2a`/`wcag2aa`, and the only rule
+that speaks to this, `page-has-heading-one`, is `best-practice` and fires on
+*none* rather than on two — and that spec does not visit `/engineers/:userId`
+at all. Worth writing down: this is the fourth time in this project that a
+passing axe run has said nothing about a real defect.
+
+What the section looks like as a result is a second complete filter apparatus
+on a page that already has one. That is the trade the brief chose, and the
+Building select now appears twice on one screen driving the same `building_id`
+— which is coherent (D62 put both hooks on that one parameter deliberately) and
+is still two controls for one value.
+
+### The pie had no colours, and that is what looking at the screen found
+
+`BreakdownChart` takes a `shape` prop, so "make it a pie" is one word. The
+result was **eight identically-coloured wedges beside a legend of eight
+identically-coloured dots** — a ring that carried nothing the legend did not
+already say, and in which "which slice is Plumbing" had no answer.
+
+It was not a mistake in the call. D57 caps a categorical pie at **three**
+validated slice colours, `chartPalette.ts` names "category group" as a
+one-colour-many-categories case, and the worker correctly refused both wrong
+ways out: cycling the three would repaint two categories the same colour, which
+is the one thing a pie must never do, and quietly swapping in bars would have
+been a substitution rather than a report. Passing no colour is what the palette
+permits, and `BreakdownChart` then paints every slice `SERIES_PRIMARY` —
+correct for a bar, where the *length* carries the magnitude, and useless for a
+pie.
+
+**Chosen: the remedy D57 already named**, made into a function.
+`foldToCategoricalSlices` keeps the top three in the validated order and folds
+everything past them into one neutral — the same validated grey D57 reasons
+about, where a neutral beside three coloured slices is distinguishable
+*because* it is neutral. This is not re-litigating the shape: the entry
+anticipated exactly this case and wrote down what to do about a fourth
+category. Bars were the alternative it also offers, and the brief asked for a
+pie.
+
+Three consequences worth stating:
+
+- **The fold reaches the chart and stops there.** The table twin one button
+  away still lists all eight with their links, which is where a reader goes for
+  values and is the relief case the neutral's contrast leans on. Folding both
+  would lose five links to save three colours. Both halves are asserted, because
+  the first on its own would pass against a chart that had silently dropped
+  five categories.
+- **Colour follows rank here, not identity**, which is a departure from the rule
+  the bars follow. It is unavoidable once a cap exists — which categories are
+  *inside* the cap is itself a fact about the data — and it is worth knowing
+  before comparing two screenshots of this chart.
+- **A folded slice has no link.** No list is "these five groups"; `GET
+  /incidents` filters one group at a time. D14 §3 settled that a wrong link is
+  worse than none, so `BreakdownDatum.href` is optional and the slice does not
+  navigate.
+
+**A latent defect this turned up.** The admin dashboard's building pie was
+handing out `CATEGORICAL_SLICES[index % 3]` under a comment saying it was
+capped at three, which the `%` made untrue: a fourth building would have been
+painted the same blue as the first. The demo world has exactly three, so
+nothing would ever have shown it. That call site now passes no colours and
+folds like any other categorical pie, which makes its comment true.
+
+### Smaller calls, recorded because they were not asked for
+
+- **`StatTileGrid` gained `stack`.** Confirmed rather than assumed that it could
+  not already: it is `repeat(auto-fit, minmax(190px, 1fr))` and a 440px column
+  fits two. `minWidth` cannot express "never more than one" — it is a floor, and
+  any value large enough to force one column also claims a tile may never be
+  narrower, which is false on a phone.
+- **`DashboardFilterBar`'s `note` accepts `false`**, which `null` and
+  `undefined` cannot: both fall through to the default, and that is right for a
+  caller that simply did not pass one. It renders nothing rather than an empty
+  `Typography`, whose margin left eight pixels of unexplained gap.
+- **"See all N assigned" became a sentence**, because that link now sends a
+  reader off-page to reach a table 400px below them.
+- **The availability word moved** out of the page header and into the "Right
+  now" column beside the capacity bar, it being a right-now fact.
+
+## D67 — S4 part 1: suggesting the ticket somebody is about to duplicate
+
+**Why this stretch item and not another.** The brief's own problem statement
+names **duplicate tickets** as something this system exists to reduce. Of what
+was left in `BUILD-PLAN.md` §15, this is the one that answers a stated business
+problem rather than adding a capability nobody asked for.
+
+**The timing is the feature.** `ReportPage` reveals its five questions
+progressively and asks for **subcategory and location before it asks for a
+title**. So once somebody has chosen "Temperature/HVAC" and "Level 3" there is
+already enough to query — before they have typed a word, and before they have
+invested effort worth abandoning. A duplicate check that arrives at the submit
+button is a check that arrives too late to be taken.
+
+### No new search machinery
+
+`GET /incidents` already filters on `category_id`, `building_id`, `floor_id`,
+`seat_id` and status, and `repositories/incidents.py` is where that lives. The
+new endpoint reuses it and the same visibility statement. `search_vector` is
+GIN-indexed and was deliberately left out: subcategory plus location is a
+stronger signal than words a reporter has not typed yet.
+
+### Specificity and recency are two ORDER BY terms, never one score
+
+```sql
+ORDER BY  CASE WHEN seat_id  = :seat  THEN 0
+               WHEN floor_id = :floor THEN 1
+               ELSE 2 END        ASC,    -- specificity: absolute
+          <recency>              DESC    -- breaks ties inside a band only
+```
+
+Collapsed into one blended score, a week-old exact-seat match loses to
+something vague from this morning — and "someone reported this exact desk an
+hour ago" and "something of this kind happened in this building last week" are
+different claims. A reader has to be able to tell which one they are looking
+at, so the band is **selected as well as sorted on**: the integer the rows are
+ordered by and the `match` word the response carries are the same fact read
+twice, indexed into `SUGGESTION_SPECIFICITY`. Reorder that tuple and both move
+together.
+
+Recency differs by list and the difference is the point: `created_at` for a
+live ticket, because for unfinished work *when it was reported* is the only
+date that says anything about whether it is the same event; `resolved_at` for a
+finished one, because there the useful date is when it was fixed.
+
+### `match` describes the overlap, not the precision of either side
+
+A request with no `seat_id` can never produce a SEAT match **even when the
+candidate ticket has a seat**. That candidate is banded FLOOR, because the
+strongest true thing you can say to that reporter is "somebody reported this on
+your floor" — telling them "somebody reported this exact desk" about a desk
+they never mentioned would be a claim about a comparison that did not happen.
+A location the caller did not give becomes `WHEN false` in the CASE, so the
+query says literally what the docstring says.
+
+### Three smaller calls
+
+- **Floor and seat rank; only category and building filter.** Making them
+  `WHERE` clauses is the mistake that empties the panel for the first person to
+  report a fault at their own desk.
+- **The exact subcategory, not its group.** Wi-Fi and VPN are both Network &
+  Access and are not the same problem. A panel that confused them would teach
+  reporters to ignore it, which costs more than it saves.
+- **A resolved row must have a `resolution_summary`**, enforced in the `WHERE`
+  rather than filtered out afterwards — otherwise `limit` would mean a
+  different number of rows each time. A resolved ticket with nothing written on
+  it is a link to a dead end.
+
+### The resolution summary is the second half of the feature
+
+Surfacing it exposes nothing new — it is already un-gated on the incident read
+schema — and it turns the panel from "you may be duplicating this" into
+self-service: *"Replaced the failed unit and tested it with the reporter."* is
+institutional memory written by a human about that actual equipment, which
+beats generic troubleshooting because it is specific and true.
+
+### It must never block the report
+
+The panel is advisory and says so in its own words: *"If none of them is yours,
+carry straight on — nothing here stops you reporting."* No disabled button, no
+confirmation step, nothing hidden while it loads. **A false positive that stops
+a real report is far worse than a duplicate**, and a panel that can be read as
+an obstacle will be routed around by people who then stop reporting at all. Two
+of the frontend's deliberate-break tests exist for exactly this: one puts a
+modal in the way, one hides the panel once typing starts, and both fail.
+
+### Unknown ids return an empty answer, not an error
+
+This fires while somebody is still filling a form, where an error has nowhere
+to be shown and nothing for the reader to do about it. `POST /incidents`
+validates the same ids for real. The route is also declared **before**
+`/{incident_id}`, with a test pinning it, because the symptom of getting that
+wrong is an obscure `uuid_parsing … found 's' at 1`.
+
+## D68 — S4 part 2: "I'm affected too", and the audience more than one person holds
+
+A watcher is somebody who said a problem affects them too, and is told when it
+is **resolved**. `incident_watchers` per `BUILD-PLAN.md` §3, keyed on the pair
+`(incident_id, user_id)` so "one person follows one ticket at most once" is the
+only shape the table can hold, with `ON CONFLICT DO NOTHING` closing the window
+a double-clicked button would land in.
+
+### The flag, and why `location_detail` could not have been it
+
+**The owner's rule:** subscribing only makes sense for problems that affect
+other people. The field that looks as though it already answers that does not,
+and the two counter-examples are the whole point — **Software is BUILDING-level
+and an operating-system fault is one person's alone; Hardware is FLOOR-level
+and a printer is shared while a keyboard is not.** How precisely a group needs
+a location and how shared its problems are is simply not the same question.
+
+So `categories.allows_watchers`, per subcategory, admin-editable, seeded from
+the owner's list of 17. **The mapping is keyed on `(group, subcategory)` and
+had to be:** six subcategories are literally named "Other", and the list marks
+Meeting Rooms "Other" and Building & Facilities "Other" shared while Network &
+Access "Other" is not. `CategoryGroupSeed` gained a `shared_subcategories`
+field, which makes the key right by construction — the version keyed on the
+name alone cannot be written by accident. A deliberate-break test keyed it on
+the name and failed on exactly that pair.
+
+**Everything not on the list is personal, including all fourteen subcategories
+of the three groups R6 added.** The owner's list does not name them, and the
+arguable cases default to personal on purpose: *it is better that somebody
+files a duplicate than that a stranger subscribes to a problem with their
+laptop.* Worth flagging to the owner as a one-line admin toggle each, not as
+something to re-decide here.
+
+**Re-seeding does not overwrite an admin's edit.** `migrate` runs
+`seed_categories` on every deploy, so a seed that wrote this flag onto existing
+rows would silently revert an administrator's decision every time the
+application shipped — and this is precisely the field an admin curates, since
+the default is personal and the arguable cases are meant to be argued. The
+initial values are applied **once, by revision `0006`'s backfill**, at the
+moment the column came into being: it overwrites nothing by construction,
+because nobody could have had an opinion about a column that did not exist four
+statements earlier. The mapping is spelled out in the revision rather than
+imported, for the reason `0005` gives about `NotificationType` — a revision
+that reads a live constant is not frozen — and a test asserts the two copies
+are still equal.
+
+### One audience, many people
+
+WATCHER is the first capacity more than one person can hold at once, and
+`app/notifications.py` was built on `user_in_capacity(audience, incident) ->
+uuid | None`. The change is a **tuple-valued lookup table**, `CAPACITY_HOLDERS`:
+every audience is now read as a tuple of user ids, and REPORTER and ASSIGNEE
+are simply the ones that always answer with nought or one. `plan()` loops.
+
+Doing it there is what keeps the module's two universal rules true for watchers
+without a word about watchers being written in either: a watcher who resolved
+the ticket themselves is dropped by the actor check, and a watcher listed twice
+by `already_told` — the same two lines that have always been there.
+
+**Rejected:** a `watchers` field on `NotificationRule` beside `messages`, and a
+`plan_for_watchers()` beside `plan()`. Each would have given "nobody is
+notified about their own action" two implementations, and the second one is the
+one that gets forgotten.
+
+**The module still touches no database.** `_the_watchers` reads
+`incident.watchers`, an attribute exactly like `incident.reporter_id`, eager-
+loaded by `_detail_loaders()`. The property that was ever claimed is that this
+module issues no query, not that the incident arrives half-built — and that is
+what keeps the whole policy testable without a session.
+
+### A rule that does not always fire, and a bug a test caught
+
+The trigger is a status change; the audience cares about one destination
+status. `applies` — the precondition `NOTE_ADDED` already uses — is the
+mechanism, applied as **a second rule**, `WATCHED_RESOLVED`. It has to be a
+second rule rather than a third audience on `STATUS_CHANGED`, because `applies`
+gates a whole row: putting the condition there would have silenced the reporter
+and the assignee on every move that is not a resolution. CLOSED is excluded —
+the watcher already heard the thing they were waiting for, and including it
+would mean two notifications per repair.
+
+Which surfaced the bug worth recording. **`already_told` spans one `plan()`
+call, and a resolution now calls it twice.** A reporter who had also pressed "I'm
+affected too" on their own ticket got both sentences. The fix is in
+`_the_watchers`, which excludes anybody who is already the reporter or the
+assignee — a statement about *what the WATCHER audience means* (the people
+following a ticket who would not otherwise hear about it), which `plan()` could
+not make because it cannot see which other rules fired on the same moment.
+
+`watcher_count` on the API is deliberately **not** that narrowed number: "four
+people are affected" is a fact about the problem, not about who gets an email.
+
+### The endpoints, and the one that is deliberately ungated
+
+`POST`/`DELETE /incidents/{id}/watchers`, both returning `{watching,
+watcher_count}` from `services/watchers.status_of` — one function, so the
+button and the detail page cannot disagree. Subscribing is always the caller
+subscribing themselves; there is no endpoint that subscribes anybody else,
+which is what bounds a fan-out audience.
+
+`POST` is refused **409 `WATCHERS_NOT_ALLOWED`** for a personal subcategory —
+409 rather than 403 because nothing about the *caller* is wrong. **`DELETE` is
+not gated at all**, deliberately: an admin who marks a subcategory personal
+after people subscribed must not strand them.
+
+`allows_watchers` is refused on a *group* (422 `SUBCATEGORY_ONLY_FIELD`), the
+exact mirror of the existing `GROUP_ONLY_FIELDS` rule, because incidents are
+filed against subcategories so a group's copy is never read.
+
+### Where the frontend reads it, and the bug that moved
+
+Two readers, and neither derives anything. The report questionnaire has no
+ticket yet, so it looks the flag up in the cached category tree. **The ticket
+page reads `incident.category.allows_watchers`**, which the API sends on every
+ticket — and that is not convenience. `load_tree` excludes deactivated
+categories, so a ticket filed against a subcategory an admin has since retired
+is *not in the tree*, and a lookup would answer "no watchers" for a ticket
+people are already following. Found by reading the two halves against each
+other after both landed; the test that pins it makes the tree and the ticket
+disagree on purpose, and fails if the page goes back to the tree.
+
+### Not done
+
+**Watcher counts feeding the hotspot report is S3 territory**, named in
+`BUILD-PLAN.md` §15 and deliberately left alone. And the deployed demo will
+show "0 others affected" everywhere until somebody presses the button, because
+`seed_demo` refuses to run where data exists — the local demo world has 269
+watchers, the cloud one has none.
+
+## D69 — The inbox crashed, and the type system was satisfied
+
+**Reported by the owner:** clicking the bell throws *"Element type is invalid…
+Check the render method of `NotificationRow`."* Reproduced before touching
+anything — the screen is caught by the error boundary and replaced with
+"Something went wrong on this screen."
+
+### What happened
+
+S4 added `WATCHED_RESOLVED` to `app/models/enums.py::NotificationType`. The
+frontend's `NotificationType` is a **hand-written union** in `api/types.ts`,
+and it kept its four members. `NOTIFICATION_ICONS` is
+`Record<NotificationType, ComponentType>` — exhaustive *by design*, so that
+adding a kind without deciding what it looks like is a compile error rather
+than a blank square.
+
+It was exhaustive, and it was complete, and it was wrong: exhaustive **against
+the union**, and the union no longer described the API. `NOTIFICATION_ICONS[
+'WATCHED_RESOLVED']` returned `undefined`, and `<Icon />` with an undefined
+component is the error React reports. `tsc` passed. 441 frontend tests passed.
+The backend's own suite passed. The demo database had 163 rows of the new kind
+waiting.
+
+### The fix is not the fifth icon
+
+The icon took one line. The question worth answering is what would have caught
+it, because **nothing inside `frontend/` could have.** The two halves are
+different languages with different type systems, and the only check that can
+see both is one that reads both.
+
+Three were considered.
+
+**Generate the TypeScript from the OpenAPI document.** The real answer, and too
+large for this: it replaces a hand-written `api/types.ts` that carries a
+paragraph of prose on almost every field, and those paragraphs are a
+substantial part of what makes this codebase readable.
+
+**Fetch `/api/v1/openapi.json` in a test and compare.** Better at checking what
+a *deployed pair* agree on; worse here. It needs a running server, so it cannot
+be part of the unit suite, and it passes on a branch that has changed the enum
+and not yet restarted uvicorn — which is the exact moment the drift is born.
+
+**Read both source files.** Chosen. `src/test/backendEnums.ts` parses
+`class X(StrEnum)` blocks out of the Python; `src/api/enumMirrors.test.ts`
+compares all **twelve** mirrored enums against their unions. It fails on the
+commit that creates the problem, needs nothing running, and takes under a
+second.
+
+Parsing Python with a regular expression is a real cost and is written down as
+one. It is tolerable because the shape is rigid and machine-checked by
+`ruff format` — and because the parse is **asserted**: `EXPECTED_ENUM_COUNT`
+and a "finds a union for every enum" case mean a parser that quietly stopped
+matching cannot report that all nought enums agree. That is the D24/D25/D35/D40
+shape, and it is the failure mode a test like this is most prone to.
+
+### And a screen test over the real enum
+
+The owner's steer, and it is the half that fails *on the screen*:
+`NotificationsPage.test.tsx` now renders one row per member of
+`backendEnumMembers('NotificationType')` — the backend's list, not the
+frontend's. A test parametrised over the frontend union agrees with that union,
+including when the union is wrong.
+
+The assertion is on the rendered `listitem` rather than on the message, because
+the throw happens inside the icon element: a test that only looked for the text
+could pass on a row whose icon had blown up.
+
+**Verified both ways.** Reverting the union fails
+`enumMirrors.test.ts` with `expected [ 'ASSIGNED', …(3) ] to deeply equal
+[ 'ASSIGNED', …(4) ]`, naming `WATCHED_RESOLVED` as the missing member.
+Removing the icon fails the render test with the production error verbatim:
+*"Element type is invalid: expected a string … but got: undefined."*
+
+### The blast radius this leaves closed
+
+Twenty `Record<SomeBackendEnum, …>` maps live across eleven files — chip
+colours, status labels, priority ramps, the workflow stepper's step index,
+event wording. Every one of them had the same exposure, and every one of them
+is now covered by the twelve mirror comparisons rather than by anybody
+remembering. **Adding a member to a backend enum now fails the frontend
+suite**, which is the property that was missing.
+
+## D70 — The owner's review: what was overruled, and the two fixes that needed a browser
+
+Seven items from the owner's review of R7 and S4. The crash is
+[D69](#d69--the-inbox-crashed-and-the-type-system-was-satisfied); the rest are
+here, and three of them are worth more than the change they describe.
+
+### The date format: D60 overruled, and what that costs
+
+D60 set the pickers to `DD MMM YYYY` so that a field beside a heading reading
+"Sep 1, 2026" would not print the same value as `09/01/2026`, which is the 1st
+of September to some readers and the 9th of January to others. **The owner has
+seen both and chosen the adapter's default.** It is out.
+
+What made it visible is worth recording, because it was not the format itself:
+**Material UI derives a placeholder from the format rather than printing the
+format back**, and what it derives from a three-letter month is the four-letter
+one. So every empty field read `DD MMMM YYYY` — a format nothing in the
+application ever used and nobody chose. The override was reported through a
+symptom it only half caused.
+
+What is lost, stated plainly so the trade is on the record:
+
+- **The field is ambiguous again**, and it sits inches from a heading printing
+  the same date unambiguously.
+- **The application now prints dates two ways.** Everything else — `formatDate`,
+  the chips, the tables, and the picker's *own* "Choose date, selected date is
+  Sep 15, 2026" button label, which comes from the adapter's `fullDate` and is
+  untouched — uses a short month name. Only the two field values use slashes,
+  so a picker announces a date in a different grammar from the one it displays.
+- **It is locale-blind, not locale-aware.** The adapter's default is dayjs's
+  `en`, which is `MM/DD/YYYY` for every reader regardless of browser locale.
+  This is the US format for everyone, not the reader's own.
+
+What is gained: the placeholder is the format again, the fields are narrower,
+and there is now nothing in the application overriding the adapter — one rule
+in one place for all three filter bars, which cannot drift into three grammars.
+
+### The brown box on a picker section, and why the D46 remedy was wrong twice
+
+A picker field is three `contenteditable` spans, one per section, each its own
+focus target — so `body :focus-visible` drew a 3px brown rectangle around
+whichever two characters the reader had clicked. That is
+[D46](#d46--one-focus-ring-on-the-app-bars-search-box-drawn-around-the-box)'s
+app-bar search box exactly, one level smaller.
+
+D46's remedy is to move the ring out to the control. **Tried here twice, wrong
+on screen both times.** On the bordered field root, the ring drew a line
+straight through the word "From" — the floating label sits *on* the top border
+(`translate(14px, -9px)`) and an outline paints last. Moved inside, to the box
+holding the sections, it became a hard rectangle inside a rounded one, which is
+the precise shape D46 was written to remove.
+
+**Neither was visible to a test.** jsdom has no layout; both versions passed a
+test asserting the ring landed on the right element. Both were found by
+screenshotting a focused field and looking at it.
+
+**The third answer is that there was nothing to replace.** Measured on the
+running app: a focused picker field goes from a `1px rgba(0,0,0,0.23)` notch to
+a **`2px primary.main`** one — and a focused ordinary text field in this
+application does exactly the same and wears **no outline ring at all**. The
+picker was already showing focus the way the whole application does; the global
+rule was adding a second, worse indicator on top of a correct one. So the
+section's ring is suppressed and nothing is put back.
+
+That is a suppression with no replacement, which is the thing S6 was raised to
+stop, so it is **asserted rather than left as an absence**: `theme.test.ts`
+pins that the picker's only rule is the suppression, and
+`DateRangeFields.test.tsx` pins that a focused field carries `Mui-focused`, the
+class the notch is drawn from. If Material UI ever stops thickening it, that
+test fails rather than a keyboard user losing the field.
+
+### Filter order: a trade, not a guarantee
+
+The escalated flag moves ahead of the date range so the two pickers sit
+together. **It is not a guarantee and should not be read as one.** `FilterRow`
+is `auto-fit` on the bar's *own* width (D44), and the number of controls
+differs per screen because `fixedByPreset` omits the ones a screen already
+decides — nine on an admin's All tickets, eight on My queue and the engineer
+page's embedded table, seven on Unassigned. Whether the pair shares a row is
+then arithmetic, and the move buys the pairing at 1440px on the eight-control
+screens while losing it on Unassigned at that width and on the nine-control
+list around 1000–1150px.
+
+Making the pair genuinely unsplittable would need a wrapper spanning two grid
+columns, which contradicts `DateRangeFields`' fragment contract (D60) — the
+thing that lets the same component sit in a flex row on one screen and a grid
+on another. Not done.
+
+### The engineer page's filters were stacking for a reason worth naming
+
+`ScopeHeading`'s `actions` slot was `minWidth: 0` with no explicit width, so it
+sized to exactly its own max-content: 416px for two 200px selects and the gap
+between them. **A filter bar asked to arrange itself inside its max-content
+width has nothing to arrange** — there is no slack, so the flex row came down
+one select per line with several hundred pixels of empty heading beside it.
+The slot now has a width the pair can divide, and `min(100%, 416px)` keeps the
+protection the bare `0` was written for: on a phone the percentage is the
+smaller half, so the box is never wider than the line it sits on and the
+document cannot scroll sideways (D44 again).
+
+### The logo, and a halo that only a screenshot finds
+
+Both marks are regenerated from the brand files with their strokes expanded
+morphologically — a per-channel minimum on the dark-on-white source, a maximum
+on the light-on-brown one, which thickens the letters and the red roof together
+without redrawing either. The two are deliberately **not the same weight**: the
+app bar draws its mark at 40px and the login card at 84px, and a mark needs
+relatively more weight when it is small.
+
+The first attempt had a fault worth recording. Quantising to 64 colours left
+the keyed-out background at **alpha 1/255 rather than 0**, which on the brown
+app bar read as a faint panel behind the mark. An alpha black-point *after*
+quantisation fixes it; before, the quantiser puts it back. Nothing but looking
+at the rendered bar would have found that.
+
+### Two smaller calls
+
+**The Team page's unowned queue is three columns on a desktop**, one on a
+phone. It is a queue to triage rather than a list to read, and twenty-five
+full-width rows spent most of a 1440px screen on one ticket at a time.
+`auto-fit` against a 300px floor rather than a breakpoint, because that grid
+sits inside the shell's content box — the drawer and the padding narrower than
+the window.
+
+**The login mark is centred and about twice its old height**, and the heading
+under it is not. These screens are a narrow column on an otherwise empty page,
+so the mark can carry the page rather than label it; a centred heading over
+left-aligned inputs reads as two columns that failed to line up.
+

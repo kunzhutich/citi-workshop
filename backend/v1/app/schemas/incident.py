@@ -78,6 +78,13 @@ class CategorySummary(BaseModel):
     location_detail: LocationDetail = Field(
         description="How precise a location the group requires when reporting.",
     )
+    allows_watchers: bool = Field(
+        description=(
+            "Whether a ticket filed under this subcategory can be followed "
+            "with 'I am affected too'. Subcategory-level, unlike "
+            "`location_detail`, which belongs to the group."
+        ),
+    )
 
 
 class LocationSummary(BaseModel):
@@ -274,6 +281,13 @@ class IncidentRead(IncidentListItem):
     can_add_note: bool = Field(description="May add a note.")
     can_add_internal_note: bool = Field(description="May add a staff-only note.")
 
+    # Not on `IncidentListItem`, deliberately. `is_watching` is per-caller and
+    # `watcher_count` costs a loaded collection, and a page of twenty-five
+    # rows has no use for either — the button and the "N others are affected"
+    # line are both on the detail screen.
+    is_watching: bool = Field(description="Whether the caller has said they are affected too.")
+    watcher_count: int = Field(description="How many people are following this ticket.")
+
 
 class AllowedTransitionRead(BaseModel):
     """One action the caller may take now, as the frontend should render it.
@@ -305,6 +319,122 @@ class AssignResult(BaseModel):
         default_factory=list,
         description="Advisory messages to show after a successful assignment.",
     )
+
+
+# --- Suggestions -------------------------------------------------------------
+
+
+class SuggestionMatch(StrEnum):
+    """How closely a suggested ticket's location matches the one being reported.
+
+    A statement about the **overlap between the request and the row**, not
+    about how precise either one is on its own. A reporter who named no seat
+    can never produce a SEAT match — there is no seat of theirs for anything
+    to be the same as — even though the suggested ticket may well have one.
+
+    Part of the response rather than an implementation detail because the two
+    ends of this scale are different claims, and only the reader can weigh
+    them: "somebody reported this exact printer an hour ago" and "something
+    printer-ish happened in this building last week" are not the same news.
+    """
+
+    SEAT = "SEAT"
+    FLOOR = "FLOOR"
+    BUILDING = "BUILDING"
+
+
+#: Most specific first. The order is the ranking: `list.index` of a member is
+#: its band, and `repositories/incidents` builds its ORDER BY from this, so
+#: reordering these three reorders the suggestions and nothing else.
+SUGGESTION_SPECIFICITY: tuple[SuggestionMatch, ...] = (
+    SuggestionMatch.SEAT,
+    SuggestionMatch.FLOOR,
+    SuggestionMatch.BUILDING,
+)
+
+#: How many of each kind the panel gets. It is a prompt shown beside a form
+#: the reporter is still filling in, not a list to scroll: six near-misses
+#: read as noise and send them back to typing.
+SUGGESTION_LIMIT = 5
+
+
+class SuggestionQuery(BaseModel):
+    """What the reporter has chosen so far, as the questionnaire knows it.
+
+    `floor_id` and `seat_id` are optional because how precise a location the
+    reporter was even *asked* for depends on the subcategory's group — see
+    `CategorySummary.location_detail`. A BUILDING-level group never collects a
+    floor, so a suggestion request for one never has one to send.
+    """
+
+    category_id: uuid.UUID = Field(description="The chosen subcategory.")
+    building_id: uuid.UUID
+    floor_id: uuid.UUID | None = None
+    seat_id: uuid.UUID | None = None
+
+
+class LiveSuggestion(IncidentListItem):
+    """An unfinished ticket that may already be this problem.
+
+    A full list row, because the answer to "is this already reported?" is
+    decided by looking at the ticket — its title, its status, who has it —
+    and the panel should not make the reporter open one to find out.
+    """
+
+    match: SuggestionMatch
+
+
+class ResolvedSuggestion(BaseModel):
+    """A finished ticket whose fix is worth reading before reporting again.
+
+    Deliberately **not** a list row. This is institutional memory, not work in
+    progress: the reporter cannot join it, chase it or be assigned to it, and
+    the only fields that earn their place are what it was and what was done
+    about it.
+
+    `resolution_summary` is never null here — a resolved suggestion with
+    nothing behind it is a link to a disappointment, so the query excludes it.
+    `resolved_at` *can* be null, which is the one surprise: a ticket that was
+    resolved, reopened and then closed keeps the summary and loses the
+    timestamp, because entering IN_PROGRESS clears `resolved_at`.
+    """
+
+    id: uuid.UUID
+    reference: str
+    title: str
+    resolution_summary: str
+    resolved_at: datetime | None = None
+    location: LocationSummary
+    match: SuggestionMatch
+
+
+class IncidentSuggestions(BaseModel):
+    """What the questionnaire shows once a subcategory and a place are chosen.
+
+    Two lists and not one merged and sorted, because they answer two
+    questions. `live` answers "should I report this at all?"; `resolved`
+    answers "has this been solved before, and how?". A single list ordered by
+    anything would bury one of them under the other.
+    """
+
+    live: list[LiveSuggestion] = Field(default_factory=list)
+    resolved: list[ResolvedSuggestion] = Field(default_factory=list)
+
+
+# --- Watching ----------------------------------------------------------------
+
+
+class WatchStatus(BaseModel):
+    """Where a ticket's watch list stands after subscribing or unsubscribing.
+
+    Both fields, from both endpoints, so the button and the count beside it
+    are updated from one response and cannot disagree. Idempotent on both
+    sides: subscribing twice is not two rows, and unsubscribing from a ticket
+    you were not following is not an error.
+    """
+
+    watching: bool = Field(description="Whether the caller is now following this ticket.")
+    watcher_count: int = Field(description="How many people are following it in total.")
 
 
 # --- List query --------------------------------------------------------------

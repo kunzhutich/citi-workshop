@@ -51,9 +51,9 @@ from app.models.note import IncidentNote
 from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
+from app.models.watcher import IncidentWatcher
 from app.schemas.report import ReportScope, ReportWindow
-from app.seed.categories import seed_categories
-from app.seed.categories import CATEGORY_GROUPS
+from app.seed.categories import CATEGORY_GROUPS, seed_categories
 from app.seed.demo import (
     BUILDING_SEEDS,
     DEFAULT_SPEC,
@@ -232,7 +232,7 @@ def test_engineers_cover_every_level_and_every_category_group(
     assert Counter(profile.level for profile in profiles) == Counter(
         level for _, level, _, _ in ENGINEER_SEEDS
     )
-    assert set(profile.level for profile in profiles) == set(EngineerLevel)
+    assert {profile.level for profile in profiles} == set(EngineerLevel)
 
     groups = db_session.scalars(select(Category).where(Category.parent_id.is_(None))).all()
     covered = {group_id for profile in profiles for group_id in profile.specialty_group_ids}
@@ -524,8 +524,11 @@ def test_it_fills_an_inbox(
 
     assert result.notifications > 0
     assert len(rows) == result.notifications
-    # All four kinds occur, so every icon on the inbox screen is exercised and
-    # the read-rate report has something of each to count.
+    # Every kind occurs, so every icon on the inbox screen is exercised and
+    # the read-rate report has something of each to count. Written as a
+    # comparison with the whole enum rather than a list of four, so a kind
+    # added to the application without being added to the demo world fails
+    # here instead of leaving a screen with nothing to show.
     assert {row.type for row in rows} == set(NotificationType)
 
 
@@ -538,14 +541,24 @@ def test_every_notification_goes_to_somebody_involved(
     A second implementation of the audience rule would show up here as a row
     addressed to a bystander — the demo world has thirty-odd employees and six
     engineers, so a wrong answer has plenty of room to be wrong in.
+
+    "Involved" is the three capacities `Audience` names: the reporter, the
+    assignee, and anybody who said the problem affected them too. The watch
+    rows are read per incident rather than pooled, so a notification sent to
+    somebody who follows a *different* ticket is still a failure here.
     """
     rows = db_session.execute(
         select(Notification, Incident).join(Incident, Incident.id == Notification.incident_id)
     ).all()
+    watchers_by_incident: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for watcher in db_session.scalars(select(IncidentWatcher)).all():
+        watchers_by_incident.setdefault(watcher.incident_id, set()).add(watcher.user_id)
 
     assert rows
     for notification, incident in rows:
-        assert notification.user_id in {incident.reporter_id, incident.assignee_id}
+        involved = {incident.reporter_id, incident.assignee_id}
+        involved |= watchers_by_incident.get(incident.id, set())
+        assert notification.user_id in involved
 
 
 def test_nobody_is_told_about_their_own_action(
@@ -642,3 +655,94 @@ def test_a_notification_never_arrives_before_the_thing_it_describes(
         if notification.read_at is not None:
             assert notification.read_at > notification.created_at
             assert notification.read_at <= now
+
+
+# --- The demo world's watchers -----------------------------------------------
+
+
+def test_some_tickets_have_people_following_them(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """A demo with the flag on everywhere and nobody following anything shows nothing.
+
+    Also asserts the count in the invoke payload against the rows, since the
+    payload is what a reviewer reads to decide whether the run worked.
+    """
+    result, _ = seeded
+
+    rows = db_session.scalars(select(IncidentWatcher)).all()
+
+    assert result.watchers > 0
+    assert len(rows) == result.watchers
+
+
+def test_nobody_follows_a_problem_that_is_theirs_or_nobody_can_follow(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Two rules at once, both of them properties rather than counts.
+
+    A watch row on a personal subcategory would mean the generator had its
+    own opinion about which problems are shared instead of reading
+    `allows_watchers`; a reporter watching their own ticket would make every
+    "N others are affected" count one too many.
+    """
+    rows = db_session.execute(
+        select(IncidentWatcher.user_id, Incident.reporter_id, Category.allows_watchers)
+        .join(Incident, IncidentWatcher.incident_id == Incident.id)
+        .join(Category, Incident.category_id == Category.id)
+    ).all()
+
+    assert rows
+    for watcher_id, reporter_id, allows_watchers in rows:
+        assert allows_watchers is True
+        assert watcher_id != reporter_id
+
+
+def test_the_inbox_carries_the_watchers_own_kind_of_notification(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """Every WATCHED_RESOLVED row goes to somebody who actually follows that ticket.
+
+    The generator replays the real rules rather than inventing recipients, so
+    a row addressed to somebody with no watch row on that incident would mean
+    it had started guessing — the same check
+    `test_every_notification_goes_to_somebody_involved` makes for the other
+    four kinds.
+    """
+    watched = {
+        (row.incident_id, row.user_id) for row in db_session.scalars(select(IncidentWatcher)).all()
+    }
+    rows = db_session.scalars(
+        select(Notification).where(Notification.type == NotificationType.WATCHED_RESOLVED)
+    ).all()
+
+    assert rows
+    for notification in rows:
+        assert (notification.incident_id, notification.user_id) in watched
+
+
+def test_a_watcher_notification_only_ever_follows_a_resolution(
+    db_session: Session,
+    seeded: tuple[DemoSeedResult, datetime],
+) -> None:
+    """The ticket it points at must have reached RESOLVED at some point.
+
+    Read off the event log rather than the ticket's current status, because a
+    ticket can be resolved and then reopened or closed, and the notification
+    was true when it was sent.
+    """
+    resolved_at_some_point = {
+        event.incident_id
+        for event in db_session.scalars(select(IncidentEvent)).all()
+        if event.to_value == IncidentStatus.RESOLVED.value
+    }
+    rows = db_session.scalars(
+        select(Notification).where(Notification.type == NotificationType.WATCHED_RESOLVED)
+    ).all()
+
+    assert rows
+    for notification in rows:
+        assert notification.incident_id in resolved_at_some_point

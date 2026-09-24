@@ -41,6 +41,14 @@ class CategoryCreate(BaseModel):
         ),
     )
     sort_order: int = Field(default=0, ge=0, le=9999, description="Ascending display order.")
+    allows_watchers: bool | None = Field(
+        default=None,
+        description=(
+            "Whether other people may follow a ticket filed under this with "
+            "'I am affected too'. Subcategories only - a group has no tickets "
+            "of its own. Defaults to false."
+        ),
+    )
 
     @field_validator("name")
     @classmethod
@@ -72,6 +80,13 @@ class CategoryUpdate(BaseModel):
     location_detail: LocationDetail | None = None
     sort_order: int | None = Field(default=None, ge=0, le=9999)
     is_active: bool | None = None
+    allows_watchers: bool | None = Field(
+        default=None,
+        description=(
+            "Whether other people may follow a ticket filed under this with "
+            "'I am affected too'. Subcategories only."
+        ),
+    )
 
     @field_validator("name")
     @classmethod
@@ -104,6 +119,7 @@ class CategoryRead(BaseModel):
     location_detail: LocationDetail
     sort_order: int
     is_active: bool
+    allows_watchers: bool
 
 
 class CategoryNode(CategoryRead):

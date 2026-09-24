@@ -164,3 +164,89 @@ export const PRIORITY_SLICES: Record<IncidentPriority, string> = {
  * against white — the same relief case as above, met the same way.
  */
 export const CATEGORICAL_SLICES: readonly string[] = ['#2a78d6', '#eb6834', '#1baf7a'];
+
+/**
+ * The colour a folded remainder wears.
+ *
+ * The same validated grey as `PRIORITY_SLICES.LOW`, and declared again rather
+ * than aliased because it is not that slice — a second name for one hex is
+ * cheaper than a reader following `LOW` into a chart with no priorities in it.
+ * The reasoning carries across intact: a neutral beside three coloured slices
+ * is distinguishable *because* it is neutral, and it is under 3:1 on white,
+ * which is the relief case the legend labels and the table toggle both meet.
+ */
+export const REMAINDER_SLICE = '#9e9c93';
+
+/** The minimum a row needs to be a slice of its own: a key, a name, a size. */
+export interface FoldableRow {
+  key: string;
+  label: string;
+  value: number;
+  /** The list this row stands for, when there is exactly one. */
+  href?: string;
+}
+
+/** A row that has been given a colour, and possibly had others folded into it. */
+export interface CategoricalSlice extends FoldableRow {
+  color: string;
+}
+
+/**
+ * Fit any number of categories into the three colours this palette validated.
+ *
+ * **The remedy [D57](../../../../docs/DECISION-LOG.md) named**, made into a
+ * function because R7 needed it a second time. Three is the cap and it is not
+ * a coincidence — the reference order clears the all-pairs gates for its first
+ * three slots and not beyond, and a pie is an all-pairs chart — so the entry
+ * wrote down what to do about a fourth: *fold it into "Other", or go back to
+ * bars.* Left unfolded the alternatives are both bad. Cycling the three
+ * repaints two categories the same colour, which is the one thing a pie must
+ * never do. Painting every slice the single series colour, which is what
+ * happens when a caller passes no colours at all, produces a ring of one hue
+ * beside a legend of one hue: eight wedges that carry nothing the legend does
+ * not already say. That is what the engineer page's eight category groups
+ * looked like, and it is why this exists.
+ *
+ * **Sorted, so "top three" means something** — and therefore colour follows
+ * rank here rather than identity. That is a real departure from the rule the
+ * bars follow, where a colour belongs to a category for ever so that filtering
+ * one out cannot repaint the rest; it is unavoidable once a cap exists,
+ * because which categories are *inside* the cap is itself a fact about the
+ * data. Worth knowing before reading two screenshots of this chart side by
+ * side.
+ *
+ * **A remainder of exactly one is not folded.** It becomes the neutral slice
+ * under its own name and keeps its own link, because "1 other group" is a
+ * label that hides a thing while claiming to summarise it. A remainder of two
+ * or more is named by its size and has **no link**: no list exists that is
+ * "these five groups", and D14 §3 settled that a wrong link is worse than
+ * none — it teaches a reader that the numbers cannot be checked. Every one of
+ * those groups still has its own row and its own link in the card's table
+ * view, which is one button away and is where the relief case is met anyway.
+ */
+export function foldToCategoricalSlices(rows: readonly FoldableRow[]): CategoricalSlice[] {
+  const cap = CATEGORICAL_SLICES.length;
+  const sorted = [...rows].sort((left, right) => right.value - left.value);
+
+  const head = sorted.slice(0, cap).map((row, index) => ({
+    ...row,
+    color: CATEGORICAL_SLICES[index],
+  }));
+  const rest = sorted.slice(cap);
+
+  if (rest.length === 0) {
+    return head;
+  }
+  if (rest.length === 1) {
+    return [...head, { ...rest[0], color: REMAINDER_SLICE }];
+  }
+  return [
+    ...head,
+    {
+      key: 'folded-remainder',
+      label: `${rest.length} other groups`,
+      value: rest.reduce((sum, row) => sum + row.value, 0),
+      color: REMAINDER_SLICE,
+    },
+  ];
+}

@@ -3,20 +3,28 @@ import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
 
 import { useAuth } from '../../auth/AuthContext';
-import { formatDate } from '../../display/time';
 import { useCategoryTree } from '../categories/hooks';
 import { useEngineers } from '../engineers/hooks';
 import type { IncidentFilterControls } from './useIncidentFilters';
 
 /**
- * The filters that arrived by link, shown as removable chips.
+ * The filters this reader has no control for, shown as removable chips.
  *
  * M7's dashboard links every KPI tile and every chart segment into this list,
- * and three of the filters those links carry — a subcategory, an assignee, a
- * reported-between range — have no control on the filter bar. Without this
- * strip the reader would see a list that does not match the screen's title,
- * with nothing on the page explaining why and no way to widen it. A filter
- * that is applied but invisible is worse than one that is missing.
+ * carrying filters the bar above did not offer. Without this strip the reader
+ * would see a list that does not match the screen's title, with nothing on the
+ * page explaining why and no way to widen it. A filter that is applied but
+ * invisible is worse than one that is missing.
+ *
+ * **A chip only for a filter with no control, and never beside a control
+ * showing the same value.** That is the whole rule, and it is why this
+ * component is told what the bar drew instead of deciding for itself. R7 moved
+ * two of the original three across that line: the reported-between range now
+ * has a control for everybody, so its chip is gone, and the engineer has one
+ * for facility admins and LEAD engineers, so its chip survives for exactly the
+ * readers who have no other way to see or remove it — the employee who
+ * followed a dashboard link being the case that matters. A subcategory still
+ * has no control anywhere, so its chip is unconditional.
  *
  * Each chip names the thing in the reader's words rather than echoing a UUID,
  * which is why this component resolves ids: a subcategory from the category
@@ -28,20 +36,31 @@ import type { IncidentFilterControls } from './useIncidentFilters';
  */
 export interface AppliedFilterChipsProps {
   controls: IncidentFilterControls;
+  /**
+   * Whether the bar above is drawing an engineer filter for this reader.
+   *
+   * A boolean rather than a session this component could interrogate itself:
+   * who gets that control is the bar's rule (`mayFilterByEngineer` in
+   * `IncidentFilterBar.tsx`), and a second copy of it here is how a chip and a
+   * control come to disagree about one filter.
+   */
+  hasAssigneeControl: boolean;
 }
 
-export function AppliedFilterChips({ controls }: AppliedFilterChipsProps) {
+export function AppliedFilterChips({ controls, hasAssigneeControl }: AppliedFilterChipsProps) {
   const { filters, setFilters } = controls;
   const { user } = useAuth();
 
-  const hasDateRange = Boolean(filters.createdFrom || filters.createdTo);
-  const hasNamedAssignee = Boolean(filters.assigneeId) && filters.assigneeId !== 'unassigned';
+  const showAssignee = Boolean(filters.assigneeId) && !hasAssigneeControl;
+  // Only a chip that is being drawn needs a name, and only a named assignee
+  // has one to look up. Staff only, because an employee's roster request is
+  // answered with a 403 — which is also why they have no control to begin with.
+  const needsName = showAssignee && filters.assigneeId !== 'unassigned';
+  const engineers = useEngineers({ page_size: 100 }, needsName && user?.role !== 'EMPLOYEE');
 
   const categories = useCategoryTree();
-  // Only staff may read the roster, and only a named assignee needs a name.
-  const engineers = useEngineers({}, hasNamedAssignee && user?.role !== 'EMPLOYEE');
 
-  if (!filters.categoryId && !filters.assigneeId && !hasDateRange) {
+  if (!filters.categoryId && !showAssignee) {
     return null;
   }
 
@@ -67,19 +86,11 @@ export function AppliedFilterChips({ controls }: AppliedFilterChipsProps) {
         />
       ) : null}
 
-      {filters.assigneeId ? (
+      {showAssignee ? (
         <Chip
           size="small"
           label={assigneeLabel(filters.assigneeId, engineerName)}
           onDelete={() => setFilters({ assigneeId: '' })}
-        />
-      ) : null}
-
-      {hasDateRange ? (
-        <Chip
-          size="small"
-          label={`Reported ${describeRange(filters.createdFrom, filters.createdTo)}`}
-          onDelete={() => setFilters({ createdFrom: '', createdTo: '' })}
         />
       ) : null}
     </Box>
@@ -91,15 +102,4 @@ function assigneeLabel(assigneeId: string, engineerName: string | undefined): st
     return 'Unassigned';
   }
   return engineerName ? `Assigned to ${engineerName}` : 'Assigned to one engineer';
-}
-
-/** "between 25 Aug 2026 and 23 Sep 2026", or whichever end was given. */
-function describeRange(from: string, to: string): string {
-  if (from && to) {
-    return `between ${formatDate(from)} and ${formatDate(to)}`;
-  }
-  if (from) {
-    return `on or after ${formatDate(from)}`;
-  }
-  return `on or before ${formatDate(to)}`;
 }

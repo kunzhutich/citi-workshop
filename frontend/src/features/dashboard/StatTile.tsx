@@ -98,9 +98,20 @@ export interface StatTileGridProps {
   children: ReactNode;
   /** Smallest a tile may get before the grid drops a column. */
   minWidth?: number;
+  /**
+   * One column, however much room there is.
+   *
+   * For a caller that has already decided the shape of its own layout: the
+   * engineer page stands three tiles in a 40%-wide column beside a chart, and
+   * `auto-fit` still finds room for two of them there, so the column reads as
+   * a 2×2 grid with a hole in the corner. `minWidth` cannot say this — it is a
+   * floor, and there is no value of it that means "never more than one"
+   * without also claiming a tile may never be narrower than that.
+   */
+  stack?: boolean;
 }
 
-export function StatTileGrid({ children, minWidth = 190 }: StatTileGridProps) {
+export function StatTileGrid({ children, minWidth = 190, stack = false }: StatTileGridProps) {
   return (
     // `auto-fit` with a floor, so five tiles become five, three and two, or a
     // single column on a 375px phone, without a breakpoint per count.
@@ -108,7 +119,7 @@ export function StatTileGrid({ children, minWidth = 190 }: StatTileGridProps) {
       sx={{
         display: 'grid',
         gap: 2,
-        gridTemplateColumns: `repeat(auto-fit, minmax(${minWidth}px, 1fr))`,
+        gridTemplateColumns: stack ? '1fr' : `repeat(auto-fit, minmax(${minWidth}px, 1fr))`,
       }}
     >
       {children}

@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Text, UniqueConstraint, text, true
+from sqlalchemy import Boolean, ForeignKey, Integer, Text, UniqueConstraint, false, text, true
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,25 @@ class Category(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
+    #: Whether a problem of this kind is one other people can be affected by,
+    #: and so whether "I'm affected too" is offered on tickets filed under it.
+    #:
+    #: The mirror image of `location_detail`: that belongs to the **group** and
+    #: is inherited downwards, because how precisely you must say *where*
+    #: depends on the kind of thing; this belongs to the **subcategory**,
+    #: because "the third-floor printer is jammed" and "my laptop will not
+    #: charge" sit in the same group and are not the same kind of problem at
+    #: all. `services/categories.py` refuses it on a group for that reason.
+    #:
+    #: Defaults to false, and the seed turns it on for a named list. A problem
+    #: is personal until somebody decides otherwise: filing a duplicate costs
+    #: an engineer a minute, and a stranger subscribing to a fault with your
+    #: laptop cannot be undone.
+    allows_watchers: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=false(),
+    )
 
     parent: Mapped["Category | None"] = relationship(
         back_populates="children",

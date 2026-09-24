@@ -76,6 +76,9 @@ import type {
   IncidentListItem,
   IncidentPriority,
   IncidentStatus,
+  LiveSuggestion,
+  ResolvedSuggestion,
+  SuggestionMatch,
 } from '../api/types';
 
 /** Build a list row. */
@@ -96,6 +99,9 @@ export function makeIncidentListItem(
       group_id: '44444444-4444-4444-8444-444444444444',
       group_name: 'Hardware',
       location_detail: 'FLOOR',
+      // A monitor is one person's, so the default row takes no watchers.
+      // Overridden by the tests that are about that.
+      allows_watchers: false,
     },
     location: {
       building_id: '55555555-5555-4555-8555-555555555555',
@@ -147,6 +153,40 @@ export function makeIncident(overrides: Partial<Incident> = {}): Incident {
     can_assign: false,
     can_add_note: false,
     can_add_internal_note: false,
+    is_watching: false,
+    watcher_count: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * Build a live suggestion — an open ticket that might be the same problem.
+ *
+ * `match` leads the argument list because it is the field these tests are
+ * about: everything else is an ordinary list row, and what a suggestion adds
+ * is the claim about how close it is to where the reporter said they are.
+ */
+export function makeLiveSuggestion(
+  match: SuggestionMatch,
+  overrides: Partial<LiveSuggestion> = {},
+): LiveSuggestion {
+  return { ...makeIncidentListItem(), match, ...overrides };
+}
+
+/** Build a resolved suggestion. Its summary is the reason it is shown. */
+export function makeResolvedSuggestion(
+  match: SuggestionMatch,
+  overrides: Partial<ResolvedSuggestion> = {},
+): ResolvedSuggestion {
+  const listItem = makeIncidentListItem();
+  return {
+    id: '88888888-8888-4888-8888-888888888888',
+    reference: 'INC-000007',
+    title: 'Monitor kept blanking on this floor',
+    resolution_summary: 'Replaced the HDMI cable at the desk. Spares are in the 3rd floor store.',
+    resolved_at: '2026-06-01T09:00:00Z',
+    location: listItem.location,
+    match,
     ...overrides,
   };
 }

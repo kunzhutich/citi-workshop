@@ -18,7 +18,12 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
 
 import { EmptyState } from '../../components/QueryState';
-import { BAR_RADIUS, CATEGORY_GAP_RATIO, SERIES_PRIMARY } from './chartPalette';
+import {
+  BAR_RADIUS,
+  CATEGORY_GAP_RATIO,
+  foldToCategoricalSlices,
+  SERIES_PRIMARY,
+} from './chartPalette';
 
 /**
  * One row of a breakdown: a name, a count, and the list it stands for.
@@ -33,8 +38,18 @@ export interface BreakdownDatum {
   key: string;
   label: string;
   value: number;
-  /** The pre-filtered incident list this bar counted. */
-  href: string;
+  /**
+   * The pre-filtered incident list this row counted, when one exists.
+   *
+   * Optional for one case and it is worth stating: a pie slice that several
+   * categories were folded into (see `foldToCategoricalSlices`) stands for no
+   * single list, because `GET /incidents` filters on one category group at a
+   * time. D14 §3 settled what to do about that — a wrong link is worse than
+   * none, because it teaches a reader that the numbers cannot be checked — so
+   * the slice simply does not navigate, and every folded category keeps its
+   * own row and its own link in the table view.
+   */
+  href?: string;
   /** Overrides the single-series colour, for a genuinely ordered scale. */
   color?: string;
 }
@@ -133,12 +148,37 @@ export function BreakdownChart({
   const largest = Math.max(...data.map((datum) => datum.value), 0);
   const axisMax = largest + Math.max(1, Math.ceil(largest * 0.15));
 
+  /*
+   * What the *pie* draws, which is not always what the table lists.
+   *
+   * A caller that brings its own colours has slices whose identity is already
+   * decided — the priority ramp is the case, and its four steps are an ordered
+   * scale that must never be folded or reordered. A caller that brings none is
+   * saying "these categories have no inherent colour", and then the palette's
+   * cap applies: three validated hues, with everything past them folded into
+   * one neutral. Left alone that caller used to get every slice painted
+   * `SERIES_PRIMARY`, which is correct for bars — the length carries the
+   * magnitude — and useless for a pie, where it produces a ring of one hue
+   * beside a legend of one hue.
+   *
+   * **The fold reaches the chart and stops there.** The table twin below still
+   * lists every category with its own link, which is where a reader goes for
+   * the values anyway, and is the relief case D57 leans on for the neutral's
+   * contrast. Folding both would lose five links to save three colours.
+   */
+  const slices = shape === 'pie' && !data.every((datum) => datum.color)
+    ? foldToCategoricalSlices(data)
+    : data;
+
   const activate = (datum: BreakdownDatum | undefined) => {
     if (!datum) {
       return;
     }
     if (onDrillDown) {
       onDrillDown(datum);
+      return;
+    }
+    if (!datum.href) {
       return;
     }
     void navigate(datum.href);
@@ -200,13 +240,13 @@ export function BreakdownChart({
            * twelve categories read aloud as a `aria-label` is worse than
            * silence, and the table has the links as well as the numbers.
            */
-          <Box role="img" aria-label={summarise(title, data, shape)}>
+          <Box role="img" aria-label={summarise(title, slices, shape)}>
             {shape === 'pie' ? (
               <PieChart
                 height={PIE_HEIGHT}
                 series={[
                   {
-                    data: data.map((datum) => ({
+                    data: slices.map((datum) => ({
                       id: datum.key,
                       // The count rides in the legend rather than on the arc.
                       // Painted on the slice it has to contrast with whatever
@@ -227,7 +267,7 @@ export function BreakdownChart({
                     highlightScope: { highlight: 'item', fade: 'global' },
                   },
                 ]}
-                onItemClick={(_event, item) => activate(data[item.dataIndex])}
+                onItemClick={(_event, item) => activate(slices[item.dataIndex])}
                 sx={(theme) => ({
                   '& .MuiPieArc-root': {
                     cursor: 'pointer',
@@ -372,10 +412,15 @@ function BreakdownTable({
                 <Link component="button" type="button" onClick={() => onDrillDown(datum)}>
                   {datum.label}
                 </Link>
-              ) : (
+              ) : datum.href ? (
                 <Link component={RouterLink} to={datum.href}>
                   {datum.label}
                 </Link>
+              ) : (
+                // No list is exactly this row, so it is text. Only a folded
+                // remainder reaches here, and only in a chart whose table is
+                // unfolded — so in practice, never.
+                datum.label
               )}
             </TableCell>
             <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>

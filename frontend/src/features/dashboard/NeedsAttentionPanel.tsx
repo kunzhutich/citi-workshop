@@ -16,6 +16,8 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { RowActions } from '../../components/RowActions';
+import { aboveStretchedLink, stretchedLink } from '../../components/stretchedLink';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { AssignButton } from '../incidents/AssignButton';
 import { ACTIVE_STATUSES, currentListLink } from './listLinks';
 import { TicketTitle } from '../../components/TicketTitle';
@@ -232,6 +234,28 @@ function PanelHeading({
   );
 }
 
+/**
+ * One row of either queue: a ticket, and the one thing to do about it.
+ *
+ * **The whole row opens the ticket, and Assign still assigns.** This is a flex
+ * row inside a card and not a `<table>`, so it takes the stretched link of
+ * D55 — `components/stretchedLink.ts` — rather than the row click handler the
+ * ticket and engineer tables use. The reference is the one real anchor and
+ * grows over the row through its `::after`; `RowActions` is lifted above that
+ * overlay, which is the piece that keeps the button clickable and therefore
+ * the piece worth a test.
+ *
+ * `position: relative` is written here rather than taken from `clickableCard`
+ * on purpose, and not forgotten: the overlay needs a positioning context or it
+ * escapes to the nearest positioned ancestor and covers the whole panel, but
+ * the rest of that bundle is card chrome. Its hover rule moves a *card's*
+ * border, and the only border a row has is the divider it shares with the row
+ * below; and its `:has(a:hover)` rule suppresses the link underline, which is
+ * the one hover affordance a row inside a card has to say it is a target.
+ *
+ * The cost is the pattern's usual one: text in the row can no longer be
+ * selected by dragging, because the overlay is what the pointer meets.
+ */
 function AttentionRow({
   incidentId,
   reference,
@@ -250,10 +274,13 @@ function AttentionRow({
   groupId: string | null;
 }) {
   const ticketLinkState = useTicketLinkState();
+  const { isMobile } = useBreakpoint();
 
   return (
     <Box
       sx={{
+        // What the reference's overlay is measured against. See above.
+        position: 'relative',
         display: 'flex',
         flexWrap: 'wrap',
         gap: 1.5,
@@ -272,7 +299,7 @@ function AttentionRow({
             to={incidentPath(incidentId)}
             state={ticketLinkState}
             underline="hover"
-            sx={{ fontWeight: 600 }}
+            sx={[{ fontWeight: 600 }, stretchedLink]}
           >
             {reference}
           </Link>
@@ -288,8 +315,22 @@ function AttentionRow({
           {detail}
         </Typography>
       </Box>
-      <RowActions>
-        <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
+      {/*
+        Desktop only: a medium button, centred against the row's text block
+        rather than sitting at its first line. On a phone `RowActions` gives
+        every button the full width of the row and stacks them (§4.5), where a
+        larger button would be no easier to hit and centring a full-width
+        button is meaningless. So both are conditioned on `useBreakpoint`, the
+        same question the rest of the application asks, and neither reaches a
+        phone.
+      */}
+      <RowActions sx={[aboveStretchedLink, !isMobile && { alignSelf: 'center' }]}>
+        <AssignButton
+          incidentId={incidentId}
+          reference={reference}
+          groupId={groupId}
+          size={isMobile ? 'small' : 'medium'}
+        />
       </RowActions>
     </Box>
   );

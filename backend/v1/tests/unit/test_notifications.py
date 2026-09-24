@@ -27,7 +27,14 @@ from app.models.enums import (
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.user import User
-from app.notifications import RULES, Audience, NotificationContext, NotificationRule
+from app.models.watcher import IncidentWatcher
+from app.notifications import (
+    CAPACITY_HOLDERS,
+    RULES,
+    Audience,
+    NotificationContext,
+    NotificationRule,
+)
 
 
 def make_user(role: UserRole = UserRole.EMPLOYEE, full_name: str = "Test User") -> User:
@@ -45,11 +52,18 @@ def make_incident(
     *,
     reporter: User,
     assignee: User | None = None,
+    watchers: list[User] | None = None,
     status: IncidentStatus = IncidentStatus.OPEN,
     ticket_number: int = 123,
     title: str = "Monitor flickers",
 ) -> Incident:
-    """Build a transient incident with its two people attached."""
+    """Build a transient incident with its people attached.
+
+    `watchers` stands in for the relationship
+    `repositories/incidents._detail_loaders` eager-loads. Nothing here is
+    flushed, which is the property this whole file rests on: the policy is
+    checkable without a session, watchers included.
+    """
     incident = Incident(
         id=uuid.uuid4(),
         ticket_number=ticket_number,
@@ -60,6 +74,9 @@ def make_incident(
     )
     incident.reporter = reporter
     incident.assignee = assignee
+    incident.watchers = [
+        IncidentWatcher(incident_id=incident.id, user_id=watcher.id) for watcher in watchers or []
+    ]
     return incident
 
 
@@ -129,14 +146,31 @@ def test_every_message_mentions_the_ticket(rule: NotificationRule) -> None:
 
 
 @pytest.mark.parametrize("rule", RULES, ids=lambda rule: rule.type.value)
-def test_no_rule_speaks_to_an_admin_as_an_audience(rule: NotificationRule) -> None:
+def test_every_audience_a_rule_speaks_to_is_a_relationship_to_the_ticket(
+    rule: NotificationRule,
+) -> None:
     """There is no FACILITY_ADMIN audience, and adding one is a design decision.
 
     Notifying every admin about every event in the estate is a fan-out with no
     bound. If a rule ever needs it, this test is the place that says so out
     loud rather than the inbox quietly filling up.
+
+    WATCHER passes this because it is not a role either: it is a row somebody
+    wrote about themselves on this one ticket, and `allows_watchers` decides
+    which tickets may have any. It is the first audience more than one person
+    can hold, which is the whole of `CAPACITY_HOLDERS`.
     """
-    assert rule.audiences <= {Audience.REPORTER, Audience.ASSIGNEE}
+    assert rule.audiences <= {Audience.REPORTER, Audience.ASSIGNEE, Audience.WATCHER}
+
+
+def test_every_audience_can_be_resolved() -> None:
+    """An audience with no lookup would raise `KeyError` mid-notification.
+
+    Declared as a comparison of two whole sets rather than a loop over the
+    audiences the table happens to use today, so a member added to `Audience`
+    and forgotten in `CAPACITY_HOLDERS` fails here and not in production.
+    """
+    assert set(CAPACITY_HOLDERS) == set(Audience)
 
 
 # --- Rule 1: never your own action -------------------------------------------
@@ -373,6 +407,196 @@ def test_a_note_added_plan_without_a_note_sends_nothing() -> None:
     assert planned == []
 
 
+# --- WATCHED_RESOLVED: the watcher rules -------------------------------------
+
+
+def test_resolving_tells_the_watchers() -> None:
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    first = make_user(full_name="Bo Nearby")
+    second = make_user(full_name="Cam Nextdesk")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[first, second],
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.WATCHED_RESOLVED,
+        NotificationContext(incident=incident, actor=engineer),
+    )
+
+    assert recipients(planned) == {first.id, second.id}
+    assert planned[0].message == ("INC-000123, which you said affected you too, has been resolved.")
+
+
+def test_a_watcher_hears_nothing_about_any_other_move() -> None:
+    """The trigger is a status change; the audience cares about one status.
+
+    Asserted for every status a ticket can reach, so a change to
+    `_is_a_resolution` that widened it — CLOSED is the tempting one — fails
+    here. Four of the five cases are the point: a watcher is not subscribed to
+    a commentary on the repair, and BLOCKED in particular would arrive as bad
+    news about somebody else's ticket.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    onlooker = make_user()
+
+    for status in IncidentStatus:
+        incident = make_incident(
+            reporter=reporter,
+            assignee=engineer,
+            watchers=[onlooker],
+            status=status,
+        )
+        planned = notifications.plan(
+            NotificationType.WATCHED_RESOLVED,
+            NotificationContext(incident=incident, actor=engineer),
+        )
+        expected = {onlooker.id} if status == IncidentStatus.RESOLVED else set()
+        assert recipients(planned) == expected, status
+
+
+def test_a_ticket_nobody_follows_notifies_nobody_when_it_resolves() -> None:
+    """The ordinary case, and the one an empty-database test would also pass.
+
+    Paired with `test_resolving_tells_the_watchers` above deliberately: on its
+    own this assertion is satisfied by a rule that never fires at all.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.WATCHED_RESOLVED,
+        NotificationContext(incident=incident, actor=engineer),
+    )
+
+    assert planned == []
+
+
+def test_a_watcher_who_resolved_it_themselves_is_not_told() -> None:
+    """Rule 1, reaching an audience that was written long after it."""
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    bystander = make_user()
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[engineer, bystander],
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.WATCHED_RESOLVED,
+        NotificationContext(incident=incident, actor=engineer),
+    )
+
+    assert recipients(planned) == {bystander.id}
+
+
+def test_the_reporter_of_a_ticket_they_also_follow_is_told_once() -> None:
+    """Rule 2, across the two rules that both fire on one resolution.
+
+    `already_told` spans a single `plan()` call, and a resolution calls it
+    twice. Without the exclusion in `_the_watchers` this person would read the
+    same news in two sentences, which is precisely what rule 2 forbids — and
+    every other test in this file would still pass.
+
+    Both calls are made here, exactly as `perform_transition` makes them, and
+    the assertion is on the total.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[reporter],
+        status=IncidentStatus.RESOLVED,
+    )
+    context = NotificationContext(incident=incident, actor=engineer)
+
+    everything = notifications.plan(NotificationType.STATUS_CHANGED, context) + notifications.plan(
+        NotificationType.WATCHED_RESOLVED, context
+    )
+
+    assert [item.user_id for item in everything] == [reporter.id]
+    assert everything[0].message == "Your ticket INC-000123 is now Resolved."
+
+
+def test_an_assignee_who_also_follows_the_ticket_is_told_once() -> None:
+    """The same, from the other capacity. An engineer may well press it too."""
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    admin = make_user(UserRole.FACILITY_ADMIN)
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[engineer],
+        status=IncidentStatus.RESOLVED,
+    )
+    context = NotificationContext(incident=incident, actor=admin)
+
+    everything = notifications.plan(NotificationType.STATUS_CHANGED, context) + notifications.plan(
+        NotificationType.WATCHED_RESOLVED, context
+    )
+
+    assert sorted(item.user_id for item in everything) == sorted([reporter.id, engineer.id])
+    by_user = {item.user_id: item.message for item in everything}
+    assert by_user[engineer.id] == "INC-000123 is now Resolved."
+
+
+def test_a_duplicate_watch_row_cannot_produce_two_notifications() -> None:
+    """Belt and braces: the primary key forbids this, and so does `plan`."""
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    onlooker = make_user()
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[onlooker, onlooker],
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.WATCHED_RESOLVED,
+        NotificationContext(incident=incident, actor=engineer),
+    )
+
+    assert len(planned) == 1
+
+
+def test_a_status_change_does_not_reach_a_watcher_through_the_other_rule() -> None:
+    """STATUS_CHANGED has no WATCHER audience, and must not acquire one.
+
+    If it did, every watcher would hear about every move — the outcome the
+    two-rules-with-a-precondition shape exists to prevent — and this file's
+    other tests would all still pass.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    onlooker = make_user()
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        watchers=[onlooker],
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.STATUS_CHANGED,
+        NotificationContext(incident=incident, actor=engineer),
+    )
+
+    assert recipients(planned) == {reporter.id}
+
+
 # --- The wording -------------------------------------------------------------
 
 
@@ -500,13 +724,16 @@ def test_a_lead_is_not_an_audience_on_every_ticket() -> None:
     assert lead.id not in recipients(planned)
 
 
-def test_user_in_capacity_reads_the_incident_and_nothing_else() -> None:
+def test_users_in_capacity_reads_the_incident_and_nothing_else() -> None:
     reporter = make_user()
     engineer = make_user(UserRole.ENGINEER)
-    incident = make_incident(reporter=reporter, assignee=engineer)
+    onlooker = make_user()
+    incident = make_incident(reporter=reporter, assignee=engineer, watchers=[onlooker])
 
-    assert notifications.user_in_capacity(Audience.REPORTER, incident) == reporter.id
-    assert notifications.user_in_capacity(Audience.ASSIGNEE, incident) == engineer.id
+    assert notifications.users_in_capacity(Audience.REPORTER, incident) == (reporter.id,)
+    assert notifications.users_in_capacity(Audience.ASSIGNEE, incident) == (engineer.id,)
+    assert notifications.users_in_capacity(Audience.WATCHER, incident) == (onlooker.id,)
 
-    unassigned = make_incident(reporter=reporter)
-    assert notifications.user_in_capacity(Audience.ASSIGNEE, unassigned) is None
+    bare = make_incident(reporter=reporter)
+    assert notifications.users_in_capacity(Audience.ASSIGNEE, bare) == ()
+    assert notifications.users_in_capacity(Audience.WATCHER, bare) == ()

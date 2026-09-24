@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import type { ReportPeriodParams, ReportScopeParams } from '../../api/reports';
+import { endOfDayInstant, parseCalendarDay, startOfDayInstant } from '../../display/time';
 
 /**
  * The admin dashboard's filters, kept in the URL query string.
@@ -110,7 +111,7 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
   const setFilters = useCallback(
     (changes: Partial<DashboardFilters>) => {
       const next = { ...filters, ...changes };
-      const params = new URLSearchParams();
+      const params = keepForeignParams(searchParams);
 
       if (next.rangeId !== DEFAULT_RANGE_ID) {
         params.set('range', next.rangeId);
@@ -134,7 +135,7 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
       // between the reader and the page they arrived from.
       setSearchParams(params, { replace: true });
     },
-    [filters, setSearchParams],
+    [filters, searchParams, setSearchParams],
   );
 
   const period = resolvePeriod(filters, resolvedNow);
@@ -152,6 +153,32 @@ export function useDashboardFilters(now?: Date): DashboardFilterControls {
 }
 
 /**
+ * Which query parameters this hook owns, and therefore rewrites in full.
+ *
+ * Everything else in the address bar belongs to somebody else and is carried
+ * across untouched. Both filter hooks used to build a *fresh* `URLSearchParams`
+ * from their own view of the world, which is correct on a screen where one of
+ * them is the only writer — and every screen was, until R7 put a ticket list
+ * inside the engineer page. There, changing the date range dropped the list's
+ * status filter and changing the status filter reset the date range to the
+ * default: two hooks each convinced the URL was theirs alone.
+ *
+ * Stated as the owned set rather than as "merge what changed", because a
+ * filter being *cleared* has to remove its parameter, and a merge cannot tell
+ * "cleared" from "not mine". See the matching list in `useIncidentFilters.ts`.
+ */
+const OWNED_PARAMS = ['range', 'from', 'to', 'building_id', 'group_id'] as const;
+
+/** Every parameter except the ones above, so a co-tenant's state survives. */
+function keepForeignParams(current: URLSearchParams): URLSearchParams {
+  const params = new URLSearchParams(current);
+  for (const name of OWNED_PARAMS) {
+    params.delete(name);
+  }
+  return params;
+}
+
+/**
  * Turn the stored filters into the two ISO instants the API takes.
  *
  * A custom range's ends are widened to cover whole local days — `from` at
@@ -166,8 +193,8 @@ export function resolvePeriod(
 ): { from: string | undefined; to: string | undefined } {
   if (filters.rangeId === CUSTOM_RANGE_ID) {
     return {
-      from: filters.from ? startOfDay(filters.from) : undefined,
-      to: filters.to ? endOfDay(filters.to) : undefined,
+      from: startOfDay(filters.from),
+      to: endOfDay(filters.to),
     };
   }
 
@@ -193,10 +220,41 @@ export function rangeLabel(filters: DashboardFilters): string {
   return preset?.label ?? 'Last 30 days';
 }
 
-function startOfDay(date: string): string {
-  return new Date(`${date}T00:00:00`).toISOString();
+/**
+ * One end of a custom range as an instant, or nothing at all.
+ *
+ * **The conversion is `display/time.ts`'s; only the guard is this hook's.**
+ * Those two helpers are `parseCalendarDay` plus `toISOString`, and the rule
+ * they carry — that a calendar day means *local* midnight, not UTC midnight —
+ * has one home. This file used to hold a second copy of both, written before
+ * that module had them.
+ *
+ * What stays here is deciding that a value is not a date at all, because that
+ * is a question about the query being built rather than about arithmetic.
+ * `from` and `to` come out of the address bar, where a hand-edit, a truncated
+ * paste or a stale link can put anything; until R7 they came out of a native
+ * `type="date"` input that could only ever have written a real day, and
+ * `new Date('nonsenseT00:00:00').toISOString()` throws `RangeError` — so
+ * `?range=custom&from=nonsense` took the whole dashboard to the error
+ * boundary. Found by another worker's deliberate-break tests on the date
+ * picker, not by anything the picker itself does wrong.
+ *
+ * Treating it as *no date* is also the answer that agrees with the screen:
+ * `components/DateRangeFields.tsx` shows an empty field for a string it cannot
+ * parse, so the field and the query now say the same thing. Widening to an
+ * unfiltered end is the safe direction as well — the reader sees more than
+ * they asked for rather than silently less.
+ */
+function startOfDay(day: string): string | undefined {
+  return isCalendarDay(day) ? startOfDayInstant(day) : undefined;
 }
 
-function endOfDay(date: string): string {
-  return new Date(`${date}T23:59:59.999`).toISOString();
+/** The other end, at the last millisecond of its local day. Same guard. */
+function endOfDay(day: string): string | undefined {
+  return isCalendarDay(day) ? endOfDayInstant(day) : undefined;
+}
+
+/** Whether this string names a day at all. `''` does not, which is the point. */
+function isCalendarDay(day: string): boolean {
+  return day !== '' && !Number.isNaN(parseCalendarDay(day).getTime());
 }

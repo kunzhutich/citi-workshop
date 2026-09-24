@@ -40,20 +40,31 @@ import type { SxProps, Theme } from '@mui/material/styles';
  * dragging across it, because the overlay is what the pointer meets. That is
  * the accepted trade of this pattern everywhere it is used; a ticket card is
  * something you click rather than something you quote.
+ *
+ * ## Why all three are `satisfies SxProps<Theme>` rather than annotated
+ *
+ * They used to be `const x: SxProps<Theme> = {…}`, which is checked just as
+ * well and types each one as the whole union — object *or* function *or*
+ * array. That is fine while a caller writes `sx={stretchedLink}` and nothing
+ * else, which was every caller until R7. The moment one needs to combine a
+ * fragment with a style of its own, `sx={[{ fontWeight: 600 }, stretchedLink]}`
+ * stops compiling: an element of the array form may not itself be an array,
+ * and the annotation says it might be. `satisfies` checks the same thing and
+ * keeps the literal type, so a fragment composes.
  */
 
 /** On the `Card`: gives the overlay something to be measured against. */
-export const clickableCard: SxProps<Theme> = {
+export const clickableCard = {
   position: 'relative',
   // The whole card is a target now, so it should say so before it is clicked.
   '&:hover': { borderColor: 'text.disabled' },
   '&:has(a:hover) .MuiTypography-root, &:has(a:focus-visible) .MuiTypography-root': {
     textDecoration: 'none',
   },
-};
+} satisfies SxProps<Theme>;
 
 /** On the one `<a>` that should grow to the card's size. */
-export const stretchedLink: SxProps<Theme> = {
+export const stretchedLink = {
   '&::after': {
     content: '""',
     position: 'absolute',
@@ -63,10 +74,10 @@ export const stretchedLink: SxProps<Theme> = {
     zIndex: 0,
     borderRadius: 'inherit',
   },
-};
+} satisfies SxProps<Theme>;
 
 /** On anything that must stay clickable through the overlay. */
-export const aboveStretchedLink: SxProps<Theme> = {
+export const aboveStretchedLink = {
   position: 'relative',
   zIndex: 1,
-};
+} satisfies SxProps<Theme>;

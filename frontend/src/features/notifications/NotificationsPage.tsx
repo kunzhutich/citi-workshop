@@ -1,5 +1,6 @@
 import AssignmentIndIcon from '@mui/icons-material/AssignmentInd';
 import ChatBubbleOutlinedIcon from '@mui/icons-material/ChatBubbleOutlined';
+import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import DoneIcon from '@mui/icons-material/Done';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import OutlinedFlagIcon from '@mui/icons-material/OutlinedFlag';
@@ -56,6 +57,10 @@ const NOTIFICATION_ICONS: Record<NotificationType, ComponentType<SvgIconProps>> 
   ASSIGNED: AssignmentIndIcon,
   NOTE_ADDED: ChatBubbleOutlinedIcon,
   ESCALATION_CLEARED: OutlinedFlagIcon,
+  // The same icon the "I'm affected too" button wears, because that button is
+  // the only reason this row is in your inbox at all: you did not report this
+  // ticket and you do not hold it.
+  WATCHED_RESOLVED: GroupAddOutlinedIcon,
 };
 
 type Filter = 'all' | 'unread';

@@ -25,15 +25,24 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, case, func, select
+from sqlalchemy import ColumnElement, Select, case, delete, false, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.category import Category
-from app.models.enums import EventType, IncidentStatus
+from app.models.enums import ACTIVE_INCIDENT_STATUSES, EventType, IncidentStatus
 from app.models.event import IncidentEvent
 from app.models.incident import Incident
 from app.models.note import IncidentNote
-from app.schemas.incident import UNASSIGNED, IncidentFilters, IncidentSort
+from app.models.watcher import IncidentWatcher
+from app.schemas.incident import (
+    SUGGESTION_SPECIFICITY,
+    UNASSIGNED,
+    IncidentFilters,
+    IncidentSort,
+    SuggestionMatch,
+    SuggestionQuery,
+)
 
 #: A ticket number as a user might type it: `482`, `INC482`, `inc-000482`.
 TICKET_NUMBER_PATTERN = re.compile(r"^(?:INC-?)?(\d+)$", re.IGNORECASE)
@@ -59,10 +68,21 @@ def _list_loaders() -> tuple[Any, ...]:
 def _detail_loaders() -> tuple[Any, ...]:
     """Return the eager-loading options for a single incident.
 
-    Two more than a list row: who escalated it, and which ticket it duplicates.
-    Both appear only on the detail page, so a list does not pay for them.
+    Three more than a list row: who escalated it, which ticket it duplicates,
+    and who is following it. All three appear only on the detail page, so a
+    list does not pay for them.
+
+    `watchers` is load-bearing beyond the screen. `app/notifications.py` reads
+    `incident.watchers` as an attribute and does no database access of its
+    own, which only holds because every incident that reaches a service has
+    come through `get` or `reload` and therefore through this tuple.
     """
-    return (*_list_loaders(), selectinload(Incident.escalator), selectinload(Incident.duplicate_of))
+    return (
+        *_list_loaders(),
+        selectinload(Incident.escalator),
+        selectinload(Incident.duplicate_of),
+        selectinload(Incident.watchers),
+    )
 
 
 def parse_ticket_number(query: str) -> int | None:
@@ -258,6 +278,179 @@ def _subcategory_ids(group_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
 def _subcategory_ids_in(group_ids: Sequence[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     """Return a subquery selecting every subcategory id under any of these groups."""
     return select(Category.id).where(Category.parent_id.in_(group_ids))
+
+
+# --- Suggestions -------------------------------------------------------------
+
+
+def list_live_suggestions(
+    session: Session,
+    *,
+    visible: Select[Any],
+    target: SuggestionQuery,
+    limit: int,
+) -> list[tuple[Incident, SuggestionMatch]]:
+    """Return unfinished tickets that may already be the problem being reported.
+
+    Ordered most specific first and, within a band, newest first. Newest by
+    **when it was reported**: for a ticket still being worked on, that is the
+    only date that says anything about whether it is the same event.
+    """
+    statement = _suggestion_candidates(visible, target).where(
+        Incident.status.in_(ACTIVE_INCIDENT_STATUSES)
+    )
+    return _run_suggestion_query(
+        session,
+        statement=statement,
+        target=target,
+        recency=(Incident.created_at.desc(), Incident.ticket_number.desc()),
+        loaders=_list_loaders(),
+        limit=limit,
+    )
+
+
+def list_resolved_suggestions(
+    session: Session,
+    *,
+    visible: Select[Any],
+    target: SuggestionQuery,
+    limit: int,
+) -> list[tuple[Incident, SuggestionMatch]]:
+    """Return finished tickets whose fix is worth reading, newest fix first.
+
+    **Only rows that have a `resolution_summary`.** A resolved ticket with
+    nothing written on it is a link to a dead end — the reporter opens it
+    expecting to be told what was done and is told nothing — so it is excluded
+    here rather than filtered out of the response later, which would also make
+    `limit` mean a different number of rows each time.
+
+    `resolved_at` sorts nulls last. It is null only for a ticket that was
+    resolved, reopened and closed again: the summary survives that and the
+    timestamp does not, so we genuinely do not know when it was fixed, and
+    "we do not know" belongs at the end of its band rather than at the top.
+    """
+    statement = (
+        _suggestion_candidates(visible, target)
+        .where(Incident.status.in_((IncidentStatus.RESOLVED, IncidentStatus.CLOSED)))
+        .where(Incident.resolution_summary.is_not(None))
+    )
+    return _run_suggestion_query(
+        session,
+        statement=statement,
+        target=target,
+        recency=(Incident.resolved_at.desc().nullslast(), Incident.ticket_number.desc()),
+        loaders=(
+            selectinload(Incident.building),
+            selectinload(Incident.floor),
+            selectinload(Incident.seat),
+        ),
+        limit=limit,
+    )
+
+
+def _suggestion_candidates(visible: Select[Any], target: SuggestionQuery) -> Select[Any]:
+    """Narrow a statement to the same subcategory in the same building.
+
+    The floor and the seat are **not** filters. They rank — a ticket on
+    another floor of the same building is still a candidate, it is just a
+    weaker one — and turning them into `WHERE` clauses is the mistake that
+    makes the panel empty for the first person to report a fault at their own
+    desk.
+
+    The subcategory is exact rather than the group. "Wi-Fi" and "VPN" are both
+    Network & Access and are not the same problem, and a panel that suggested
+    one for the other would train reporters to ignore it.
+    """
+    return visible.where(
+        Incident.category_id == target.category_id,
+        Incident.building_id == target.building_id,
+    )
+
+
+def _run_suggestion_query(
+    session: Session,
+    *,
+    statement: Select[Any],
+    target: SuggestionQuery,
+    recency: tuple[Any, ...],
+    loaders: tuple[Any, ...],
+    limit: int,
+) -> list[tuple[Incident, SuggestionMatch]]:
+    """Rank, cap and run one of the two suggestion queries.
+
+    **Specificity and recency are two ORDER BY terms, never one score.**
+    Collapsing them — a weight per band plus a decay on age — would let a
+    vague match from this morning outrank an exact-seat match from last week,
+    which is precisely backwards: the whole value of "somebody reported this
+    same desk" is that it is the same desk. As two terms the band is absolute
+    and age only ever breaks ties inside it.
+
+    The band is also *returned*, not just sorted on, so the reader can tell
+    the two kinds of claim apart. That is why this yields pairs.
+    """
+    band = _specificity_band(target)
+    ranked = statement.add_columns(band.label("specificity")).order_by(band.asc(), *recency)
+
+    rows = session.execute(ranked.options(*loaders).limit(limit)).all()
+    return [(incident, SUGGESTION_SPECIFICITY[specificity]) for incident, specificity in rows]
+
+
+def _specificity_band(target: SuggestionQuery) -> ColumnElement[int]:
+    """Return the index into `SUGGESTION_SPECIFICITY` each candidate falls in.
+
+    An index rather than a name, so the number the rows are ordered by and the
+    word the response carries are the same fact read two ways and cannot
+    disagree: reordering `SUGGESTION_SPECIFICITY` reorders the results.
+
+    **A location the reporter did not give becomes `WHEN false`.** A request
+    with no seat can never produce a SEAT match — there is no seat of theirs
+    for anything to be the same as — and writing that as a branch that cannot
+    be taken says so in the query itself, as well as keeping this one
+    expression whatever the caller supplied.
+    """
+    seat_matches = Incident.seat_id == target.seat_id if target.seat_id is not None else false()
+    floor_matches = Incident.floor_id == target.floor_id if target.floor_id is not None else false()
+
+    return case(
+        (seat_matches, SUGGESTION_SPECIFICITY.index(SuggestionMatch.SEAT)),
+        (floor_matches, SUGGESTION_SPECIFICITY.index(SuggestionMatch.FLOOR)),
+        # Everything left is in the requested building: `_suggestion_candidates`
+        # made that a filter, so this branch is reached and never guessed.
+        else_=SUGGESTION_SPECIFICITY.index(SuggestionMatch.BUILDING),
+    )
+
+
+# --- Watchers ----------------------------------------------------------------
+
+
+def add_watcher(session: Session, *, incident_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    """Subscribe a user to an incident. Returns whether the row was new.
+
+    `ON CONFLICT DO NOTHING` rather than a read followed by an insert: the
+    table's primary key already says one person watches one ticket at most
+    once, and this is the statement that says the same thing without a window
+    between the check and the write for a double-clicked button to land in.
+    """
+    statement = (
+        insert(IncidentWatcher)
+        .values(incident_id=incident_id, user_id=user_id)
+        .on_conflict_do_nothing(index_elements=["incident_id", "user_id"])
+    )
+    return session.execute(statement).rowcount > 0
+
+
+def remove_watcher(session: Session, *, incident_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    """Unsubscribe a user from an incident. Returns whether a row was removed.
+
+    A delete that matches nothing is not an error: unsubscribing from a ticket
+    you were not following leaves you not following it, which is what was
+    asked for.
+    """
+    statement = delete(IncidentWatcher).where(
+        IncidentWatcher.incident_id == incident_id,
+        IncidentWatcher.user_id == user_id,
+    )
+    return session.execute(statement).rowcount > 0
 
 
 # --- Events ------------------------------------------------------------------

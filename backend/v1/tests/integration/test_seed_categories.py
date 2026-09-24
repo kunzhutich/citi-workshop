@@ -1,7 +1,13 @@
 """Category reference data."""
 
+import importlib.util
+import pathlib
+import types
+
 import pytest
-from sqlalchemy import delete, func, select
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, aliased
 
 from app.models.category import Category
@@ -26,6 +32,31 @@ def _empty_categories(db_session: Session) -> None:
     """
     db_session.execute(delete(Category))
     db_session.flush()
+
+
+#: The owner's mapping, read out of the seed table rather than restated.
+#:
+#: A list of pairs, never of names: six subcategories in the tree are called
+#: "Other" and the mapping tells them apart. Deriving it here the same way the
+#: seed applies it is the point — what these tests check is that the *pairs*
+#: are right, which is the thing a name-keyed implementation gets wrong.
+SHARED_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    (group.name, name)
+    for group in CATEGORY_GROUPS
+    for name in group.subcategories
+    if name in group.shared_subcategories
+)
+
+
+def flag_of(db_session: Session, group_name: str, subcategory_name: str) -> bool:
+    """Return one subcategory's `allows_watchers`, looked up by the pair."""
+    parent = aliased(Category)
+    statement = (
+        select(Category.allows_watchers)
+        .join(parent, Category.parent_id == parent.id)
+        .where(parent.name == group_name, Category.name == subcategory_name)
+    )
+    return db_session.scalars(statement).one()
 
 
 def test_seeding_creates_the_whole_tree(db_session: Session) -> None:
@@ -133,3 +164,174 @@ def test_tree_is_only_two_levels_deep(db_session: Session) -> None:
     ).one()
 
     assert grandchildren == 0
+
+
+# --- allows_watchers ---------------------------------------------------------
+
+
+def test_the_two_other_subcategories_that_are_shared_are_the_right_two(
+    db_session: Session,
+) -> None:
+    """The case a mapping keyed on the subcategory name alone gets wrong.
+
+    All three of these are called "Other". Two are shared and one is not, so
+    any implementation that looks up by name has to give the same answer for
+    all three and fails on at least one of them whichever answer it picks.
+    """
+    seed_categories(db_session)
+
+    assert flag_of(db_session, "Meeting Rooms", "Other") is True
+    assert flag_of(db_session, "Building & Facilities", "Other") is True
+    assert flag_of(db_session, "Network & Access", "Other") is False
+
+
+def test_the_seeded_flag_is_the_owners_list_and_nothing_else(db_session: Session) -> None:
+    """Every subcategory, checked against the mapping in both directions.
+
+    Asserted as one set comparison rather than a loop of individual asserts,
+    so a subcategory that is shared and should not be shows up here as
+    plainly as one that is missing.
+    """
+    seed_categories(db_session)
+
+    parent = aliased(Category)
+    rows = db_session.execute(
+        select(parent.name, Category.name)
+        .join(parent, Category.parent_id == parent.id)
+        .where(Category.allows_watchers.is_(True))
+    ).all()
+
+    assert {(group, name) for group, name in rows} == SHARED_PAIRS
+    assert len(SHARED_PAIRS) == 17
+
+
+@pytest.mark.parametrize(
+    ("group_name", "subcategory_name"),
+    [
+        ("Hardware", "Laptop/Desktop"),
+        ("Network & Access", "VPN"),
+        ("Network & Access", "Account/Password"),
+        ("Cleaning & Waste", "Spill/Stain"),
+        ("Safety & Security", "Door/Lock"),
+        ("Deliveries & Moves", "Desk Move"),
+    ],
+)
+def test_a_personal_problem_stays_personal(
+    db_session: Session,
+    group_name: str,
+    subcategory_name: str,
+) -> None:
+    """Including every subcategory of the three groups R6 added.
+
+    The owner's list does not name them, and the arguable ones default to
+    personal on purpose: a duplicate ticket costs an engineer a minute, and a
+    stranger subscribing to a problem with somebody's laptop cannot be undone.
+    """
+    seed_categories(db_session)
+
+    assert flag_of(db_session, group_name, subcategory_name) is False
+
+
+def test_every_shared_name_is_one_of_that_groups_subcategories() -> None:
+    """A typo in `shared_subcategories` would otherwise be a silent no-op.
+
+    The seed applies the flag by asking whether each subcategory it inserts is
+    in the set, so a misspelled entry never matches anything and nothing
+    anywhere would say so.
+    """
+    for group in CATEGORY_GROUPS:
+        unknown = group.shared_subcategories - set(group.subcategories)
+        assert not unknown, f"{group.name}: {sorted(unknown)}"
+
+
+def test_seeding_does_not_overwrite_an_admins_watcher_decision(db_session: Session) -> None:
+    """`migrate` runs the seed on every deploy; it must not revert a decision.
+
+    Both directions, because a seed that only ever turned the flag *on* would
+    pass a test that checked one of them.
+    """
+    seed_categories(db_session)
+    parent = aliased(Category)
+    lighting = db_session.scalars(
+        select(Category)
+        .join(parent, Category.parent_id == parent.id)
+        .where(parent.name == "Building & Facilities", Category.name == "Lighting")
+    ).one()
+    monitor = db_session.scalars(
+        select(Category)
+        .join(parent, Category.parent_id == parent.id)
+        .where(parent.name == "Hardware", Category.name == "Monitor")
+    ).one()
+
+    lighting.allows_watchers = False
+    monitor.allows_watchers = True
+    db_session.flush()
+
+    seed_categories(db_session)
+
+    assert flag_of(db_session, "Building & Facilities", "Lighting") is False
+    assert flag_of(db_session, "Hardware", "Monitor") is True
+
+
+def load_revision_0006() -> types.ModuleType:
+    """Import revision 0006 by path.
+
+    By path because `alembic/versions` is not a package — the revisions are
+    loaded by Alembic's own script directory, never imported by name.
+    """
+    revision = pathlib.Path(__file__).parents[2] / "alembic" / "versions" / "0006_watchers.py"
+    spec = importlib.util.spec_from_file_location("revision_0006", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_migrations_frozen_mapping_still_matches_the_seed() -> None:
+    """Revision 0006 spells the mapping out; this is what keeps the two honest.
+
+    The duplication is deliberate — revision 0005 records why a revision must
+    not read a live application constant — so the guard against it drifting
+    has to be a test rather than a shared import. The migration's copy applies
+    once, to rows that already existed; the seed's applies to rows it inserts.
+    Only one of them will still be running in a year, and they have to agree
+    for the year before that.
+    """
+    module = load_revision_0006()
+
+    assert frozenset(module.SHARED_SUBCATEGORIES) == SHARED_PAIRS
+
+
+def test_the_migrations_backfill_turns_on_exactly_the_right_rows(db_session: Session) -> None:
+    """The backfill statement, run for once against a populated tree.
+
+    Every ordinary run of this suite executes it against an **empty**
+    `categories` table — the test database is created, migrated, and only then
+    seeded — so a row-value `IN` that matched nothing, or a join written the
+    wrong way round, would update nought rows and be indistinguishable from
+    success. That is the shape of defect DECISION-LOG D24, D25, D35 and D40
+    all share, and this is the assertion that closes it: the flag is cleared
+    on a seeded tree, the migration's own function is run against it, and the
+    rows it turned back on are compared with the mapping.
+
+    The `Operations.context` block is what makes `op.execute` inside the
+    revision resolve to this session's connection. The whole thing is inside
+    the test's transaction and is rolled back with it.
+    """
+    seed_categories(db_session)
+    db_session.execute(update(Category).values(allows_watchers=False))
+    db_session.flush()
+
+    module = load_revision_0006()
+    operations = Operations(MigrationContext.configure(db_session.connection()))
+    with Operations.context(operations):
+        module.apply_the_shared_mapping()
+
+    parent = aliased(Category)
+    rows = db_session.execute(
+        select(parent.name, Category.name)
+        .join(parent, Category.parent_id == parent.id)
+        .where(Category.allows_watchers.is_(True))
+    ).all()
+
+    assert {(group, name) for group, name in rows} == SHARED_PAIRS

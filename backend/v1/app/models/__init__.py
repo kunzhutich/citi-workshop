@@ -19,6 +19,7 @@ from app.models.notification import Notification
 from app.models.refresh_token import RefreshToken
 from app.models.seat import Seat
 from app.models.user import User
+from app.models.watcher import IncidentWatcher
 
 __all__ = [
     "Base",
@@ -29,6 +30,7 @@ __all__ = [
     "Incident",
     "IncidentEvent",
     "IncidentNote",
+    "IncidentWatcher",
     "LoginAttempt",
     "Notification",
     "RefreshToken",

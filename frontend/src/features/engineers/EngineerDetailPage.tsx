@@ -2,31 +2,87 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Divider from '@mui/material/Divider';
 import Typography from '@mui/material/Typography';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 
 import { LevelChip } from '../../components/LevelChip';
-import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { availabilityLabel } from '../../display/labels';
 import { paths } from '../../routes';
 import { BreakdownChart } from '../dashboard/BreakdownChart';
 import { DashboardFilterBar } from '../dashboard/DashboardFilterBar';
 import { useEngineerDetailReport } from '../dashboard/hooks';
-import { PeriodScopeHeading } from '../dashboard/ScopeHeading';
+import { PeriodScopeHeading, ScopeLabel } from '../dashboard/ScopeHeading';
 import { StatTile, StatTileGrid } from '../dashboard/StatTile';
 import { useDashboardFilters } from '../dashboard/useDashboardFilters';
 import { HomeTicketRow } from '../home/HomeTicketRow';
 import { useIncidents } from '../incidents/hooks';
+import { IncidentsPage } from '../incidents/IncidentsPage';
 import { CapacityBar } from './CapacityBar';
 import { EngineerBasics } from './EngineerBasics';
 import { useEngineer } from './hooks';
 
-/** How many of their current tickets the page lists before deferring. */
+/** How many of their current tickets the live section lists. */
 const CURRENT_LIMIT = 8;
 
 /**
- * One engineer's page — §6.1 of the redesign brief.
+ * The two sections above the divider: what each wants, and what each gets.
+ *
+ * Flex bases rather than a breakpoint, deliberately. D44 is the entry about a
+ * layout switched on the *window's* width while the box holding it was 248px
+ * of drawer and 48px of padding narrower — these ask the box instead, so the
+ * sections split when there is room for them and stack when there is not,
+ * whatever the window is doing around them.
+ *
+ * **They are 3:7 and not 1:1**, because the two sides are not the same job.
+ * The left is seven fields and a Save button, and a form does not read better
+ * for being wider; the right is a queue of tickets, which does. The grow
+ * factors are 3 and 7 to match, and the bases are in that ratio too — which is
+ * what holds the split at *every* width rather than at one. Even bases with
+ * uneven growth drift back towards even as the container widens, because the
+ * even part is fixed and only the remainder is shared.
+ *
+ * Their sum is what decides when the split stops being a split, and it is the
+ * 680px the even halves added up to, so the width at which the two stack has
+ * not moved. Below it each one is alone on its line and takes all of it.
+ */
+const DETAILS_BASIS = 204;
+const CURRENT_BASIS = 476;
+
+/**
+ * How long the capacity bar is on this screen.
+ *
+ * `CapacityBar` asks for 120px and is right to: the roster draws one in every
+ * row of a table, the dashboard's workload table does the same, and the assign
+ * dialog puts one beside every candidate — a bar that claimed 320px in any of
+ * those would push what is next to it off the screen. So the room comes from
+ * this caller, a wrapper this box's width which the bar then fills, rather
+ * than from a prop. A prop would be a second place to decide one thing, and
+ * with all three of the other callers wanting the default it would exist to be
+ * passed exactly once.
+ *
+ * A definite width rather than `1 1 auto`: a bar is read as a proportion, and
+ * past a point more length does not make "17 / 15" any clearer — it only
+ * leaves the availability word stranded at the far end of a 700px line.
+ */
+const CAPACITY_BAR_WIDTH = 320;
+
+/**
+ * Narrowest a column of live tickets may be before there is only one of them.
+ *
+ * The live section is 70% of the line and holds two columns, so each is about
+ * 35% of the page — but "two columns" has to be something the box decides
+ * rather than a number written down, or a phone gets two 160px cards. This is
+ * `auto-fit` with a floor, which is the answer `FilterRow` gives to the same
+ * question for the same reason (D44): two columns while two of these and the
+ * gap fit, one when they do not. On a 375px screen the sections have already
+ * stacked, so this box is the full 343px of it, and one column is what fits.
+ */
+const TICKET_COLUMN = 260;
+
+/**
+ * One engineer's page — §6.1 of the redesign brief, rearranged in R7.
  *
  * It replaces an "Edit engineer" modal, and the difference is not that a page
  * is bigger than a dialog. A dialog can only answer *what are this person's
@@ -42,10 +98,32 @@ const CURRENT_LIMIT = 8;
  * "resolved, then reopened" for exactly that reason, and the tooltip says the
  * rest. A quality signal that overstates itself is worse than none.
  *
- * **The period applies to the figures, not to the current work.** "What are
- * they holding right now" is a question about today — the same split the admin
- * dashboard is built around (D9), and the same reason this page has a period
- * heading over one half and not the other.
+ * **The period applies to the figures, not to the current work**, which is
+ * D9's rule and the thing this layout has to keep visible. The page used to
+ * rely on a sentence under the filter bar saying so. It now says it the way
+ * the admin dashboard does (D14): two scope labels, one over each half —
+ * "Right now" over the capacity bar and the live queue, "Over the selected
+ * period" over the tiles and the chart — and the date controls sit inside the
+ * period heading rather than above the whole page, so they cannot look like
+ * they reach the half above them.
+ *
+ * **The top of the page is 30/70 rather than in halves**, which is the shape
+ * of the two questions rather than a preference. The left is a form — seven
+ * fields that do not read better for being wider — and the right is a queue,
+ * which does: at 70% it holds two columns of tickets instead of one, so eight
+ * of them are four rows rather than eight and the divider below is reachable
+ * without scrolling past them. Every number in that arrangement is a flex
+ * basis or a grid floor, so the container decides when it stops being an
+ * arrangement: on a phone the two sections stack and the two ticket columns
+ * become one, and nothing had to know how wide the window was (D44).
+ *
+ * **The ticket table at the bottom is `IncidentsPage` with a preset**, the
+ * same component the four list screens are. It brings its own filter bar,
+ * paging and empty state, which is the entire reason to reuse it; `embedded`
+ * is the one thing it is told, and all that does is stop it claiming the
+ * page's `h1`. Its scope is a third one — every ticket ever assigned to this
+ * person, finished work last — so its own description says so rather than
+ * letting the period label above it be read over it.
  */
 export function EngineerDetailPage() {
   const { userId = '' } = useParams();
@@ -64,6 +142,7 @@ export function EngineerDetailPage() {
   });
 
   const reportWindow = report.data?.window;
+  const currentTotal = current.data?.total ?? 0;
 
   return (
     <Box>
@@ -83,22 +162,25 @@ export function EngineerDetailPage() {
       >
         {engineer.data ? (
           <>
-            <PageHeader
-              title={engineer.data.full_name}
-              description={engineer.data.email}
-              actions={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
-                  <LevelChip level={engineer.data.level} />
-                  <Typography variant="body2" color="text.secondary">
-                    {availabilityLabel(engineer.data.availability)}
-                  </Typography>
-                  <CapacityBar
-                    active={engineer.data.active_ticket_count}
-                    max={engineer.data.max_active_tickets}
-                  />
-                </Box>
-              }
-            />
+            {/*
+              The page's own `h1`, rather than `PageHeader`.
+              `PageHeader.title` is a string by construction, and the level
+              belongs *inside* the title line — "Priya Raman, Lead" is one
+              fact about one person, where a chip at the far end of the header
+              row reads as a control for the screen. `TicketTitle`'s `page`
+              density is the same exception for the same reason.
+            */}
+            <Box sx={{ mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                <Typography variant="h1" component="h1">
+                  {engineer.data.full_name}
+                </Typography>
+                <LevelChip level={engineer.data.level} />
+              </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {engineer.data.email}
+              </Typography>
+            </Box>
 
             {!engineer.data.is_active ? (
               <Alert severity="warning" sx={{ mb: 2 }}>
@@ -106,21 +188,137 @@ export function EngineerDetailPage() {
               </Alert>
             ) : null}
 
-            <EngineerBasics engineer={engineer.data} />
+            {/* --- Their settings, and what they are holding ---------------- */}
 
-            {/* --- The period half ------------------------------------------ */}
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'flex-start' }}>
+              <Box sx={{ flex: `3 1 ${DETAILS_BASIS}px`, minWidth: 0 }}>
+                {/*
+                  The heading the card used to draw inside itself, lifted out
+                  of it — and written here rather than left there, because its
+                  size is a fact about the *pair*: it has to match "On their
+                  plate now" opposite, and a pair that must match is easier to
+                  keep matching when both ends are in one file.
 
-            <DashboardFilterBar
-              controls={controls}
-              note="The dates apply to the figures below. What they are holding right now is
-                    counted however old it is."
-            />
+                  Out of the card is what puts the two sections on one line. A
+                  heading inside a `CardContent` starts 16px of padding below
+                  the top of its column, so the left side began lower than the
+                  right for no reason a reader could see. The margins are the
+                  ones `ScopeLabel` carries opposite, so what follows each
+                  heading — the card here, the capacity bar there — starts at
+                  the same height as well.
+                */}
+                <Typography variant="h3" component="h2" sx={{ mt: 0.5, mb: 1 }}>
+                  Details
+                </Typography>
+                <EngineerBasics engineer={engineer.data} />
+              </Box>
+
+              <Box sx={{ flex: `7 1 ${CURRENT_BASIS}px`, minWidth: 0 }}>
+                <ScopeLabel kind="current" />
+
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 2,
+                    mb: 3,
+                  }}
+                >
+                  {/* The bar fills this box, so this box is how long the bar
+                      is. See `CAPACITY_BAR_WIDTH` for why the length is asked
+                      for here and not inside the component. */}
+                  <Box sx={{ flex: `0 1 ${CAPACITY_BAR_WIDTH}px`, minWidth: 0 }}>
+                    <CapacityBar
+                      active={engineer.data.active_ticket_count}
+                      max={engineer.data.max_active_tickets}
+                    />
+                  </Box>
+                  <Typography variant="body2" color="text.secondary">
+                    {availabilityLabel(engineer.data.availability)}
+                  </Typography>
+                </Box>
+
+                <Typography variant="h3" component="h2">
+                  On their plate now
+                </Typography>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: 'block', mb: 1 }}
+                >
+                  Open, in progress or blocked — however long ago it was reported.
+                </Typography>
+
+                <QueryState
+                  isPending={current.isPending}
+                  error={current.error}
+                  errorFallback="Could not load their current tickets."
+                >
+                  {(current.data?.items.length ?? 0) === 0 ? (
+                    <Alert severity="info">Nothing is assigned to them right now.</Alert>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${TICKET_COLUMN}px), 1fr))`,
+                        gap: 1.5,
+                      }}
+                    >
+                      {(current.data?.items ?? []).map((incident) => (
+                        <HomeTicketRow key={incident.id} incident={incident} />
+                      ))}
+                      {currentTotal > CURRENT_LIMIT ? (
+                        /*
+                         * A sentence where there used to be a link to
+                         * `/tickets?assignee_id=…`. That link now sends a
+                         * reader off the page to reach a table that is four
+                         * hundred pixels below them.
+                         *
+                         * `1 / -1` because it is about the whole list rather
+                         * than about the column it would otherwise land in,
+                         * beside the last ticket and reading as a note on it.
+                         */
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ gridColumn: '1 / -1' }}
+                        >
+                          The {CURRENT_LIMIT} most urgent of {currentTotal}. Every ticket they
+                          have ever had, finished work included, is in the table below.
+                        </Typography>
+                      ) : null}
+                    </Box>
+                  )}
+                </QueryState>
+              </Box>
+            </Box>
+
+            {/* --- What they got through, over the chosen period ------------ */}
 
             <PeriodScopeHeading
               title="What they got through"
+              // Still read off the response rather than the picker, even
+              // though `datesShownElsewhere` means no reader sees them: the
+              // day this heading shows its dates again, they must be the
+              // server's own. See D14 and D24.
               from={reportWindow?.from}
               to={reportWindow?.to}
               buildingName={null}
+              datesShownElsewhere
+              /*
+               * `note={false}` and not a shorter sentence. The bar's caption
+               * exists on the dashboard because nothing else there says which
+               * widgets the dates reach; here the two scope labels say it
+               * structurally, above the things they are about, and a third
+               * statement of it would be the line nobody reads.
+               *
+               * `narrow` because this is the bar in a slot rather than across
+               * a page: the two selects divide the room the heading gives them
+               * instead of asking for 200px each, and a custom range opens on
+               * a row underneath instead of between them.
+               */
+              actions={<DashboardFilterBar controls={controls} note={false} narrow />}
             />
 
             <QueryState
@@ -128,83 +326,88 @@ export function EngineerDetailPage() {
               error={report.error}
               errorFallback="Could not load this engineer's figures."
             >
-              <StatTileGrid>
-                <StatTile
-                  label="Resolved"
-                  value={report.data?.resolved_in_period ?? 0}
-                  caption="Tickets they marked fixed in this period"
-                />
-                <StatTile
-                  label="Closed"
-                  value={report.data?.closed_in_period ?? 0}
-                  caption="Of those, agreed finished by the reporter or an admin"
-                />
-                <StatTile
-                  label="Resolved, then reopened"
-                  value={report.data?.reopened_in_period ?? 0}
-                  caption={
-                    report.data?.reopen_rate_pct === null || report.data === undefined
-                      ? 'Nothing resolved in this period'
-                      : `${report.data.reopen_rate_pct}% of what they resolved came back`
-                  }
-                />
-              </StatTileGrid>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'stretch' }}>
+                {/* Two fifths and three fifths when they share a line, one
+                    above the other when they cannot. The grow factors are
+                    what make the split uneven; the bases are what decide
+                    when it stops being a split at all. */}
+                <Box sx={{ flex: '1 1 250px', minWidth: 0 }}>
+                  <StatTileGrid stack>
+                    <StatTile
+                      label="Resolved"
+                      value={report.data?.resolved_in_period ?? 0}
+                      caption="Tickets they marked fixed in this period"
+                      isStale={report.isFetching}
+                    />
+                    <StatTile
+                      label="Closed"
+                      value={report.data?.closed_in_period ?? 0}
+                      caption="Of those, agreed finished by the reporter or an admin"
+                      isStale={report.isFetching}
+                    />
+                    <StatTile
+                      label="Resolved, then reopened"
+                      value={report.data?.reopened_in_period ?? 0}
+                      caption={
+                        report.data?.reopen_rate_pct === null || report.data === undefined
+                          ? 'Nothing resolved in this period'
+                          : `${report.data.reopen_rate_pct}% of what they resolved came back`
+                      }
+                      isStale={report.isFetching}
+                    />
+                  </StatTileGrid>
+                </Box>
 
-              <Box sx={{ mt: 3 }}>
-                <BreakdownChart
-                  title="What they fix"
-                  caption="Resolved in this period, by category group"
-                  emptyMessage="Nothing resolved in this period"
-                  isStale={report.isFetching}
-                  data={(report.data?.resolved_by_group ?? []).map((row) => ({
-                    key: row.group_id,
-                    label: row.group_name,
-                    value: row.count,
-                    // Straight to the tickets the bar counted, filtered the
-                    // same way the number was.
-                    href: `${paths.allTickets}?assignee_id=${userId}&group_id=${row.group_id}`,
-                  }))}
-                />
+                <Box sx={{ flex: '1.7 1 360px', minWidth: 0 }}>
+                  <BreakdownChart
+                    title="What they fix"
+                    caption="Resolved in this period, by category group"
+                    emptyMessage="Nothing resolved in this period"
+                    isStale={report.isFetching}
+                    /*
+                     * A pie, as §D3 of the brief asks. It is worth recording
+                     * that this is the one chart on the application whose
+                     * shape the palette does not endorse: D57 caps a pie at
+                     * the three categorical slice colours that clear the
+                     * all-pairs gates, and there are eight category groups.
+                     * No colour is passed, so every slice is the one series
+                     * colour `chartPalette.ts` prescribes for a many-category
+                     * breakdown — which means the legend names eight shares
+                     * that nothing on the arc distinguishes. The table toggle
+                     * in the card's own header is what makes it readable, and
+                     * bars are what would make it legible.
+                     */
+                    shape="pie"
+                    data={(report.data?.resolved_by_group ?? []).map((row) => ({
+                      key: row.group_id,
+                      label: row.group_name,
+                      value: row.count,
+                      // Straight to the tickets the slice counted, filtered
+                      // the same way the number was.
+                      href: `${paths.allTickets}?assignee_id=${userId}&group_id=${row.group_id}`,
+                    }))}
+                  />
+                </Box>
               </Box>
             </QueryState>
 
-            {/* --- The right-now half --------------------------------------- */}
+            {/* --- Every ticket they have had ------------------------------- */}
 
-            <Box sx={{ mt: 4 }}>
-              <Typography variant="h2" component="h2" gutterBottom>
-                On their plate now
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                Everything open, in progress or blocked that is assigned to them — whenever it
-                was reported. The dates above do not reach it.
-              </Typography>
+            <Divider sx={{ mt: 5, mb: 3 }} />
 
-              <QueryState
-                isPending={current.isPending}
-                error={current.error}
-                errorFallback="Could not load their current tickets."
-              >
-                {(current.data?.items.length ?? 0) === 0 ? (
-                  <Alert severity="info">Nothing is assigned to them right now.</Alert>
-                ) : (
-                  <Box sx={{ display: 'grid', gap: 1.5 }}>
-                    {(current.data?.items ?? []).map((incident) => (
-                      <HomeTicketRow key={incident.id} incident={incident} />
-                    ))}
-                    {(current.data?.total ?? 0) > CURRENT_LIMIT ? (
-                      <Button
-                        component={RouterLink}
-                        to={`${paths.allTickets}?assignee_id=${userId}`}
-                        size="small"
-                        sx={{ justifySelf: 'start' }}
-                      >
-                        See all {current.data?.total} assigned
-                      </Button>
-                    ) : null}
-                  </Box>
-                )}
-              </QueryState>
-            </Box>
+            <IncidentsPage
+              embedded
+              title="Their tickets"
+              description="Everything ever assigned to them, finished work last. This list has
+                           its own filters and its own paging; the date range above does not
+                           reach it."
+              // The same shape as My Queue, pointed at somebody else: §5.6's
+              // `closed_last` is a prefix to whatever sort is applied, so
+              // finished work sinks however the list is arranged.
+              preset={{ assignee_id: userId, closed_last: true }}
+              emptyTitle="Nothing has ever been assigned to them"
+              emptyDescription="Work assigned to them by a lead or an admin appears here."
+            />
           </>
         ) : null}
       </QueryState>
