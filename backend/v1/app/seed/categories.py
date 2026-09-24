@@ -13,6 +13,16 @@ Seeding is idempotent, matching on ``(parent_id, name)`` — the same pair the
 unique constraint uses. Re-running it never duplicates a row and never
 resurrects one an admin deactivated, because a deactivated row still exists and
 is therefore found.
+
+That applies to ``allows_watchers`` as well, and deliberately. ``migrate`` runs
+this on every deploy, so a seed that *wrote* the flag onto rows that already
+exist would silently revert an administrator's decision every time the
+application shipped — and the flag is exactly the kind of thing an
+administrator curates, since the default is "personal" and the arguable cases
+are meant to be argued. The seed therefore sets it only on rows it inserts.
+Existing rows got their initial value once, from revision 0006, at the moment
+the column came into existence and before anybody could have had an opinion
+about it.
 """
 
 from dataclasses import dataclass, field
@@ -33,6 +43,18 @@ class CategoryGroupSeed:
     icon: str
     location_detail: LocationDetail
     subcategories: tuple[str, ...]
+    #: Which of those subcategories describe a problem other people can be
+    #: affected by, and so get ``allows_watchers``. Everything unlisted is
+    #: personal.
+    #:
+    #: **A field on the group, not a module-level set of names**, and that is
+    #: the whole point: six subcategories in this table are called "Other",
+    #: and this mapping has to tell them apart. Meeting Rooms "Other" and
+    #: Building & Facilities "Other" are shared; Network & Access "Other" is
+    #: not. Living inside the group makes the key ``(group, subcategory)`` by
+    #: construction, so the version of this that is keyed on the name alone
+    #: cannot be written by accident.
+    shared_subcategories: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -68,6 +90,9 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
             "Printer/Scanner",
             "Other hardware",
         ),
+        # A shared printer is the textbook case; everything else in this group
+        # is equipment issued to one person.
+        shared_subcategories=frozenset({"Printer/Scanner"}),
     ),
     CategoryGroupSeed(
         name="Software",
@@ -96,6 +121,11 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
             "Badge/Door Access",
             "Other",
         ),
+        # Infrastructure everyone in the building shares. VPN and
+        # Account/Password are not: they are one person's credentials, and
+        # "Other" here is unknown, which is not a reason to let strangers
+        # subscribe to it.
+        shared_subcategories=frozenset({"Wi-Fi", "Wired Network", "Badge/Door Access"}),
     ),
     CategoryGroupSeed(
         name="Meeting Rooms",
@@ -107,6 +137,11 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
             "Video Conferencing",
             "Audio/Microphone",
             "Other",
+        ),
+        # A meeting room belongs to nobody, so every problem in it is shared —
+        # including "Other". This is one of the two "Other"s that are.
+        shared_subcategories=frozenset(
+            {"Display/Projector", "Video Conferencing", "Audio/Microphone", "Other"}
         ),
     ),
     CategoryGroupSeed(
@@ -125,6 +160,22 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
             "Safety Hazard",
             "Other",
         ),
+        # The whole group: a cold floor, a dark corridor and a broken tap are
+        # all things the next person along notices too. The second shared
+        # "Other".
+        shared_subcategories=frozenset(
+            {
+                "Temperature/HVAC",
+                "Lighting",
+                "Plumbing/Restroom",
+                "Power/Outlets",
+                "Furniture",
+                "Cleaning",
+                "Kitchen/Appliances",
+                "Safety Hazard",
+                "Other",
+            }
+        ),
     ),
     #
     # The three below were added for §6.2 of the redesign brief, which asks for
@@ -138,6 +189,12 @@ CATEGORY_GROUPS: tuple[CategoryGroupSeed, ...] = (
     # `seed_categories` inserts what is missing and leaves what exists alone,
     # so running `migrate` against a database that predates these adds them
     # without touching a renamed hint or a reordered group.
+    #
+    # None of the three names a shared subcategory. The owner's list does not
+    # mention them, and the arguable ones default to personal on purpose: it
+    # is better that somebody files a duplicate than that a stranger
+    # subscribes to a problem that turns out to be about their own desk. An
+    # admin can turn any of them on, and `seed_categories` will not undo it.
     #
     CategoryGroupSeed(
         name="Cleaning & Waste",
@@ -219,6 +276,9 @@ def seed_categories(session: Session) -> SeedResult:
                     # Subcategories inherit the group's location requirement.
                     location_detail=group_seed.location_detail,
                     sort_order=child_order,
+                    # Set here and nowhere else: an existing row keeps
+                    # whatever an admin last decided. See the module docstring.
+                    allows_watchers=subcategory_name in group_seed.shared_subcategories,
                 )
             )
             result.subcategories_created += 1

@@ -207,6 +207,9 @@ function makeCategory(id: string, name: string): Category {
     location_detail: 'FLOOR',
     sort_order: 1,
     is_active: true,
+    // Nothing in this file is about watchers; it is here because the mirror
+    // declares it, which is the point of a required field.
+    allows_watchers: false,
   };
 }
 

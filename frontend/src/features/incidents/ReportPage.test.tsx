@@ -26,6 +26,7 @@ const CATEGORY_TREE: CategoryTree = {
       location_detail: 'FLOOR',
       sort_order: 0,
       is_active: true,
+      allows_watchers: false,
       children: [
         {
           id: 'c-monitor',
@@ -36,6 +37,7 @@ const CATEGORY_TREE: CategoryTree = {
           location_detail: 'FLOOR',
           sort_order: 0,
           is_active: true,
+          allows_watchers: false,
         },
       ],
     },
@@ -48,6 +50,7 @@ const CATEGORY_TREE: CategoryTree = {
       location_detail: 'BUILDING',
       sort_order: 1,
       is_active: true,
+      allows_watchers: false,
       children: [
         {
           id: 'c-email',
@@ -58,6 +61,7 @@ const CATEGORY_TREE: CategoryTree = {
           location_detail: 'BUILDING',
           sort_order: 0,
           is_active: true,
+          allows_watchers: false,
         },
       ],
     },

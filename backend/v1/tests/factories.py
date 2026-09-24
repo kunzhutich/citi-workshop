@@ -36,6 +36,7 @@ from app.models.note import IncidentNote
 from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
+from app.models.watcher import IncidentWatcher
 from app.security.passwords import hash_password
 
 #: Password used by every test account unless one is passed explicitly.
@@ -167,8 +168,15 @@ def make_category(
     location_detail: LocationDetail = LocationDetail.FLOOR,
     sort_order: int = 0,
     is_active: bool = True,
+    allows_watchers: bool = False,
 ) -> Category:
-    """Insert a category group, or a subcategory when `parent` is given."""
+    """Insert a category group, or a subcategory when `parent` is given.
+
+    `allows_watchers` defaults to False, matching the column's server default
+    and the seed's default. A test about watching has to ask for it, which is
+    the right way round: a test that forgot would fail rather than quietly
+    exercise a permission it never granted.
+    """
     category = Category(
         parent_id=parent.id if parent is not None else None,
         name=name or f"Category {uuid.uuid4().hex[:8]}",
@@ -177,6 +185,7 @@ def make_category(
         location_detail=parent.location_detail if parent is not None else location_detail,
         sort_order=sort_order,
         is_active=is_active,
+        allows_watchers=allows_watchers,
     )
     session.add(category)
     session.flush()
@@ -344,6 +353,20 @@ def make_notification(
     session.flush()
     session.refresh(notification)
     return notification
+
+
+def make_watcher(session: Session, *, incident: Incident, user: User) -> IncidentWatcher:
+    """Subscribe a user to an incident directly.
+
+    Bypasses `services/watchers.py` on purpose, in the same way
+    `make_notification` bypasses the rule table: a test of what watchers are
+    *told* needs a watcher to exist, not a second exercise of the endpoint
+    that creates one.
+    """
+    watcher = IncidentWatcher(incident_id=incident.id, user_id=user.id)
+    session.add(watcher)
+    session.flush()
+    return watcher
 
 
 def login(client: TestClient, email: str, password: str = DEFAULT_PASSWORD) -> str:

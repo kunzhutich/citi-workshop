@@ -10,6 +10,13 @@ all of which live here:
   that sets it on a subcategory is refused rather than quietly ignored, and
   changing a group's value rewrites its children in the same transaction, so
   the two can never drift.
+* **`allows_watchers` belongs to the subcategory**, and is the one field that
+  runs the other way. Whether a problem is shared or personal is not a
+  property of "Hardware": a jammed floor printer and a laptop that will not
+  charge are both filed under it. So it is refused on a *group*, by the same
+  argument and the same shape as the three fields above — a value set where
+  nothing reads it is a silent no-op, and an admin who set it would believe
+  they had turned the feature on.
 * **Siblings have distinct names**, compared case-insensitively.
 * **Deletion versus deactivation.** A category an incident was filed under is
   deactivated, never deleted: the ticket would otherwise lose the only record
@@ -37,6 +44,11 @@ from app.schemas.common import DeleteResult
 #: subcategory has no card of its own to carry them.
 GROUP_ONLY_FIELDS = ("hint", "icon", "location_detail")
 
+#: Fields that only mean something on a subcategory. Incidents are filed
+#: against subcategories, so this is where a rule about what may happen to a
+#: ticket has to live. A group's copy would never be read.
+SUBCATEGORY_ONLY_FIELDS = ("allows_watchers",)
+
 #: Default for a group that does not say how precise a location it needs.
 DEFAULT_LOCATION_DETAIL = LocationDetail.FLOOR
 
@@ -59,6 +71,7 @@ def create_category(session: Session, payload: CategoryCreate) -> Category:
     parent = _resolve_parent(session, payload.parent_id)
 
     if parent is None:
+        _reject_subcategory_only_fields(payload)
         location_detail = payload.location_detail or DEFAULT_LOCATION_DETAIL
     else:
         _reject_group_only_fields(payload)
@@ -73,6 +86,10 @@ def create_category(session: Session, payload: CategoryCreate) -> Category:
         icon=payload.icon,
         location_detail=location_detail,
         sort_order=payload.sort_order,
+        # A new subcategory is personal unless the admin says otherwise, the
+        # same way the seed's default is personal: an audience is something
+        # somebody chooses to allow, never something that arrives by default.
+        allows_watchers=bool(payload.allows_watchers),
     )
     session.add(category)
     session.flush()
@@ -88,7 +105,9 @@ def update_category(
     category = get_category(session, category_id)
     changes = payload.model_dump(exclude_unset=True)
 
-    if not category.is_group:
+    if category.is_group:
+        _reject_subcategory_only_changes(changes)
+    else:
         _reject_group_only_changes(changes)
 
     if "name" in changes:
@@ -203,6 +222,28 @@ def _reject_group_only_changes(changes: dict[str, object]) -> None:
             raise ValidationError(
                 f"'{field}' belongs to the group; subcategories inherit it.",
                 code="GROUP_ONLY_FIELD",
+                field=field,
+            )
+
+
+def _reject_subcategory_only_fields(payload: CategoryCreate) -> None:
+    """Refuse a create payload that sets subcategory-level fields on a group."""
+    for field in SUBCATEGORY_ONLY_FIELDS:
+        if getattr(payload, field) is not None:
+            raise ValidationError(
+                f"'{field}' is set per subcategory; a group has no tickets of its own.",
+                code="SUBCATEGORY_ONLY_FIELD",
+                field=field,
+            )
+
+
+def _reject_subcategory_only_changes(changes: dict[str, object]) -> None:
+    """Refuse an update payload that sets subcategory-level fields on a group."""
+    for field in SUBCATEGORY_ONLY_FIELDS:
+        if field in changes:
+            raise ValidationError(
+                f"'{field}' is set per subcategory; a group has no tickets of its own.",
+                code="SUBCATEGORY_ONLY_FIELD",
                 field=field,
             )
 

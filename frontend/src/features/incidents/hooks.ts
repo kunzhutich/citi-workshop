@@ -81,6 +81,30 @@ export function useAllowedTransitions(id: string) {
   });
 }
 
+/**
+ * Tickets that may already cover the problem being reported.
+ *
+ * **The gate is the whole feature.** `null` means the questionnaire has not
+ * yet been told both of the things the question needs — a subcategory and a
+ * building — and until it has, nothing is asked. That is a rule about when the
+ * request is meaningful, so it lives here with the request rather than in the
+ * component that draws the answer: `SuggestionPanel` decides only whether the
+ * reporter has reached the point of *seeing* it.
+ *
+ * The fallback in `queryFn` is unreachable while `enabled` holds and exists
+ * because a `queryFn` cannot be conditional in the way a key can. `''` for
+ * both ids would be rejected by the API as a malformed uuid, which is the
+ * loudest way for a broken gate to announce itself.
+ */
+export function useIncidentSuggestions(query: incidentsApi.IncidentSuggestionQuery | null) {
+  return useQuery({
+    queryKey: queryKeys.incidents.suggestions(query),
+    queryFn: () =>
+      incidentsApi.fetchIncidentSuggestions(query ?? { category_id: '', building_id: '' }),
+    enabled: query !== null,
+  });
+}
+
 /** The merged events-and-notes timeline for one ticket. */
 export function useActivity(id: string) {
   return useQuery({
@@ -175,6 +199,28 @@ export function useClearEscalation(id: string) {
   return useMutation({
     mutationFn: (payload: Parameters<typeof incidentsApi.clearEscalation>[1]) =>
       incidentsApi.clearEscalation(id, payload),
+    onSuccess: () => invalidateIncidents(queryClient),
+  });
+}
+
+/**
+ * Subscribe the caller to a ticket, or unsubscribe them.
+ *
+ * One mutation for both directions, taking the ticket id with it rather than
+ * closing over one, because the two callers want different things from it: the
+ * ticket page has a single ticket and toggles it, while the questionnaire's
+ * suggestion panel has a list of them and subscribes to whichever card was
+ * pressed. A hook bound to an id would force one `useMutation` per card.
+ *
+ * It invalidates the whole `['incidents']` prefix like every other mutation
+ * here, which includes the suggestions query — so the panel that was just
+ * acted on re-reads rather than going quietly out of date.
+ */
+export function useSetWatching() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, watching }: { id: string; watching: boolean }) =>
+      watching ? incidentsApi.watchIncident(id) : incidentsApi.unwatchIncident(id),
     onSuccess: () => invalidateIncidents(queryClient),
   });
 }

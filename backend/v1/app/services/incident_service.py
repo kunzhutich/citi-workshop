@@ -53,6 +53,7 @@ from app.models.user import User
 from app.repositories import incidents as repository
 from app.schemas.common import PageParams
 from app.schemas.incident import (
+    SUGGESTION_LIMIT,
     ClearEscalationRequest,
     EscalateRequest,
     IncidentCreate,
@@ -60,6 +61,8 @@ from app.schemas.incident import (
     IncidentQuery,
     IncidentUpdate,
     MineFilter,
+    SuggestionMatch,
+    SuggestionQuery,
     TransitionRequest,
 )
 from app.services import notes as note_service
@@ -126,6 +129,53 @@ def list_incidents(
         filters=filters,
         limit=paging.page_size,
         offset=paging.offset,
+    )
+
+
+def live_suggestions(
+    session: Session,
+    *,
+    user: User,
+    query: SuggestionQuery,
+) -> list[tuple[Incident, SuggestionMatch]]:
+    """Return unfinished tickets that may already be what this reporter is about to file.
+
+    No existence check on the four ids. A subcategory or a building that does
+    not exist matches nothing and the panel stays empty, which is the same
+    answer the reporter gets when nothing similar has been reported — and this
+    runs while they are still filling the form, where a 422 has nowhere to be
+    shown and nothing for them to do about it. The ids are validated for real
+    at `create_incident`, which is where getting them wrong matters.
+    """
+    visible = apply_incident_visibility(select(Incident), user)
+    return repository.list_live_suggestions(
+        session,
+        visible=visible,
+        target=query,
+        limit=SUGGESTION_LIMIT,
+    )
+
+
+def resolved_suggestions(
+    session: Session,
+    *,
+    user: User,
+    query: SuggestionQuery,
+) -> list[tuple[Incident, SuggestionMatch]]:
+    """Return finished tickets whose recorded fix may answer this problem outright.
+
+    The reason this exists separately from `live_suggestions` is that it is
+    not about duplicates at all. "A similar problem was solved before: cleared
+    a paper fragment from the rear feed roller" is institutional memory about
+    a particular machine, and it is worth more than any generic
+    troubleshooting text because it is about *that* one.
+    """
+    visible = apply_incident_visibility(select(Incident), user)
+    return repository.list_resolved_suggestions(
+        session,
+        visible=visible,
+        target=query,
+        limit=SUGGESTION_LIMIT,
     )
 
 
@@ -700,6 +750,18 @@ def perform_transition(
     notification_service.record(
         session,
         NotificationType.STATUS_CHANGED,
+        incident=incident,
+        actor=user,
+    )
+    # And the same again for the people who said the problem affected them
+    # too. Offered unconditionally, exactly like the NOTE_ADDED call in
+    # `services/notes.py`: whether this particular move is the one watchers
+    # subscribed to is `_is_a_resolution` in the rule table, not an `if` here.
+    # A ticket nobody follows, or a move to any status but RESOLVED, plans
+    # nothing and writes nothing.
+    notification_service.record(
+        session,
+        NotificationType.WATCHED_RESOLVED,
         incident=incident,
         actor=user,
     )

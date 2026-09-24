@@ -1,5 +1,5 @@
 import type { EngineerQuery } from './engineers';
-import type { IncidentQuery } from './incidents';
+import type { IncidentQuery, IncidentSuggestionQuery } from './incidents';
 import type { NotificationQuery } from './notifications';
 import type { ReportPeriodParams, ReportScopeParams } from './reports';
 import type { UserQuery } from './users';
@@ -25,6 +25,18 @@ export const queryKeys = {
     detail: (id: string) => ['incidents', 'detail', id] as const,
     transitions: (id: string) => ['incidents', 'detail', id, 'allowed-transitions'] as const,
     activity: (id: string) => ['incidents', 'detail', id, 'activity'] as const,
+    /**
+     * Possible duplicates for a report in progress.
+     *
+     * `null` is the key for "there is not yet enough to ask" — a subcategory
+     * without a building. It is a real key rather than an absent one because
+     * `useQuery` needs a key whether or not it is enabled, and keeping the
+     * unanswerable case distinct means it can never share a cache entry with
+     * a real question. Under the `incidents` prefix on purpose: reporting a
+     * ticket changes what counts as a duplicate of the next one.
+     */
+    suggestions: (query: IncidentSuggestionQuery | null) =>
+      ['incidents', 'suggestions', query] as const,
   },
 
   categories: {

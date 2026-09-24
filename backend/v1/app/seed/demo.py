@@ -88,6 +88,7 @@ from app.models.note import IncidentNote
 from app.models.notification import Notification
 from app.models.seat import Seat
 from app.models.user import User
+from app.models.watcher import IncidentWatcher
 from app.security.passwords import hash_password
 
 #: Every demo account shares this password. It is printed in the return payload
@@ -148,6 +149,7 @@ class DemoSeedResult:
     incidents: int = 0
     events: int = 0
     notes: int = 0
+    watchers: int = 0
     notifications: int = 0
     by_status: dict[str, int] = field(default_factory=dict)
     by_priority: dict[str, int] = field(default_factory=dict)
@@ -394,6 +396,19 @@ PATH_WEIGHTS: dict[str, float] = {
 STALLED_PATHS: frozenset[str] = frozenset(
     {"never_assigned", "assigned_not_started", "stalled", "stuck_blocked"}
 )
+
+#: What share of the tickets that *could* be followed actually are.
+#:
+#: Applies only to tickets in a subcategory with `allows_watchers`, which is
+#: roughly a third of the tree. Neither 0 nor 1, for the same reason as the
+#: read share below: a demo in which every shared ticket has followers is as
+#: uninformative as one in which none has, and the "N others are affected"
+#: line should be absent often enough that a reviewer notices when it appears.
+WATCHED_SHARE = 0.55
+
+#: How many colleagues follow one of those, drawn inclusively. A jammed
+#: printer annoys a handful of people on that floor, not the whole building.
+WATCHERS_PER_INCIDENT = (1, 4)
 
 #: What share of the demo world's notifications have been read.
 #:
@@ -979,7 +994,10 @@ def _seed_incidents(
 
     _link_duplicates(rng, plans, incidents, outcomes, specs)
     _write_events_and_notes(session, incidents, specs, result)
-    _write_notifications(session, rng, incidents, specs, result, world=world, now=now)
+    watchers = _write_watchers(session, rng, plans, incidents, result, world=world)
+    _write_notifications(
+        session, rng, incidents, specs, result, world=world, watchers=watchers, now=now
+    )
     _summarise(result, plans, incidents, world.engineers)
 
 
@@ -1724,6 +1742,56 @@ def _write_events_and_notes(
     session.flush()
 
 
+def _write_watchers(
+    session: Session,
+    rng: random.Random,
+    plans: list[_Plan],
+    incidents: list[Incident],
+    result: DemoSeedResult,
+    *,
+    world: _World,
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Subscribe a few colleagues to the tickets whose subcategory allows it.
+
+    Returns the followers per incident id, because `_write_notifications`
+    needs them a moment later and re-reading rows this function just wrote
+    would be a query to learn something it already knew.
+
+    **Reads `allows_watchers` off the real category row** rather than
+    re-deciding which kinds of problem are shared. The seeded mapping lives in
+    `app/seed/categories.py`; a second opinion here would eventually disagree
+    with it, and the demo world would then be demonstrating something the
+    application does not do.
+
+    Only employees follow tickets, and never the one who reported it — a
+    reporter is already on their own ticket, and giving them a watch row as
+    well would make the demo's "N others are affected" count one person too
+    many on every ticket.
+    """
+    rows: list[IncidentWatcher] = []
+    followers_by_incident: dict[uuid.UUID, list[uuid.UUID]] = {}
+
+    for plan, incident in zip(plans, incidents, strict=True):
+        if not plan.category.allows_watchers or rng.random() > WATCHED_SHARE:
+            continue
+
+        candidates = [person for person in world.employees if person.id != incident.reporter_id]
+        wanted = min(rng.randint(*WATCHERS_PER_INCIDENT), len(candidates))
+        followers = rng.sample(candidates, wanted)
+        if not followers:
+            continue
+
+        followers_by_incident[incident.id] = [person.id for person in followers]
+        rows.extend(
+            IncidentWatcher(incident_id=incident.id, user_id=person.id) for person in followers
+        )
+
+    session.add_all(rows)
+    session.flush()
+    result.watchers = len(rows)
+    return followers_by_incident
+
+
 #: Which `EventType` produces which notification, when replaying a timeline.
 #:
 #: Four kinds of event out of ten. The absences are the rules: CREATED,
@@ -1745,6 +1813,7 @@ def _write_notifications(
     result: DemoSeedResult,
     *,
     world: _World,
+    watchers: dict[uuid.UUID, list[uuid.UUID]],
     now: datetime,
 ) -> None:
     """Build the demo inbox by replaying each ticket through the real rules.
@@ -1768,6 +1837,13 @@ def _write_notifications(
     `read_at` is invented, like everything else in the demo world, and it is
     the one column a backfill of a *real* database could not honestly produce
     (D31). Here it is legitimate: the tickets are fictional too.
+
+    A resolution is handed to `plan()` **twice**, once for each rule that
+    fires on it — STATUS_CHANGED for the two people on the ticket, and
+    WATCHED_RESOLVED for the people following it — which is exactly what
+    `services/incident_service.perform_transition` does at the two lines it
+    calls `notification_service.record`. Whether the second one produces
+    anything is `_is_a_resolution` in the rule table, not a condition here.
     """
     people = {person.id: person for person in [world.admin, *world.engineers, *world.employees]}
     rows: list[Notification] = []
@@ -1775,6 +1851,7 @@ def _write_notifications(
     for incident, (events, notes) in zip(incidents, specs, strict=True):
         assignee_id: uuid.UUID | None = None
         status = IncidentStatus.OPEN
+        watcher_ids = watchers.get(incident.id, [])
 
         # One chronological stream. `sorted` is stable, so events and notes
         # written at the same instant keep the order the planner put them in.
@@ -1795,7 +1872,11 @@ def _write_notifications(
                     visibility=step.visibility,
                 )
                 snapshot = _snapshot(
-                    incident, status=status, assignee_id=assignee_id, people=people
+                    incident,
+                    status=status,
+                    assignee_id=assignee_id,
+                    people=people,
+                    watcher_ids=watcher_ids,
                 )
                 planned = notification_rules.plan(
                     NotificationType.NOTE_ADDED,
@@ -1816,11 +1897,20 @@ def _write_notifications(
                 if notification_type is None or actor is None:
                     continue
                 snapshot = _snapshot(
-                    incident, status=status, assignee_id=assignee_id, people=people
+                    incident,
+                    status=status,
+                    assignee_id=assignee_id,
+                    people=people,
+                    watcher_ids=watcher_ids,
                 )
-                planned = notification_rules.plan(
-                    notification_type,
-                    notification_rules.NotificationContext(incident=snapshot, actor=actor),
+                context = notification_rules.NotificationContext(incident=snapshot, actor=actor)
+                planned = notification_rules.plan(notification_type, context)
+                # The second rule this same moment can fire. `plan` returns
+                # nothing unless the ticket has just reached RESOLVED and
+                # somebody is following it.
+                planned += notification_rules.plan(
+                    NotificationType.WATCHED_RESOLVED,
+                    context,
                 )
 
             rows.extend(
@@ -1846,12 +1936,20 @@ def _snapshot(
     status: IncidentStatus,
     assignee_id: uuid.UUID | None,
     people: dict[uuid.UUID, User],
+    watcher_ids: Sequence[uuid.UUID],
 ) -> Incident:
     """Return a throwaway `Incident` carrying the state as of one moment.
 
     Transient on purpose: never passed to `session.add`, and `Incident.assignee`
     is a one-way many-to-one, so setting it cannot drag this object into the
     session through a backref.
+
+    `watchers` is filled with **fresh transient rows** rather than the ones
+    `_write_watchers` persisted, for the same reason. `Incident.watchers` has
+    no back-reference either, so nothing here can reach the session — but
+    handing a persisted row to a throwaway parent is the kind of thing that
+    stops being safe when somebody adds a `back_populates` years from now, and
+    building two throwaway objects costs nothing.
     """
     snapshot = Incident(
         id=incident.id,
@@ -1862,6 +1960,7 @@ def _snapshot(
         assignee_id=assignee_id,
     )
     snapshot.assignee = people.get(assignee_id) if assignee_id else None
+    snapshot.watchers = [IncidentWatcher(user_id=user_id) for user_id in watcher_ids]
     return snapshot
 
 

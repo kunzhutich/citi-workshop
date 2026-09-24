@@ -9,7 +9,9 @@ import type {
   IncidentListItem,
   IncidentPriority,
   IncidentStatus,
+  IncidentSuggestions,
   Page,
+  WatchState,
 } from './types';
 
 /**
@@ -182,6 +184,50 @@ export async function clearEscalation(
   payload: { note: string; priority?: IncidentPriority },
 ): Promise<Incident> {
   const { data } = await apiClient.post<Incident>(`/incidents/${id}/clear-escalation`, payload);
+  return data;
+}
+
+/**
+ * The query string of `GET /incidents/suggestions`.
+ *
+ * Both ids are required because they are the question: *has this kind of
+ * problem been reported in this place?* The floor and the desk refine the
+ * answer's ranking when the reporter has supplied them, and are left off when
+ * they have not — a BUILDING-level group never asks for either.
+ */
+export interface IncidentSuggestionQuery {
+  category_id: string;
+  building_id: string;
+  floor_id?: string | null;
+  seat_id?: string | null;
+}
+
+/**
+ * Tickets that may already cover the problem being reported.
+ *
+ * Read by the questionnaire the moment a subcategory and a building are
+ * known — before the reporter has typed anything, which is the only point at
+ * which telling them "this is already reported" costs them nothing. Any
+ * signed-in user may ask.
+ */
+export async function fetchIncidentSuggestions(
+  query: IncidentSuggestionQuery,
+): Promise<IncidentSuggestions> {
+  const { data } = await apiClient.get<IncidentSuggestions>('/incidents/suggestions', {
+    params: query,
+  });
+  return data;
+}
+
+/** Subscribe the caller to a ticket they are also affected by. */
+export async function watchIncident(id: string): Promise<WatchState> {
+  const { data } = await apiClient.post<WatchState>(`/incidents/${id}/watchers`);
+  return data;
+}
+
+/** Unsubscribe the caller from a ticket. */
+export async function unwatchIncident(id: string): Promise<WatchState> {
+  const { data } = await apiClient.delete<WatchState>(`/incidents/${id}/watchers`);
   return data;
 }
 

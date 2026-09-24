@@ -185,6 +185,18 @@ export interface CategorySummary {
   group_id: string | null;
   group_name: string | null;
   location_detail: LocationDetail;
+  /**
+   * Whether other people may subscribe to this ticket.
+   *
+   * The same flag as `Category.allows_watchers`, sent on the ticket so that a
+   * screen holding one does not have to find its subcategory in the category
+   * tree. That matters for more than convenience: the tree excludes
+   * deactivated categories (`repositories/categories.py::load_tree`), so a
+   * ticket filed against one that has since been retired is not in it — and a
+   * lookup would answer "no watchers" for a ticket somebody may already be
+   * watching.
+   */
+  allows_watchers: boolean;
 }
 
 /** Mirrors `LocationSummary` — where a ticket was reported, names resolved. */
@@ -250,6 +262,11 @@ export interface Incident extends IncidentListItem {
   can_assign: boolean;
   can_add_note: boolean;
   can_add_internal_note: boolean;
+
+  /** Whether the caller has subscribed to this ticket. */
+  is_watching: boolean;
+  /** How many people have said they are affected. Not the reporter, unless they said so too. */
+  watcher_count: number;
 }
 
 /**
@@ -309,6 +326,57 @@ export interface Note {
   can_edit: boolean;
 }
 
+// --- Suggestions and watchers ------------------------------------------------
+
+/**
+ * How close a suggestion's location is to the one being reported.
+ *
+ * The one field that keeps two different claims apart. "Someone reported this
+ * exact desk an hour ago" and "something of this kind happened somewhere in
+ * this building last week" are not the same statement, and a list that merges
+ * them makes the strong one worthless. The API ranks by this and then by
+ * recency; the panel says which band each card is in.
+ */
+export type SuggestionMatch = 'SEAT' | 'FLOOR' | 'BUILDING';
+
+/** Mirrors `LiveSuggestion` — an open ticket that may be the same problem. */
+export interface LiveSuggestion extends IncidentListItem {
+  match: SuggestionMatch;
+}
+
+/**
+ * Mirrors `ResolvedSuggestion` — a ticket already fixed, and what fixed it.
+ *
+ * Not an `IncidentListItem`: this list exists for `resolution_summary`, and
+ * the status, priority and assignee of something already closed are noise on
+ * a card whose job is to say "try this first". The API never puts a ticket in
+ * this list without a summary, which is why the field is not nullable here
+ * although it is on `Incident`.
+ */
+export interface ResolvedSuggestion {
+  id: string;
+  reference: string;
+  title: string;
+  resolution_summary: string;
+  resolved_at: string;
+  location: LocationSummary;
+  match: SuggestionMatch;
+}
+
+/** Mirrors `IncidentSuggestions` — both lists, each ranked before it arrives. */
+export interface IncidentSuggestions {
+  /** Still open, in progress or blocked: possible duplicates. */
+  live: LiveSuggestion[];
+  /** Already fixed, with the note the engineer left. Self-service. */
+  resolved: ResolvedSuggestion[];
+}
+
+/** What the two watcher endpoints answer with. */
+export interface WatchState {
+  watching: boolean;
+  watcher_count: number;
+}
+
 // --- Categories --------------------------------------------------------------
 
 /** Mirrors `CategoryRead` — a group or a subcategory, without children. */
@@ -322,6 +390,26 @@ export interface Category {
   location_detail: LocationDetail;
   sort_order: number;
   is_active: boolean;
+  /**
+   * Whether other people may subscribe to a ticket in this subcategory.
+   *
+   * The one thing that decides whether "I'm affected too" is offered, and the
+   * frontend never derives it. `location_detail` looks as though it should
+   * answer the same question and does not: Software is BUILDING-level but an
+   * operating-system fault is one person's, Hardware is FLOOR-level but a
+   * printer is shared and a keyboard is not. An admin sets this per
+   * subcategory, and the UI reads it.
+   *
+   * Required, like every other field this mirror carries. A deploy-skew
+   * window does exist — the two halves of this application go out through two
+   * separate scripts, so a bundle can briefly meet a Lambda whose
+   * `CategoryRead` predates a column — but that is true of every field added
+   * in every phase, and hedging one of them would be a promise the other
+   * thirty do not make. `allowsWatchers()` in `features/incidents/watchers.ts`
+   * is the one place this is read and it treats anything but `true` as false,
+   * so the window hides the control rather than offering one the API refuses.
+   */
+  allows_watchers: boolean;
 }
 
 /** Mirrors `CategoryNode` — a group carrying its subcategories. */

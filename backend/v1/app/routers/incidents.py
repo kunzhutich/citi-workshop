@@ -46,15 +46,22 @@ from app.schemas.incident import (
     IncidentQuery,
     IncidentRead,
     IncidentSort,
+    IncidentSuggestions,
     IncidentUpdate,
+    LiveSuggestion,
     LocationSummary,
     MineFilter,
+    ResolvedSuggestion,
+    SuggestionMatch,
+    SuggestionQuery,
     TransitionRequest,
     UserSummary,
+    WatchStatus,
 )
 from app.security.dependencies import AdminUser, CurrentUser, DbSession, require_roles
 from app.services import assignment, incident_service
 from app.services import notes as note_service
+from app.services import watchers as watcher_service
 from app.workflow import Transition
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
@@ -178,6 +185,61 @@ def create_incident(payload: IncidentCreate, session: DbSession, user: CurrentUs
     incident = incident_service.create_incident(session, reporter=user, payload=payload)
     session.commit()
     return _to_read(incident, user)
+
+
+def get_suggestion_query(
+    category_id: Annotated[uuid.UUID, Query(description="The chosen subcategory.")],
+    building_id: Annotated[uuid.UUID, Query(description="The chosen building.")],
+    floor_id: uuid.UUID | None = None,
+    seat_id: uuid.UUID | None = None,
+) -> SuggestionQuery:
+    """Collect what the questionnaire has chosen so far into one model."""
+    return SuggestionQuery(
+        category_id=category_id,
+        building_id=building_id,
+        floor_id=floor_id,
+        seat_id=seat_id,
+    )
+
+
+# Declared **before** `/{incident_id}`. FastAPI matches in declaration order,
+# so the other way round this path would be tried as an incident id and answer
+# 422 for a word that is not a UUID.
+@router.get(
+    "/suggestions",
+    response_model=IncidentSuggestions,
+    summary="Tickets that may already be this problem",
+)
+def get_suggestions(
+    session: DbSession,
+    user: CurrentUser,
+    query: Annotated[SuggestionQuery, Depends(get_suggestion_query)],
+) -> IncidentSuggestions:
+    """Return similar tickets, ranked by how close their location is.
+
+    Shown beside the report form once a subcategory and a place have been
+    chosen, and open to every signed-in user for the reason the module
+    docstring gives: checking whether a problem is already reported is exactly
+    what the brief asks employees to be able to do.
+
+    Two lists, each capped at a handful and each carrying `match` so the
+    reader can tell "this same desk, an hour ago" from "somewhere in this
+    building, last week".
+    """
+    return IncidentSuggestions(
+        live=[
+            _to_live_suggestion(incident, match)
+            for incident, match in incident_service.live_suggestions(
+                session, user=user, query=query
+            )
+        ],
+        resolved=[
+            _to_resolved_suggestion(incident, match)
+            for incident, match in incident_service.resolved_suggestions(
+                session, user=user, query=query
+            )
+        ],
+    )
 
 
 @router.get("/{incident_id}", response_model=IncidentRead, summary="Get one incident")
@@ -325,6 +387,41 @@ def clear_escalation(
     return _to_read(updated, admin)
 
 
+@router.post(
+    "/{incident_id}/watchers",
+    response_model=WatchStatus,
+    summary="Say this problem affects you too",
+)
+def watch_incident(incident_id: uuid.UUID, session: DbSession, user: CurrentUser) -> WatchStatus:
+    """Subscribe the caller to this ticket, and tell them where the list stands.
+
+    200 rather than 201: the request is idempotent and names no new resource,
+    so a second press is the same answer rather than a second subscription.
+    Refused with 409 `WATCHERS_NOT_ALLOWED` when the ticket's subcategory is a
+    personal one — see `services/watchers.py`.
+
+    The caller always subscribes *themselves*. There is no field for anybody
+    else, which is why there is no permission check beyond being signed in.
+    """
+    incident = incident_service.get_incident(session, incident_id)
+    result = watcher_service.watch(session, incident=incident, user=user)
+    session.commit()
+    return result
+
+
+@router.delete(
+    "/{incident_id}/watchers",
+    response_model=WatchStatus,
+    summary="Stop following this ticket",
+)
+def unwatch_incident(incident_id: uuid.UUID, session: DbSession, user: CurrentUser) -> WatchStatus:
+    """Unsubscribe the caller from this ticket. Always allowed, always idempotent."""
+    incident = incident_service.get_incident(session, incident_id)
+    result = watcher_service.unwatch(session, incident=incident, user=user)
+    session.commit()
+    return result
+
+
 @router.get(
     "/{incident_id}/activity",
     response_model=list[ActivityEntry],
@@ -372,6 +469,7 @@ def _category_summary(category: Category) -> CategorySummary:
         group_id=group.id if group is not None else None,
         group_name=group.name if group is not None else None,
         location_detail=category.location_detail,
+        allows_watchers=category.allows_watchers,
     )
 
 
@@ -424,6 +522,9 @@ def _to_read(incident: Incident, user: User) -> IncidentRead:
     """Build the detail form of an incident, including this caller's permissions."""
     base = _to_list_item(incident)
     duplicate_of = incident.duplicate_of
+    # `watching` and `watcher_count` come from the one function that computes
+    # them, so this response and `POST /watchers` can never disagree.
+    watch_status = watcher_service.status_of(incident, user)
 
     return IncidentRead(
         **base.model_dump(),
@@ -448,6 +549,29 @@ def _to_read(incident: Incident, user: User) -> IncidentRead:
         can_assign=assignment.can_assign(incident, user),
         can_add_note=note_service.can_add_note(incident, user),
         can_add_internal_note=note_service.can_add_internal_note(incident, user),
+        is_watching=watch_status.watching,
+        watcher_count=watch_status.watcher_count,
+    )
+
+
+def _to_live_suggestion(incident: Incident, match: SuggestionMatch) -> LiveSuggestion:
+    """Render one unfinished suggestion as a list row plus how it matched."""
+    return LiveSuggestion(**_to_list_item(incident).model_dump(), match=match)
+
+
+def _to_resolved_suggestion(incident: Incident, match: SuggestionMatch) -> ResolvedSuggestion:
+    """Render one finished suggestion: what it was, and what was done about it."""
+    if incident.resolution_summary is None:  # pragma: no cover - the query excludes these
+        raise RuntimeError("A resolved suggestion arrived without a resolution summary.")
+
+    return ResolvedSuggestion(
+        id=incident.id,
+        reference=incident.reference,
+        title=incident.title,
+        resolution_summary=incident.resolution_summary,
+        resolved_at=incident.resolved_at,
+        location=_location_summary(incident),
+        match=match,
     )
 
 

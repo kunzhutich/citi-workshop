@@ -23,6 +23,7 @@ import { LocationPicker, type LocationValue } from './LocationPicker';
 import { ReportSection } from './ReportSection';
 import { reportTextSchema, TITLE_MAX_LENGTH } from './reportSchema';
 import { SelectableCard } from './SelectableCard';
+import { SuggestionPanel } from './SuggestionPanel';
 
 /**
  * The guided report questionnaire — BUILD-PLAN section 7.
@@ -216,6 +217,25 @@ export function ReportPage() {
                   fieldErrors={fieldErrors}
                 />
             </ReportSection>
+
+            {/*
+              Between the location and the title, which is the only moment this
+              is worth anything: the panel can already be answered and the
+              reporter has written nothing to abandon. It is not a sixth
+              numbered question — it asks nothing, it can be ignored, and it is
+              often not there at all.
+
+              Rendered unconditionally so that the request can start as soon as
+              a subcategory and a building are known, which for a FLOOR or SEAT
+              group is before `showDetails` turns true. `revealed` decides only
+              whether the answer is shown.
+            */}
+            <SuggestionPanel
+              categoryId={categoryId}
+              location={location}
+              groupName={group?.name}
+              revealed={showDetails}
+            />
 
             <ReportSection step={4} revealed={showDetails} question="Tell us more">
                 <Box sx={{ display: 'grid', gap: 2, maxWidth: 640 }}>
