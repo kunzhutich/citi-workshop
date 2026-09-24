@@ -40,14 +40,6 @@ export interface NavItem {
   label: string;
   path: string;
   icon: NavIcon;
-  /**
-   * Whether the item belongs in the mobile bottom bar.
-   *
-   * The bar holds three or four items. Everything else stays reachable on a
-   * phone through the drawer behind the menu button, so no screen is hidden
-   * by being fifth in the list.
-   */
-  inBottomNav: boolean;
 }
 
 /** The "Report an issue" call to action. Every role may report. */
@@ -55,7 +47,6 @@ export const reportNavItem: NavItem = {
   label: 'Report an issue',
   path: paths.report,
   icon: AddCircleOutlinedIcon,
-  inBottomNav: false,
 };
 
 /** Return the navigation for a user, in the order it should be shown. */
@@ -72,9 +63,9 @@ export function navItemsFor(user: CurrentUser): NavItem[] {
 /** Employee: their own tickets, plus everyone's for checking duplicates. */
 function employeeNavItems(): NavItem[] {
   return [
-    { label: 'Home', path: paths.home, icon: HomeIcon, inBottomNav: true },
-    { label: 'My tickets', path: paths.myTickets, icon: ConfirmationNumberIcon, inBottomNav: true },
-    { label: 'All tickets', path: paths.allTickets, icon: ListAltIcon, inBottomNav: true },
+    { label: 'Home', path: paths.home, icon: HomeIcon },
+    { label: 'My tickets', path: paths.myTickets, icon: ConfirmationNumberIcon },
+    { label: 'All tickets', path: paths.allTickets, icon: ListAltIcon },
   ];
 }
 
@@ -84,18 +75,18 @@ function employeeNavItems(): NavItem[] {
  */
 function engineerNavItems(level: EngineerLevel | undefined): NavItem[] {
   const items: NavItem[] = [
-    { label: 'Home', path: paths.home, icon: HomeIcon, inBottomNav: true },
-    { label: 'My queue', path: paths.myQueue, icon: AssignmentIndIcon, inBottomNav: true },
+    { label: 'Home', path: paths.home, icon: HomeIcon },
+    { label: 'My queue', path: paths.myQueue, icon: AssignmentIndIcon },
   ];
 
   if (level === 'SENIOR' || level === 'LEAD') {
-    items.push({ label: 'Unassigned', path: paths.unassigned, icon: InboxIcon, inBottomNav: true });
+    items.push({ label: 'Unassigned', path: paths.unassigned, icon: InboxIcon });
   }
 
-  items.push({ label: 'All tickets', path: paths.allTickets, icon: ListAltIcon, inBottomNav: true });
+  items.push({ label: 'All tickets', path: paths.allTickets, icon: ListAltIcon });
 
   if (level === 'LEAD') {
-    items.push({ label: 'Team', path: paths.team, icon: GroupsIcon, inBottomNav: false });
+    items.push({ label: 'Team', path: paths.team, icon: GroupsIcon });
   }
 
   return items;
@@ -104,28 +95,37 @@ function engineerNavItems(level: EngineerLevel | undefined): NavItem[] {
 /** Facility admin: the dashboard and the four things only they maintain. */
 function adminNavItems(): NavItem[] {
   return [
-    { label: 'Dashboard', path: paths.home, icon: DashboardIcon, inBottomNav: true },
-    { label: 'Tickets', path: paths.allTickets, icon: ConfirmationNumberIcon, inBottomNav: true },
-    { label: 'Engineers', path: paths.engineers, icon: EngineeringIcon, inBottomNav: true },
-    { label: 'Facilities', path: paths.facilities, icon: ApartmentIcon, inBottomNav: true },
-    { label: 'Categories', path: paths.categories, icon: CategoryIcon, inBottomNav: false },
-    { label: 'Users', path: paths.users, icon: ManageAccountsIcon, inBottomNav: false },
+    { label: 'Dashboard', path: paths.home, icon: DashboardIcon },
+    { label: 'Tickets', path: paths.allTickets, icon: ConfirmationNumberIcon },
+    { label: 'Engineers', path: paths.engineers, icon: EngineeringIcon },
+    { label: 'Facilities', path: paths.facilities, icon: ApartmentIcon },
+    { label: 'Categories', path: paths.categories, icon: CategoryIcon },
+    { label: 'Users', path: paths.users, icon: ManageAccountsIcon },
   ];
 }
 
 /**
  * Pick the navigation item the current URL belongs to.
  *
- * Longest prefix wins, so `/tickets/mine` highlights "My tickets" rather than
+ * Longest prefix wins, so `/tickets/mine` matches "My tickets" rather than
  * "All tickets" at `/tickets`. The home path is matched exactly, because every
  * URL starts with `/`.
+ *
+ * Two callers want two different halves of the answer: the shell highlights a
+ * path, and `features/incidents/backTarget.ts` names a screen. They share this
+ * function so that "which screen am I on?" is decided once.
  */
-export function activeNavPath(pathname: string, items: NavItem[]): string | false {
+export function activeNavItem(pathname: string, items: NavItem[]): NavItem | undefined {
   const matches = items
     .filter((item) =>
       item.path === paths.home ? pathname === paths.home : pathname.startsWith(item.path),
     )
     .sort((a, b) => b.path.length - a.path.length);
 
-  return matches[0]?.path ?? false;
+  return matches[0];
+}
+
+/** The path of the navigation item the current URL belongs to. */
+export function activeNavPath(pathname: string, items: NavItem[]): string | false {
+  return activeNavItem(pathname, items)?.path ?? false;
 }

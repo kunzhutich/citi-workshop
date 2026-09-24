@@ -15,9 +15,12 @@ import { EmptyState, QueryState } from '../../components/QueryState';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { RowActions } from '../../components/RowActions';
 import { AssignButton } from '../incidents/AssignButton';
 import { ACTIVE_STATUSES, currentListLink } from './listLinks';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from '../incidents/backTarget';
 
 /** How long a ticket may sit unowned before it belongs in this panel. */
 export const UNASSIGNED_HOURS = 24;
@@ -246,6 +249,8 @@ function AttentionRow({
   age: string | null;
   groupId: string | null;
 }) {
+  const ticketLinkState = useTicketLinkState();
+
   return (
     <Box
       sx={{
@@ -265,6 +270,7 @@ function AttentionRow({
           <Link
             component={RouterLink}
             to={incidentPath(incidentId)}
+            state={ticketLinkState}
             underline="hover"
             sx={{ fontWeight: 600 }}
           >
@@ -276,13 +282,15 @@ function AttentionRow({
             </Typography>
           ) : null}
         </Box>
-        <Typography variant="body2">{title}</Typography>
+        <TicketTitle density="row">{title}</TicketTitle>
         <Box sx={{ display: 'flex', gap: 1, mt: 0.75, flexWrap: 'wrap' }}>{chips}</Box>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           {detail}
         </Typography>
       </Box>
-      <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
+      <RowActions>
+        <AssignButton incidentId={incidentId} reference={reference} groupId={groupId} />
+      </RowActions>
     </Box>
   );
 }

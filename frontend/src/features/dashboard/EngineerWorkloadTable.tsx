@@ -14,6 +14,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import type { EngineerWorkload } from '../../api/reports';
 import { EmptyState } from '../../components/QueryState';
 import { availabilityLabel } from '../../display/labels';
+import { engineerPath } from '../../routes';
 import { levelLabel } from '../../layout/roleLabels';
 import { CapacityBar } from '../engineers/CapacityBar';
 import { paths } from '../../routes';
@@ -97,9 +98,16 @@ export function EngineerWorkloadTable({
               {engineers.map((engineer) => (
                 <TableRow key={engineer.user_id} hover>
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                    {/*
+                      §6.1: the name goes to the person, not to a filtered
+                      list. It used to open their queue, which answered "what
+                      are they holding" and nothing else — their page answers
+                      that *and* what they have got through, and carries the
+                      link to the queue itself.
+                    */}
                     <Link
                       component={RouterLink}
-                      to={queueLink(engineer.user_id, buildingId)}
+                      to={engineerPath(engineer.user_id)}
                       underline="hover"
                     >
                       {engineer.full_name}
@@ -124,10 +132,24 @@ export function EngineerWorkloadTable({
                     {engineer.blocked_count}
                   </TableCell>
                   <TableCell>
-                    <CapacityBar
-                      active={engineer.active_count}
-                      max={engineer.max_active_tickets}
-                    />
+                    {/*
+                      The queue link moved here from the name, which now goes
+                      to the engineer's page. It belongs on the bar anyway: the
+                      bar *is* the active count, and every other number on this
+                      dashboard opens the list it counted.
+                    */}
+                    <Link
+                      component={RouterLink}
+                      to={queueLink(engineer.user_id, buildingId)}
+                      underline="none"
+                      aria-label={`${engineer.full_name}'s current queue`}
+                      sx={{ display: 'block' }}
+                    >
+                      <CapacityBar
+                        active={engineer.active_count}
+                        max={engineer.max_active_tickets}
+                      />
+                    </Link>
                   </TableCell>
                   <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                     <Link

@@ -18,7 +18,12 @@ export interface CapacityBarProps {
  */
 export function CapacityBar({ active, max }: CapacityBarProps) {
   const ratio = max > 0 ? active / max : 0;
-  const colour = ratio >= 1 ? 'error' : ratio >= 0.8 ? 'warning' : 'primary';
+  // `workflow`, not `primary`. A filled bar is a progress reading, and the
+  // reason the redesign kept a blue for those applies here as much as to the
+  // ticket's stepper: a stranger reads a blue bar as "how far along", and a
+  // brown one as decoration. The two warning steps are unchanged — amber and
+  // red mean the same thing on any palette.
+  const colour = ratio >= 1 ? 'error' : ratio >= 0.8 ? 'warning' : 'workflow';
 
   return (
     <Box sx={{ minWidth: 120 }}>

@@ -1,4 +1,4 @@
-import { ThemeProvider } from '@mui/material/styles';
+import { createTheme, ThemeProvider } from '@mui/material/styles';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderResult } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
@@ -9,6 +9,29 @@ import type { CurrentUser } from '../api/types';
 import { AuthContext, type AuthContextValue, type AuthStatus } from '../auth/AuthContext';
 import { SnackbarProvider } from '../components/SnackbarProvider';
 import { theme } from '../theme';
+
+/**
+ * The application's theme with every transition instant.
+ *
+ * jsdom has no compositor, so a Material UI transition is a *timer* there and
+ * nothing else — 225ms of real waiting that renders nothing. R5 wrapped the
+ * report questionnaire's five sections in `Collapse`, and a test that clicks
+ * through all of them went from instant to about a second of pure sleeping.
+ * Alone that still passed; in a thirty-five-file parallel run it tipped past
+ * Vitest's 5s default and three tests failed intermittently, which is the
+ * worst way for a suite to tell you something.
+ *
+ * Zeroing the durations rather than raising the timeout, because the timeout
+ * is not the problem: the suite should not be waiting for animations it cannot
+ * see. `Collapse` still mounts, unmounts and fires `onEntered` — the behaviour
+ * the tests are about — it just does it immediately.
+ *
+ * This is also what a reader with `prefers-reduced-motion` gets, so it is not
+ * a fiction invented for tests.
+ */
+const testTheme = createTheme(theme, {
+  transitions: { duration: { shortest: 0, shorter: 0, short: 0, standard: 0, complex: 0, enteringScreen: 0, leavingScreen: 0 } },
+});
 
 /**
  * Render helpers for component tests.
@@ -81,7 +104,7 @@ function Providers({ children, route }: { children: ReactNode; route: TestRoute 
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider theme={theme}>
+      <ThemeProvider theme={testTheme}>
         <MemoryRouter initialEntries={[route]}>
           {/* Real, not stubbed: a screen that confirms something through the
               snackbar should have that assertion available to its test. */}

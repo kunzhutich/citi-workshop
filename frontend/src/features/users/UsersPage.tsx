@@ -15,16 +15,19 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import SearchIcon from '@mui/icons-material/Search';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { describeError } from '../../api/errors';
 import type { User, UserRole } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
+import { FilterRow } from '../../components/FilterRow';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
 import { roleLabel } from '../../layout/roleLabels';
 import { formatDate } from '../../display/time';
+import { useEngineers } from '../engineers/hooks';
+import { groupUsers } from './groupUsers';
 import { useUpdateUser, useUsers } from './hooks';
 
 /** Roles an admin may move an account between. */
@@ -44,6 +47,9 @@ const ROLES: UserRole[] = ['EMPLOYEE', 'ENGINEER', 'FACILITY_ADMIN'];
  * disables the controls rather than letting someone discover it by being
  * refused.
  */
+/** Columns in the table, so a section heading can span all of them. */
+const COLUMN_COUNT = 5;
+
 export function UsersPage() {
   const { user: currentUser } = useAuth();
   const { notify } = useSnackbar();
@@ -51,6 +57,29 @@ export function UsersPage() {
   const [includeInactive, setIncludeInactive] = useState(false);
 
   const users = useUsers({ q: search || undefined, include_inactive: includeInactive, page_size: 100 });
+
+  /*
+   * The engineer roster, read only for its levels.
+   *
+   * §5.1 wants engineers ordered LEAD → SENIOR → JUNIOR, and the users
+   * endpoint returns a role and no level — an engineer's level is on
+   * `engineer_profiles`, behind a different endpoint. The join happens in
+   * `groupUsers`, which takes the levels as an argument so the ordering can be
+   * tested without a server.
+   */
+  const engineers = useEngineers({ page_size: 100 });
+  const levels = useMemo(
+    () =>
+      new Map(
+        (engineers.data?.items ?? []).map((engineer) => [engineer.user_id, engineer.level] as const),
+      ),
+    [engineers.data],
+  );
+
+  const groups = useMemo(
+    () => groupUsers(users.data?.items ?? [], levels),
+    [users.data, levels],
+  );
   const updateUser = useUpdateUser();
 
   const change = async (target: User, payload: { role?: UserRole; is_active?: boolean }) => {
@@ -66,14 +95,13 @@ export function UsersPage() {
     <Box>
       <PageHeader title="Users" description="Every account, its role, and whether it can sign in." />
 
-      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center', mb: 3 }}>
+      <FilterRow sx={{ mb: 3 }}>
         <TextField
           label="Search"
           size="small"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Name or email"
-          sx={{ maxWidth: 320 }}
           slotProps={{
             input: {
               startAdornment: (
@@ -93,7 +121,7 @@ export function UsersPage() {
           }
           label="Show deactivated accounts"
         />
-      </Box>
+      </FilterRow>
 
       <QueryState
         isPending={users.isPending}
@@ -114,8 +142,31 @@ export function UsersPage() {
                   <TableCell align="right">Active</TableCell>
                 </TableRow>
               </TableHead>
-              <TableBody>
-                {(users.data?.items ?? []).map((row) => {
+              {/*
+                One `<tbody>` per section, which is what lets each one carry
+                its own heading row inside a single table — the columns stay
+                aligned down the whole page, which they would not if this were
+                five tables stacked.
+              */}
+              {groups.map((group) => (
+                <TableBody key={group.key}>
+                  <TableRow>
+                    <TableCell
+                      colSpan={COLUMN_COUNT}
+                      sx={{
+                        bgcolor: 'action.hover',
+                        borderTop: 1,
+                        borderColor: 'divider',
+                        py: 1,
+                      }}
+                    >
+                      <Typography variant="overline" color="text.secondary">
+                        {group.heading} · {group.users.length}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+
+                {group.users.map((row) => {
                   const isSelf = row.id === currentUser?.id;
                   return (
                     <TableRow key={row.id} hover>
@@ -175,7 +226,8 @@ export function UsersPage() {
                     </TableRow>
                   );
                 })}
-              </TableBody>
+                </TableBody>
+              ))}
             </Table>
           </TableContainer>
         )}

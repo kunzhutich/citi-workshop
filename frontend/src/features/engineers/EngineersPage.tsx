@@ -13,6 +13,7 @@ import type { Engineer } from '../../api/types';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
+import { FilterRow } from '../../components/FilterRow';
 import { levelLabel } from '../../layout/roleLabels';
 import { useCategoryTree } from '../categories/hooks';
 import { EngineerDialog } from './EngineerDialog';
@@ -74,17 +75,13 @@ export function EngineersPage() {
         }
       />
 
-      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center', mb: 3 }}>
+      <FilterRow sx={{ mb: 3 }}>
         <TextField
           select
           size="small"
           label="Level"
           value={level}
           onChange={(event) => setLevel(event.target.value as EngineerLevel | '')}
-          // `theme.ts` makes every text field full width, which is right for
-          // forms and wrong for a filter sitting next to a switch.
-          fullWidth={false}
-          sx={{ minWidth: 180 }}
         >
           <MenuItem value="">Every level</MenuItem>
           {LEVELS.map((option) => (
@@ -102,7 +99,7 @@ export function EngineersPage() {
           }
           label="Show deactivated"
         />
-      </Box>
+      </FilterRow>
 
       <QueryState
         isPending={engineers.isPending}

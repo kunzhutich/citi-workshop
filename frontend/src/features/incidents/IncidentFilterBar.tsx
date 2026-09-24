@@ -24,6 +24,7 @@ import {
 } from '../../display/labels';
 import { useCategoryTree } from '../categories/hooks';
 import { useFacilityTree } from '../facilities/hooks';
+import { FilterRow } from '../../components/FilterRow';
 import { AppliedFilterChips } from './AppliedFilterChips';
 import type { IncidentFilterControls } from './useIncidentFilters';
 
@@ -68,8 +69,20 @@ export function IncidentFilterBar({ controls }: IncidentFilterBarProps) {
   return (
     <Box sx={{ mb: 2 }}>
       <AppliedFilterChips controls={controls} />
-      <Badge badgeContent={controls.activeCount} color="primary">
-        <Button variant="outlined" startIcon={<FilterListIcon />} onClick={() => setDrawerOpen(true)}>
+      {/* Full width, per §4.4. The badge has to stretch too, or a full-width
+          button inside a shrink-wrapped badge leaves the count floating in the
+          middle of the row rather than on the button's corner. */}
+      <Badge
+        badgeContent={controls.activeCount}
+        color="primary"
+        sx={{ display: 'block', '& .MuiBadge-badge': { right: 8, top: 8 } }}
+      >
+        <Button
+          fullWidth
+          variant="outlined"
+          startIcon={<FilterListIcon />}
+          onClick={() => setDrawerOpen(true)}
+        >
           Search and filter
         </Button>
       </Badge>
@@ -120,17 +133,12 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
   }, [search, filters.q, setFilters]);
 
   return (
-    <Box
-      sx={{
-        display: 'grid',
-        gap: 2,
-        gridTemplateColumns: {
-          xs: '1fr',
-          md: 'minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto',
-        },
-        alignItems: 'start',
-      }}
-    >
+    // Six controls, so a narrower column than `FilterRow`'s default — at
+    // 200px six columns would want 1,300px of content box, which a 1440px
+    // window does not have once the drawer and the padding are taken out.
+    // Everything else about the reflow, and why it is not a breakpoint, is in
+    // `FilterRow` and in D44.
+    <FilterRow minColumn={160}>
       <TextField
         label="Search"
         value={search}
@@ -233,7 +241,7 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
         ))}
       </TextField>
 
-      <Box>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center' }}>
         <FormControlLabel
           control={
             <Switch
@@ -250,7 +258,7 @@ function FilterControls({ controls }: IncidentFilterBarProps) {
           </Button>
         ) : null}
       </Box>
-    </Box>
+    </FilterRow>
   );
 }
 

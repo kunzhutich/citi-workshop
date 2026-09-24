@@ -369,6 +369,7 @@ class IncidentQuery(BaseModel):
     mine: MineFilter | None = None
     specialty: bool = False
     sort: IncidentSort | None = None
+    closed_last: bool = False
 
 
 class IncidentFilters(BaseModel):
@@ -392,3 +393,11 @@ class IncidentFilters(BaseModel):
         description="Set by `specialty=true`; None means no specialty filter.",
     )
     sort: IncidentSort | None = None
+    closed_last: bool = Field(
+        default=False,
+        description=(
+            "Put CLOSED tickets after everything else, whatever `sort` says. "
+            "The engineer's queue asks for it: a finished ticket is history "
+            "rather than something to do."
+        ),
+    )

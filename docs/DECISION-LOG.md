@@ -7,6 +7,9 @@ be reversed on review without reconstructing the reasoning.
 **Owner's standing instruction (2026-09-23):** decide everything; log the
 questions I would otherwise have asked, marked with the answer I went with.
 
+**D41–D43 do not exist.** The numbering skipped when the redesign work started;
+nothing was written under those numbers and nothing is missing.
+
 ---
 
 ## D1 — Skip M8 entirely, or do everything except the deploy?
@@ -2250,3 +2253,1087 @@ why each broke something else.
 
 **Worth saying plainly:** CI caught what six days of local runs did not, because
 CI ran at an hour nobody had.
+
+## D44 — The sideways scroll: a viewport breakpoint deciding a layout inside a narrower box
+
+**The report.** The owner: every page needs scrolling right to reach the drawer
+button or the avatar, in Chrome but not Firefox, at any width from 400px to
+1400px. The brief points out that `e2e/responsive.spec.ts` has a test called
+*"no screen scrolls sideways"* which passes, and asks why.
+
+**What was measured.** A real Chrome, signed in as three personas, every screen,
+at eleven widths from 400 to 1400, reporting
+`documentElement.scrollWidth - clientWidth` and every element whose right edge
+passed the viewport. The result is narrower and sharper than the report:
+
+| Screen | Viewport widths that overflow | By |
+| --- | --- | --- |
+| `/tickets`, `/tickets/mine`, `/queue`, `/unassigned` | 900–1290 | up to 333px |
+| everything else | none | — |
+
+So: four screens, not every screen; a band in the middle, not any width. The
+four are one component — `IncidentsPage` — and the overflowing element is the
+same in every case, the filter bar.
+
+**The cause.** `IncidentFilterBar`'s controls were a CSS grid whose template
+changed at Material UI's `md` breakpoint:
+
+```ts
+gridTemplateColumns: { xs: '1fr', md: 'minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto' }
+```
+
+`md` is a **media query**: it asks how wide the *window* is. The bar does not
+live in the window. It lives inside `<main>`, which sits beside a 248px
+permanent drawer and carries 48px of its own padding — so at a 900px window the
+bar has about 620px, and at 1200px about 900px. Its own minimums come to roughly
+950px (200 + 4×140 + the escalated switch + five 16px gaps). A grid track cannot
+shrink below a `minmax()` minimum, so between the width at which the six columns
+switched on and the width at which they finally fitted, the bar pushed out of
+`<main>` and the document gained a horizontal scrollbar.
+
+**Why Chrome and not Firefox.** Chrome on Linux draws a classic 15px scrollbar,
+which comes off the layout width; Firefox's overlay scrollbars do not. Every
+window width therefore lands 15px further into the band in Chrome than in
+Firefox. That shifts the band; it does not create it, and Firefox at 1000px
+would overflow too. The browser difference is real but it is not the fault.
+
+**Why the test passed.** `playwright.config.ts` has two projects, 375px and
+1440px. Neither is in the band. The test was not measuring the wrong element or
+the wrong browser — it was measuring the right thing at two widths, and the
+fault lives between them. A layout rule with a threshold in it has to be
+measured on both sides of the threshold *and in between*.
+
+**Chosen.** `gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))'`.
+
+The column count now follows the width of the box the bar is actually in. There
+is no breakpoint to get wrong, and `min(100%, 160px)` is what keeps a container
+narrower than one column from being overflowed by it — the phone case.
+
+**Rejected: `overflow-x: hidden`.** The brief rules it out and is right to:
+hiding the overflow makes the controls unreachable rather than reachable.
+
+**Rejected: a container query.** `@container (min-width: …)` would have kept the
+explicit six-column template and asked the right question about width. It needs
+a `containerType` wrapper, and it still needs a threshold — one that would have
+to be at least 1040px to be safe, which on a 1400px window is most of the
+available space. `auto-fit` needs no threshold at all.
+
+**What it costs.** The search box loses its `2fr` emphasis; all six controls are
+now equal width. At 1400px the bar is still a single row of six, as before. Below
+about 1290px it wraps to two rows instead of overflowing, which is the honest
+answer — six controls at a usable width do not fit in 900px, and something had
+to give.
+
+**Proven, and proven both ways.** The same sweep, after the change: 360 to
+1600px, every screen, every persona, including the phone's filter drawer opened
+— no horizontal overflow anywhere. `e2e/responsive.spec.ts` gained *"the ticket
+list does not scroll sideways at any width"*, which sweeps fifteen widths rather
+than sampling two, and it passes.
+
+A test that passes proves nothing about the bug it was written for unless it
+also fails without the fix, so the old template was put back and the new test
+run against it:
+
+```
+✘ layout › the ticket list does not scroll sideways at any width
+  Error: at 900px
+  Expected: <= 1
+  Received:    318
+```
+
+318 rather than the 333 measured in a headed browser, because Playwright's
+headless Chromium has no scrollbar — 900px of layout width instead of 885. The
+fix was then restored and the test passes again. Without that second run, the
+new test would be one more assertion that has never been seen to fail, which is
+the same category of thing as the one it replaces.
+
+## D45 — Correcting the brief: the filters were never lost on the browser's back button
+
+**The report.** Brief §1.2: "Apply filters on All Tickets → open a ticket →
+press back → the filters are gone… Something is dropping them on the return
+journey."
+
+**What was measured, before changing anything.** Four list screens, two widths,
+filters applied through the real controls, a ticket opened, `page.goBack()`. The
+URL came back with its query string intact every time, and the filter controls
+came back showing it. `useIncidentFilters.setFilters` writes with `replace`, so
+the history entry the list was on already carries the filters; the browser's
+back button restores them and always did.
+
+**The actual cause.** The ticket page's own back link:
+
+```tsx
+<Button component={RouterLink} to={paths.allTickets} startIcon={<ArrowBackIcon />}>
+  All tickets
+</Button>
+```
+
+A literal destination and a literal label. Pressing it goes to a bare
+`/tickets` — dropping the query string, which *is* the list's state — and it
+says "All tickets" from wherever you came. In an application, that arrow **is**
+the back button; §1.2 and §1.4 are one line of code, and the symptom the owner
+described is exactly what it produces.
+
+**Chosen.** `features/incidents/backTarget.ts`. Every link that leads to a
+ticket carries the location it was clicked from in React Router's navigation
+state (`useTicketLinkState`); the ticket page reads it back
+(`useBackTarget`) and renders the link from it. Navigation state lives in the
+history entry, so it survives a reload and comes back correctly on
+forward/back, and is simply absent for a pasted URL — which is what
+`DEFAULT_BACK_TARGET` ("All tickets") is for.
+
+The label is not a table of its own. `backTargetFor` asks
+`navigation.ts::activeNavItem` — the same longest-prefix rule that highlights
+the sidebar — so the link names the screen exactly as that user's own
+navigation names it: "Tickets" for an admin, "All tickets" for an employee,
+"My tickets" at `/tickets/mine`, "Notifications" from the inbox.
+
+**Rejected: remembering the last list screen in a module variable.** A second
+copy of the URL, wrong the moment two tabs are open, and gone after a reload.
+
+**Rejected: reading the browser's history.** React Router does not expose the
+previous entry, and the DOM History API deliberately does not either.
+
+**Validated, not trusted.** History state survives a reload and can be edited
+from the console, so `readBackTarget` checks the shape and refuses anything
+whose destination is not an in-app absolute path — a protocol-relative
+`//elsewhere.example` is a link off the site, and this link is not allowed to
+be one.
+
+**The lesson, again.** [D24](#d24--a-test-that-waited-for-a-heading-and-read-a-number-that-was-not-there-yet),
+[D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it)
+and [D38](#d38--correcting-d36-the-login-loop-was-a-redirect-not-a-cache) all say
+prove the fix removes the symptom. This is the other half of the same rule:
+reproduce the symptom before believing the diagnosis that came with it. Had the
+`replace` in `useIncidentFilters` been "fixed" on the strength of §1.2's wording,
+the filters would still have vanished and the history stack would have been
+worse.
+
+## D46 — One focus ring on the app bar's search box, drawn around the box
+
+**The report.** Brief §1.3: the global search field renders a white bordered box
+when clicked.
+
+**The cause.** S6's global focus rule, `body .MuiAppBar-root :focus-visible`,
+which exists because a primary-coloured ring is invisible on a primary-coloured
+bar. Its selector reaches the focusable element, and inside a Material UI text
+field that is the bare `<input>` — not the rounded, bordered thing a reader
+would call "the search box". So the ring was a hard white rectangle that stopped
+short of the search icon and ignored the field's border radius. A text input
+matches `:focus-visible` on a mouse click as well as on Tab, so this was every
+use of the control.
+
+**Chosen.** Two rules: suppress the ring on `.MuiInputBase-input` inside the app
+bar, and draw it on `.MuiInputBase-root:has(:focus-visible)` instead. The ring
+then takes the field's radius, encloses the icon, and looks deliberate.
+`TicketSearchField`'s own `&.Mui-focused fieldset` override — solid white, a
+second white line 2px inside the ring — drops back to the hover colour, so there
+is exactly one focus indicator.
+
+**What was checked, not assumed.** That the buttons on the bar still get the
+white ring: tabbing from the search box to the bell gives
+`rgb(255, 255, 255) solid 3px`, screenshotted. Deleting a focus indicator is the
+thing S6 was written to stop, so a fix that quietly did it to the bell would be
+worse than the box it removed.
+
+**`:has()`** is used deliberately. Matching `.Mui-focused` would have worked
+identically here, because a text input is always focus-visible — but it would
+also fire for focus this rule is not about, and the intent is "the field
+containing the focused thing", which is what `:has()` says.
+
+## D47 — The end-to-end suite could not run at all, and had not been able to for some time
+
+**Found while verifying [D44](#d44--the-sideways-scroll-a-viewport-breakpoint-deciding-a-layout-inside-a-narrower-box)–[D46](#d46--one-focus-ring-on-the-app-bars-search-box-drawn-around-the-box).** `npx playwright test` fails 95 of 96 tests.
+Not on an assertion — in the shared sign-in fixture, before any test reaches its
+first `expect`:
+
+```
+strict mode violation: getByRole('button', { name: 'Sign in' }) resolved to 2 elements
+  1) <button type="submit">Sign in</button>
+  2) <button aria-expanded="false">Sign in as someone</button>
+```
+
+The demo account picker (`features/auth/DemoAccountPicker.tsx`) puts an
+accordion under the sign-in form whose header is a button called "Sign in as
+someone". `e2e/fixtures/test.ts::signIn` and two tests in
+`e2e/accessibility.spec.ts` ask for a control named "Sign in" without `exact`,
+which now matches both.
+
+**Confirmed pre-existing**, by stashing every frontend change and running the two
+failing accessibility tests against the clean tree: they fail identically.
+
+**Chosen.** Add `exact: true` at the three locators, with a comment saying why.
+Three characters of scope creep, and the alternative is a section of work
+verified by a suite that cannot start.
+
+**What it says about the claim "82 e2e pass".** That number is in
+`docs/PROJECT-GUIDE.md`, `docs/BUILD-STATUS.md` and the README. It was true when
+it was written and stopped being true when the picker landed, and nothing
+noticed, because nobody ran the suite again. A test suite reports on the code
+only as often as it is run.
+
+## D48 — The new palette, and the three colours that had to be re-derived to get it
+
+**The brief's section 2.** Page background white → cream beige `#f0eada`; primary
+navy `#1f3a93` → coco brown `#73362a`; a third colour to be proposed. It also
+warns that two things validated against the old palette will break *quietly*:
+S6's four pinned chip contrasts, and M7's chart palette.
+
+Both warnings were correct. One of them was worse than the brief expected.
+
+### The page background alone broke three of the four chip colours
+
+`#f4f6fa` has relative luminance 0.920. `#f0eada` has 0.824. Every outlined chip
+— and `PriorityChip` is outlined, on every row of every list — sits on that
+surface, so the whole status palette moved closer to its background:
+
+|  | vs `#ffffff` | vs `#f4f6fa` (old) | vs `#f0eada` (new) |
+| --- | --- | --- | --- |
+| info `#026da8` | 5.59 | 5.17 | **4.66** pass |
+| warning `#b45309` | 5.02 | 4.64 | **4.18** FAIL |
+| success `#2e7d32` | 5.13 | 4.74 | **4.27** FAIL |
+| error `#d32f2f` | 4.98 | 4.60 | **4.15** FAIL |
+
+**Re-derived, not re-picked.** Each failing colour was walked down its own hue at
+constant saturation until it cleared 4.6 against the new page — 4.5 plus enough
+headroom that a rounding cannot decide it. Hue drift is 0.2° at worst, so
+`#a94e08`, `#2c7730` and `#c72a2a` are the same three colours a step darker
+rather than three new ones. Clearing the cream clears white automatically, the
+cream being the harder surface.
+
+**And it is a test now.** `src/theme.test.ts` reads both surfaces off the theme
+and asserts every slot against each. Put the old three back and it fails three
+times with the three real ratios. S6 wrote eight numbers into a comment and
+nothing checked them; that is precisely how they came to be wrong.
+
+### The third colour: ochre, and why not the other two
+
+The brief suggests a warm ochre `#a9743a` and offers a muted olive `#6f7548` or a
+deeper clay `#8c4a32`. The third colour has two jobs — an accent beside the
+brown, and the hue the charts are drawn from — and only one candidate does both
+with the same colour:
+
+| candidate | OKLCH hue | from primary (32.5°) | chroma as given | as a chart step |
+| --- | --- | --- | --- | --- |
+| ochre `#a9743a` | 66.3° | 33.7° | 0.100 | `#b46d00` |
+| clay `#8c4a32` | 40.4° | 7.9° | 0.097 | `#d74c00` |
+| olive `#6f7548` | 114.8° | 82.3° | 0.065 | `#7f8900` |
+
+A chart mark needs chroma ≥ 0.10 or it reads as grey at bar size. Ochre is
+already there, so its chart step is the same colour one shade stronger. Clay has
+to travel to a vivid orange-red that is no longer brown and collides with the
+error chip — and as an accent it is eight degrees from the primary, close enough
+to read as the app bar slightly faded. Olive gives the most separation of the
+three and is the furthest from its own chart step: a muted sage in the interface
+and a chartreuse in the charts, which is two colours wearing one name.
+
+**Shipped as two steps, not one.** `secondary.main` in this application is always
+a *surface with white text on it* — the avatar initials in `UserMenu` and
+`DrawerAccountSection`, the note dot on the activity timeline. White on `#a9743a`
+is 4.00:1 and fails AA for 15px initials. So `main` is the ochre snapped until
+white text clears the bar (`#8b5f30`, 5.56:1) and `light` keeps the brief's
+literal `#a9743a` for the places nothing sits on top.
+
+### `background.paper` stays pure white, deliberately
+
+The brief changes the *page*. Cards a shade lighter than the page is what makes
+them read as cards, and it has a second benefit: `chartPalette.ts` is validated
+against the surface its marks are painted on, which is `background.paper`.
+Holding that colour still means the chart numbers moved only because we chose to
+change the hues, never because the surface moved underneath them. A warm
+off-white would be a defensible taste call and would invalidate every figure in
+that file.
+
+### The chart palette, re-derived rather than recoloured
+
+The old pair `#2a78d6,#eb6834` **still passes every check** — the card surface did
+not move, so nothing forced this. It changed because a blue-and-orange chart
+inside a cream-and-brown application looks imported from somewhere else.
+
+New values, all validated against `#ffffff`:
+
+- `SERIES_PRIMARY` `#b46d00`, `SERIES_SECONDARY` `#007ca5` — worst CVD ΔE 18.9
+  (protan), normal-vision 24.6, both clear of the 8 and 15 floors.
+- `PRIORITY_RAMP` `#ff9e0d → #d48100 → #aa6600 → #814d00` — monotone, gaps above
+  0.06, light end 2.07:1, hue spread 1°.
+
+Three things the derivation settled that guesswork would not have:
+
+1. **The primary brown cannot be a chart colour.** `#73362a` is OKLCH L 0.411,
+   below the 0.43 band, and chroma 0.089, below the floor — it reads as grey at
+   bar size. Pushed to a passing chroma at its own hue it becomes `#ce2700`, a
+   vivid red-orange that is no longer brown and collides with the error red. The
+   brand's darkest colour is a good app bar and a bad bar chart.
+2. **The second slot has to be cool.** Two warm hues carrying a two-series chart
+   is the arrangement that fails protanopia; warm against cool is what survives.
+3. **The ramp's light end is a floor, not a preference.** The first attempt
+   started at L 0.82 (`#ffb15c`) and failed at 1.80:1 — "Low" would have
+   dissolved into the white card. L 0.78 is the lightest step that clears 2:1.
+
+## D49 — What the new palette cost: Blocked and In progress are now the same brown
+
+**Found by looking at the screen**, which is the thing this project's own notes
+keep saying to do, and then measured.
+
+`statusChipColor` maps IN_PROGRESS to `primary` and BLOCKED to `warning`. Under
+the old palette those were navy and orange — about as far apart as two colours
+get. Under the new one they are `#73362a` and `#a94e08`: OKLab ΔE 13.4, below the
+15 floor at which two marks are considered tellable apart by a full-colour
+reader. For scale, In progress against Open is 23.0 and Blocked against Resolved
+is 19.9.
+
+**It cannot be fixed by moving the warning colour.** A colour that clears 4.5:1
+on a cream page has to be dark, and dark warm hues cluster. Walking the hue from
+40° to 100° and taking the darkest passing step at each, separation from the
+brown never reaches 15 — and every degree it gains from the brown it loses to
+the green:
+
+```
+ 40°  #b93f00   vs cream 4.63   ΔE brown 14.8   ΔE green 23.7
+ 70°  #915b00   vs cream 4.73   ΔE brown 12.8   ΔE green 14.7
+100°  #766800   vs cream 4.66   ΔE brown 15.1   ΔE green  9.2
+```
+
+There is no warm step that clears both. The collision is a property of choosing a
+cream page and a brown primary, not a bad pick within that choice.
+
+**Proposed: accept it, and say so**, on the grounds that a chip carries its own
+word — the argument M7 recorded when it refused to colour the status chart by
+status — with the real fix noted as "stop IN_PROGRESS borrowing `primary`",
+one line in `src/display/statusColor.ts`.
+
+**Superseded the same day.** The owner rejected the premise rather than the
+verdict: the ticket's progress should not have followed the brand in the first
+place. [D51](#d51--the-brand-is-brown-the-workflow-is-blue) does the one-line
+fix immediately instead of deferring it to section 3, and the collision is gone
+— IN_PROGRESS against BLOCKED is ΔE 30.9 against the navy, where it was 13.4
+against the brown.
+
+**Left in the log rather than deleted**, because the measurement is what made
+the owner's instinct actionable, and because "two warm colours on a cream page
+cannot be pulled apart" is a constraint the next palette change will meet
+again.
+
+## D50 — The colour the new contrast test could not have caught
+
+`e2e/accessibility.spec.ts` failed on the notification inbox, on both viewports:
+
+```
+[serious] color-contrast: .MuiToggleButtonGroup-lastButton
+  insufficient color contrast of 4.38 (foreground #6e6c64, background #f0eada,
+  font size 9.8pt (13px)). Expected 4.5:1
+```
+
+An unselected `ToggleButton` — the inbox's All/Unread filter, and the
+chart/table switch on every dashboard panel. Material UI colours it
+`rgba(0, 0, 0, 0.54)` (`action.active`), which lands at `#6e6c64` on the cream
+page. It was 4.61 on the old near-white background and failed the moment the
+page warmed up.
+
+**The point worth keeping.** [D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)
+added a unit test asserting every palette slot against both surfaces, and that
+test passes here — because this colour is not a palette slot. It is a library
+default this application never named, and a test over "the colours we chose"
+cannot see it. The axe run scans what is actually on the screen and does not
+care where a colour came from. Two checks, different ground, and the brief said
+as much: *"`npx playwright test e2e/accessibility.spec.ts` … will catch failures,
+but only for what it scans — check the numbers as well as the scan."* This is
+the converse, and both halves of the sentence earned their place.
+
+**The fix** is one override: an unselected toggle takes `text.secondary`
+(5.40:1 on the page, 5.74:1 on a card) instead of `action.active`. That is the
+token the label should have worn regardless — it is text, and the data-viz rule
+this project already follows says text wears text tokens. The selected state is
+untouched.
+
+**What it suggests for next time.** Any *other* Material UI default built on
+`action.*` alpha is in the same position and only a scan will find it. The
+accessibility suite covers fourteen screens and three open dialogs; a surface
+change should be taken as a reason to run all of it, not the unit tests alone.
+
+
+## D51 — The brand is brown, the workflow is blue
+
+**The owner, on seeing R2:** *"i like the main new colors, but i didnt want you
+to change the blue colors on chips and charts and progress bar of the ticket.
+that is because blue is intuitive but brown isnt."*
+
+That is a better statement of the problem than the one D49 was working on. The
+question is not which brown to use for IN_PROGRESS; it is that a ticket's
+progress was never the brand's to colour. It had been `primary` since M5 and
+nothing noticed, because `primary` was navy and navy is what progress looks
+like anyway. The redesign made the two diverge and the borrowing became visible.
+
+**Chosen.** A palette slot of our own, `workflow`, holding the old navy
+`#1f3a93`. It paints exactly two things:
+
+- the IN_PROGRESS chip (`display/statusColor.ts`)
+- the ticket's stepper (`features/incidents/WorkflowStepper.tsx`)
+
+The app bar, the drawer's call to action, the workflow buttons, the focus ring
+and every other use of `primary` stay brown. The product speaks in brown; the
+ticket speaks in blue.
+
+**And the charts go back to M7's values** — `#2a78d6` / `#eb6834`, the blue
+ramp. R2's ochre re-derivation passed every check and so does this; no
+measurement decided it. The owner's reason is the one that should be written
+down: *a chart is read by someone who has never seen this application before,
+and blue is a convention they already have while brown is a brand they do not.*
+Coherence with the interface lost to legibility to a stranger, which is the
+right way for that argument to go.
+
+**What it fixes for free.** D49's collision. Against the brown, IN_PROGRESS sat
+at OKLab ΔE 13.4 from BLOCKED — under the 15 floor, on the pair an engineer
+scans a queue for. Against the navy it is 30.9.
+
+**What it costs.** `workflow` is a custom palette slot, so it needs TypeScript
+module augmentation in `theme.ts` for `Palette`, `PaletteOptions` and
+`ChipPropsColorOverrides`. Without the last one `<Chip color="workflow">` does
+not type-check and the status palette would go back to hardcoded hexes at the
+point of use, which is the thing `statusColor.ts` exists to prevent.
+
+**A trap worth recording.** Material UI fills in `light`, `dark` and
+`contrastText` only for the five slots it knows about. `workflow: { main }`
+type-checks, renders, and produces a **grey** filled chip, because `Chip` reads
+a `contrastText` that is not there. It has to be
+`createTheme().palette.augmentColor({ color: { main }, name: 'workflow' })`.
+Caught by screenshotting the ticket page; the type-checker and 349 unit tests
+were all happy with the grey one.
+
+**One number to keep an eye on.** IN_PROGRESS navy against OPEN `#026da8` is
+ΔE 14.0, marginally under the 15 floor — two blues, adjacent. That pair is
+unchanged from what shipped through M7 and S6, it is not a regression, and both
+chips carry their word. Noted so that nobody rediscovers it and assumes D51
+introduced it.
+## D52 — The end-to-end suite had buried today under its own test data
+
+**The symptom.** 154 tickets reported on 2026-09-23, against three to nine on
+every neighbouring day. The admin dashboard's daily series was a flat line with
+one wall at the right-hand edge, and every rate computed over the last thirty
+days was measuring the test suite.
+
+**The cause is a decision, not a fault.** `e2e/fixtures/test.ts` deactivates the
+accounts it registers and deliberately keeps their tickets — "they are ordinary
+data, and a grader looking at the app afterwards should see them". That was
+reasonable when the suite ran occasionally. Section 1 and section 2 of the
+redesign brief ran it a dozen times in an afternoon, at ~13 tickets a run, and
+the rationale inverted: the tickets stopped being data a grader should see and
+became the only thing they could see.
+
+[D4](#d4--the-development-database-has-accumulated-test-data) is the same
+observation one database ago, and its answer — reset before the next seeded
+phase — is not available now, because the seeded data is the demo.
+
+**What was removed.** Everything reported by an `e2e.<role>.<worker>-<stamp>@acme.inc`
+account and the accounts themselves: 150 incidents, 96 users, 282 events, 24
+notes, 116 notifications, in one transaction.
+
+**The discriminator is the reporter's address, and it was checked rather than
+assumed.** Before deleting: no demo ticket was assigned to an e2e engineer, no
+e2e note or event sat on a demo ticket, and no notification to a demo user came
+from an e2e ticket — three counts, all zero. Every e2e ticket was dated
+2026-09-23. So the set is genuinely separable and nothing outside it moved,
+which a `WHERE created_at::date = today` would not have given: three of that
+day's tickets are seeded demo data and are still there.
+
+Events, notes and notifications CASCADE from the incident, and `reporter_id` is
+`ON DELETE RESTRICT`, so the order is forced: incidents first, then accounts.
+`login_attempts` is keyed on the address with no foreign key and would have
+outlived the accounts, so it is swept explicitly.
+
+Afterwards: 300 incidents, 38 users — the seeded baseline exactly — and
+2026-09-23 holds 3 tickets beside its neighbours' 3, 5, 5, 4, 9, 7.
+
+**Not fixed: it will happen again on the next run.** Roughly 13 tickets per
+suite. The options are to delete the suite's own tickets in teardown — which
+needs SQL, because the application has no endpoint for deleting an incident and
+should not have one — or to keep clearing it by hand between phases. That is
+the owner's call and is recorded here rather than taken.
+
+## D53 — Chips: one width per family, and the arrows come off
+
+**Section 3 of the brief.** Equal width and height for the status, priority and
+level chips; more padding inside them; the priority icons removed; CRITICAL
+filled rather than outlined; the escalation flag moved to the front of the
+title.
+
+### The widths are measured, and now asserted
+
+`src/components/UniformChip.tsx` is the one place that decides a chip's size.
+Each family is pinned to its longest label plus 12px of padding either side,
+rounded up to a multiple of four — taken by rendering the real screens with the
+widths set to zero and reading the boxes back, not by counting characters:
+
+| family | longest | measured | pinned |
+| --- | --- | --- | --- |
+| status | In progress | 88.8 | 92 |
+| priority | Medium | 73.3 | 76 |
+| level | Senior | 62.8 | 64 |
+
+Three numbers in a comment is exactly the arrangement S6's contrast figures
+were in when three of them silently stopped being true
+([D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)),
+so `e2e/chips.spec.ts` asserts them in a real browser at both viewports. A font
+change moves these and nothing else would notice.
+
+**A `styled()` base rather than a `MuiChip` override in `theme.ts`.** The rule
+is for three families, not for every chip. Specialty chips, the inbox's "New"
+badge and the escalation flag all say something whose length is real
+information and keep their natural width.
+
+### The priority arrows come off, and the justification they had was wrong
+
+`PriorityChip`'s comment said the icons were there because "colour alone fails
+for the roughly one person in twelve with a red-green deficiency". That is true
+of colour alone, and this chip has never been colour alone — it carries the
+word *Critical*. WCAG 1.4.1 is about colour being the **only** visual means of
+conveying information; the label was always the other one. The icons were a
+third channel behind a second, and four of them down a table column cost more
+than they bought.
+
+**Filling CRITICAL is the better version of what the arrows were reaching
+for.** The row people most need to find is now the only one with a solid block
+of colour in it — a difference in *form*, not in hue, which survives a
+red-green deficiency and a monochrome printout. The other three stay outlined
+so an ordinary list does not become a wall of blocks.
+
+### The escalation flag leads the title
+
+Trailing it, the flag sat wherever that row's title happened to end, so a
+column of escalated tickets had its flags scattered across the width: the one
+thing in the row you want to find by glance was the one thing with no fixed
+position. It now leads the title in the table, the card list and the home
+screens' rows.
+
+**What it costs, stated because it is visible.** The flag takes about 100px out
+of the title cell, so an escalated ticket's title truncates sooner. Two things
+offset it and neither fully: the status and priority columns were sized against
+their longest *word* and carried slack for the icon that is now gone, so both
+are cut to the chip's pinned width plus a cell's padding — 124 and 108, from
+128 and 118 — and the room goes to the title. The remainder is the real price
+of the alignment the brief asked for, and is worth checking on a screen before
+it is accepted.
+
+**The detail page's flag did not move.** It sits in the chip row under the
+heading, and the brief's reason — "so rows line up" — has nothing to align
+there. Putting a chip inline before an `<h1>` would cost the heading to buy
+nothing.
+
+## D54 — Section 4: the phone loses a navigation bar and gains its screen back
+
+**Seven requests, and two of them are the owner overruling an earlier decision
+of ours.** Recorded together because the reasoning in both cases is the same
+shape: something was built for a good reason, and the reason stopped being the
+whole story once the thing was used.
+
+### The bottom navigation bar is deleted, not hidden
+
+It carried three or four of the drawer's items and cost 56px of a phone's
+height permanently, plus the padding every screen reserved to clear it. The
+drawer covers the same ground and more.
+
+Deleted rather than hidden, per the brief, so nothing has to reserve room for
+it: `BOTTOM_NAV_HEIGHT` is gone, `<main>`'s phone padding is the ordinary one,
+the report FAB sits at `bottom: 16` instead of `bottom: 72`, and `NavItem` no
+longer carries `inBottomNav` — a flag with no consumer is a question the next
+reader has to answer for nothing.
+
+**The tests that asserted the bar are gone with it**, on the owner's
+instruction. Two were rewritten rather than deleted outright, and the
+distinction matters: `AppShell.test.tsx`'s two cases each asserted the bar
+*and* something that still exists — that the sidebar is absent at phone width,
+and that Material UI keeps a temporary `Drawer` out of the DOM until it opens.
+Deleting them whole would have removed coverage of behaviour we still ship, so
+each keeps its surviving half. `navigation.test.ts`'s "at most four items in
+the bottom bar" is deleted outright; there is no bar to bound.
+
+### The phone's drawer opens from the right
+
+M5 moved the menu *button* to the right corner for thumb reach and left the
+panel coming in from the left, so the tap and the thing it produced were at
+opposite edges of the screen. The desktop drawer stays on the left: it is
+permanent, never "opened", and reach is not a constraint with a mouse.
+
+`theme.ts`'s drawer border had to learn about the anchor — a right-hand panel
+with a border down its right edge is a line drawn in the margin of nothing.
+
+### Dialogs are no longer full screen on a phone
+
+BUILD-PLAN §10 asked for full screen because a text field in a centred dialog
+is unusable once the keyboard takes half the viewport. The owner overrides it,
+and the reason is worth keeping: **a dialog that fills the screen looks like a
+page**, and a page that arrived without the address bar changing loses the cue
+that closing it puts you back where you were.
+
+The keyboard problem is real and is answered with margins instead: 16px of page
+on every side — the gutter the rest of the application uses — and a `maxHeight`
+that keeps the dialog inside the viewport so it scrolls rather than the page
+behind it. The e2e assertion is a **gap on every side**, not "smaller than the
+viewport", which would pass on a dialog one pixel short of filling it.
+
+### Full-width controls: the container decides, not the control
+
+Two new pieces, both so the rule lives in one place:
+
+- **`components/RowActions.tsx`** — the buttons acting on one row. Full width
+  and stacked below 900px. The alternative was `fullWidth={isMobile}` on each
+  button, which is the same rule at four call sites and forgotten at the fifth,
+  and it makes every button that might appear in a row take a viewport prop it
+  has no other use for. `AssignButton` and `PickUpButton` know nothing about
+  this. Measured after: 309px of a 343px card on a phone, 64px on a desktop.
+- **`components/FilterRow.tsx`** — a filter row that reflows to the width it
+  has, `repeat(auto-fit, minmax(min(100%, N), 1fr))`. The ticket lists, the
+  engineer roster and the users page all use it, which also folds in
+  [D44](#d44--the-sideways-scroll-a-viewport-breakpoint-deciding-a-layout-inside-a-narrower-box)'s
+  fix rather than leaving it as one screen's special case. Controls inside stop
+  setting their own widths — the engineers page was opting out of the theme's
+  full-width text fields with `fullWidth={false}` and a `minWidth` precisely to
+  work around the flex row this replaces.
+
+`RowActions` uses a viewport media query, built from `MOBILE_MAX_WIDTH` so it
+cannot drift from `useBreakpoint`. A container query would be more honest by
+D44's lesson, and is deliberately not used: "is this a phone" is a viewport
+question everywhere else in this application, and one component answering it
+differently would be a worse fault than the one it fixed.
+
+### The ticket title rule
+
+Six surfaces rendered a ticket title and no two agreed — `body2`, `subtitle1`
+at 600, `body1`, `subtitle2`, `h1`. The team page's sat *inside* the link with
+the reference, so it wore the link colour while every other title was ink, and
+that is the half that actually misleads: a coloured title says "click this" on
+a card where the whole card is already the target.
+
+**The rule, in `components/TicketTitle.tsx`:** a title is always ink, never a
+link colour — what is clickable is the reference or the row, and colour is how
+a reader tells those apart. Size follows how much of the screen the ticket
+owns: `row` (`body2`) in table and panel rows, `card` (`subtitle1`/600) on
+cards and home rows, `page` (`h1`) on the detail page. `page` is the deliberate
+exception the brief allows: there the title is not one item among many, it is
+what the page is about, and the heading level is a fact for a screen reader as
+much as a size for everyone else.
+
+### Facilities: the columns start on the same line
+
+The floor's name sat above the seat panel on the page background, so the
+buildings panel's top edge and the seat table's were a heading apart and the
+right column read as having slipped down. The name and its four buttons move
+*inside* the seat card as its toolbar: both panels now start at y=225,
+measured.
+
+`Collapse` replaces the bare conditional, so choosing a floor opens the panel
+rather than teleporting it. On a phone the two columns are stacked, so a tap on
+"Level 3" filled a panel a screenful below the fold and looked like it had done
+nothing — the page now scrolls it into view. `prefers-reduced-motion` is
+honoured by hand there: `theme.ts` sets `scroll-behavior: auto` for that case,
+but `behavior: 'smooth'` passed to `scrollIntoView` overrides the stylesheet
+rather than obeying it.
+
+## D55 — A whole card that opens a ticket, with buttons that still do their own job
+
+**The owner:** on the engineer screens, clicking anywhere on a ticket should
+open it — except on the buttons, which should keep acting.
+
+Those two were genuinely incompatible, and `HomeTicketRow`'s own docstring
+said so: a `<button>` inside an `<a>` is invalid HTML and browsers resolve it
+by folding the button into the link, so a `CardActionArea` around everything
+would have made "Pick up" navigate instead of picking up. That note is why the
+home rows had only their title clickable, and it was correct about the
+constraint and wrong that the constraint was binding.
+
+**Chosen: a stretched link** (`components/stretchedLink.ts`). One real anchor —
+the title — grown over the card by an absolutely positioned `::after`, with
+the buttons lifted above it on the z axis. The markup stays valid, there is one
+link and one tab stop, and a screen reader hears the title as the link's name
+rather than the card's entire text read out as one.
+
+Three pieces, and all three are load-bearing: `position: relative` on the card
+(or the overlay escapes to the nearest positioned ancestor), the overlay on the
+link, and `zIndex: 1` on the actions. Miss the last and the buttons stop
+working, which is the exact failure the arrangement exists to prevent — so it
+is asserted rather than commented.
+
+**The reference stops being a link.** The card is the link now; a second anchor
+to the same ticket is a second tab stop and a second thing to read out for one
+destination.
+
+**What it costs:** text inside the card can no longer be selected by dragging,
+because the overlay is what the pointer meets. The accepted trade of this
+pattern everywhere it is used, and a ticket card is something you click rather
+than something you quote.
+
+**§5.7 arrived early as a consequence.** The team page had its own card with
+its own typography and its own link treatment. Rather than teach a second card
+the overlay, it now renders `HomeTicketRow` with Assign in place of Pick up,
+which is what the brief asks for anyway. Three copies of one decision became
+one.
+
+## D56 — The first click that did nothing, twice
+
+**Reported by the owner:** on the facilities page the first floor click does
+not scroll to the table; every click after it does, on any floor of any
+building.
+
+**A defect in [D54](#d54--section-4-the-phone-loses-a-navigation-bar-and-gains-its-screen-back), shipped the same day.** The scroll ran from an
+effect on `selectedFloorId`. That fires when the id changes, which is *before*
+the `Collapse` holding the panel has grown — so the first time, it scrolled to
+a box that was still zero pixels tall and already on screen, and nothing
+appeared to happen. Every later click worked because the panel already had
+height. A first-click-only fault: the kind a developer never sees, because by
+the second attempt it is gone.
+
+**The fix is to notice there are two moments, not one.** The panel *opening*
+has a transition to wait for (`onEntered`); the floor changing while the panel
+is already open has no transition at all, so there is nothing to wait for and
+the effect is right. A `paneOpen` ref tells them apart. Measured after: 982px
+on the first click and 982px on the second.
+
+**Generalised rather than patched.** The report questionnaire got the same
+treatment in the same pass — every question is a `Collapse` now, and on a phone
+the one that just opened is scrolled to from `onEntered` for exactly this
+reason. The reduced-motion handling both share is `display/revealScroll.ts`:
+`theme.ts` sets `scroll-behavior: auto` under `prefers-reduced-motion`, which
+covers scrolling the stylesheet causes and not an explicit
+`behavior: 'smooth'` passed from JavaScript, which overrides it.
+
+## D57 — Two pies, and why they are not painted in the chip colours
+
+**The owner asked** for By priority and By building as pies, with the priority
+slices in the colours of the priority chips.
+
+The shapes are theirs to choose and both are defensible: each is a composition
+— of all the tickets, this share was urgent; this share came from that building
+— with few enough slices to read at a glance. By status and By category stay
+bars, because those are read to compare one count against another, and five
+categories where two are small is a puzzle as a pie.
+
+**The chip colours do not survive the check, and not marginally.** The HIGH
+chip `#a94e08` against the CRITICAL chip `#c72a2a`:
+
+```
+worst all-pairs  #c72a2a ↔ #a94e08  ΔE 1.9 (deutan) · 8.5 (normal vision)
+floors                              ΔE 8.0 (CVD)    · 15.0 (normal)
+```
+
+The two slices a reader most needs to tell apart would be the same colour to a
+deuteranope and very nearly the same to everyone else.
+
+**That is not a flaw in the chips — it is caused by them being right.** A chip
+carries its own word half a centimetre away, so its colour never has to carry
+identity alone; and the chips are *dark* precisely because their labels must
+clear 4.5:1 on the cream page ([D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)),
+which is what pushes HIGH's orange down into CRITICAL's red. A pie slice has no
+text on it and needs only 3:1 against the white card, so it can be lighter and
+far more chromatic — which is exactly the room those two hues needed.
+
+**Chosen: the chip hues at slice steps.** Grey stays grey, blue stays blue,
+CRITICAL is the error chip unchanged, and HIGH moves furthest — to a true amber
+— because it was the one colliding. Three of the four are recognisably their
+chip. Validator: CVD ΔE 14.0 (protan), normal-vision 16.6.
+
+Two flags are accepted deliberately. The grey trips the chroma floor, which
+exists to stop a hue that is *trying* to be a colour from reading as grey — LOW
+is meant to be neutral, mirroring its chip, and a neutral slice beside three
+coloured ones is distinguishable *because* it is neutral. And the grey and the
+amber sit under 3:1 against white, which is a relief case: legal only with
+visible labels or a table view.
+
+**The counts moved to the legend to meet that**, and it is a better answer than
+the arc labels it replaced. Painted on the slice, a number has to contrast with
+whatever colour that slice is, and white sat at 2.2:1 on the amber and 2.75:1
+on the grey — unreadable figures on exactly the slices a reader wants a figure
+for. In the legend it is text on the card at the card's own contrast, and the
+small slices get their value too, which an arc label cannot fit.
+
+**Buildings are capped at three colours.** The validated categorical order
+clears the all-pairs gates for its first three slots and not beyond, and a pie
+is an all-pairs chart because every slice touches two neighbours and the
+legend. A fourth building folds into "Other", or the chart goes back to bars.
+
+## D58 — Section 5: the per-persona screens, and one backend flag
+
+Seven items. Six are frontend; one needed the API, and the reason is worth more
+than the change.
+
+### 5.6 — "closed tickets last" is server-side, because a list is paged
+
+There is no status ordering in `_SORT_TERMS`, and the tempting fix — reorder
+the rows the browser was handed — is wrong: a page holds twenty-five tickets,
+so a closed one sinks to the bottom of *page one* and still sits above every
+open ticket on page two.
+
+So `closed_last` is a query flag that **prefixes** the ORDER BY. A prefix and
+not a sort of its own, because it answers a different question: `sort` says how
+to arrange the work, and this says that finished work goes at the end of it
+however it is arranged. `case((status == CLOSED, 1), else_=0).asc()` ahead of
+whatever terms the sort produces, relevance ranking included.
+
+The test asserts it against `-priority`, deliberately: the interesting claim is
+that a CRITICAL closed ticket sinks anyway, and that the tickets above it keep
+the order the sort asked for.
+
+### 5.2 — hide and reorder, in `localStorage`, with the table written down
+
+The owner's call, taken after a correction: the worry was that `localStorage`
+would need redoing weekly, and it does not — it never expires, and is lost only
+when site data is cleared or another browser is used. The real difference is
+cross-device, and a table is the fix for that. It is in the README's known
+limitations as the next step rather than pretended away.
+
+`dashboardLayout.ts` is the only file that touches storage, so making that move
+later changes one file.
+
+Four decisions inside it:
+
+- **Reordering cannot cross the period/current line.** That boundary is what
+  the whole dashboard is arranged around ([D9](#d5--what-do-from-and-to-actually-filter-on), D10): a
+  "Blocked · 21" tile under a "last 30 days" heading is the failure the two
+  scope headings exist to prevent. A section can be hidden, and can move among
+  its own kind.
+- **The two headline tile rows are not in the list at all.** A dashboard where
+  everything can be turned off can be turned into a blank page, and the admin
+  who does that by accident has nothing left on screen to tell them what went
+  missing.
+- **Arrows, not drag-and-drop.** Dragging is the expected gesture and needs a
+  pointer, a library and a keyboard story that usually never arrives. Each
+  arrow names its section, so a screen reader hears "Move Engineer workload up"
+  rather than seven identical "Move up".
+- **Storage is validated, not trusted.** It survives upgrades and can be edited
+  from the console; unknown ids are dropped, a malformed value falls back to
+  the default whole rather than half-applying, and every access is wrapped
+  because `localStorage` throws in a private window. A section added by a later
+  release is appended in catalogue order rather than vanishing because
+  somebody's saved layout predates it.
+
+### 5.5 — the table gets a click handler, not the cards' overlay
+
+`HomeTicketRow` and the card lists use the stretched link from
+[D55](#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job).
+The desktop table does not, for two reasons: an overlay inside a `<td>` has to
+escape the cell to cover the row and a `<tr>` is not a reliable positioning
+context to hang one off, and — more importantly — it would block selecting the
+text of a table, which is a thing people do to tables and do not do to cards.
+
+So the row carries an `onClick` and **the reference stays a real link**. That
+link is what keeps the row reachable by keyboard and announced as a link; a
+`<tr onClick>` is neither, and a row clickable only with a mouse would be a
+regression dressed as a feature. The handler ignores clicks that land on
+anything else interactive, and ignores a click that ends a text selection —
+navigating out from under a drag would make the table impossible to read from.
+
+### 5.4 — a default written into the URL, applied once
+
+An employee lands on their own building, and the filter goes into the address
+bar rather than into the query quietly. That is what makes it a *default*
+rather than a hidden rule: the filter bar shows it, it can be removed, the view
+stays bookmarkable, and a link somebody sends means what it says.
+
+Applied once per mount via a ref. The obvious condition — "no building chosen"
+— is also true the instant the employee clears the filter, and the page would
+put it straight back.
+
+### 5.3 — the assign dialog says what somebody knows, not whether they match
+
+Line one is who they are and whether they are free; line two is what they know.
+Those are the two questions an assigner holds at once, and separating them is
+the point: when the specialist is busy, somebody has to be picked anyway.
+
+The single "Specialty" badge is replaced by **every** specialty chip, with the
+ticket's own category group filled green. A badge says *whether* somebody
+matches; the chips say *what they cover*, so "no green, but they do Networks
+and this is network-adjacent" becomes a judgement the assigner can make rather
+than one the dialog made for them. Green is not the only channel — the matching
+chip is filled where the others are outlined, and carries a title in words.
+
+### 5.1 — grouping needs a join the users endpoint cannot do
+
+`GET /users` returns a role and no level; an engineer's level is on
+`engineer_profiles`, behind a different endpoint. The page reads both and joins
+them in `groupUsers`, which takes the levels as an argument so the ordering is
+testable without a server. Adding `level` to the users response would be the
+tidier API and a wider change than this screen justifies.
+
+Empty sections are dropped rather than shown empty — a heading over nothing
+reads as something that failed to load, and on a filtered list most sections
+are empty most of the time. An engineer whose level has not arrived yet (the
+roster is a second request) is grouped as JUNIOR rather than vanishing: briefly
+in the wrong section is recoverable, in no section at all is a missing account.
+
+## D59 — Section 6: an engineer is a page, and the demo world grew to fill it
+
+Two items built (6.1, 6.2), two deliberately not (6.3, 6.4), and one change
+nobody asked for that turned out to be the condition for 6.1 being worth
+opening at all.
+
+### 6.1 — the modal becomes a page, because the question changed
+
+An engineer was an **Edit engineer** dialog: level, specialties, availability,
+capacity, a save button. Everything in it is a *setting*, and a dialog is the
+right shape for settings.
+
+The question people actually arrive with is not what an engineer's settings
+are. A lead opening somebody's record is deciding whether to hand them the next
+ticket. An admin is asking how they are doing. That needs a period, an output
+figure, a breakdown and a live queue — four things that do not fit in a modal,
+and one of which (the period) a modal cannot even hold honestly, because a
+date range floating above a settings form reads as filtering the settings.
+
+So `/engineers/:userId` is a page, and the old dialog's contents live on it as
+`EngineerBasics` — the same fields, the same mutation, now a section rather
+than the whole thing. `EngineerDialog` stays for **creation**, which genuinely
+is a form: you fill it in, you get a temporary password, you are done.
+
+**The route is keyed on the user id, not a profile id.** `engineer_profiles` is
+keyed that way too — the profile is an extension of a user and has no identity
+of its own — so a URL built from the profile's own key would be a second name
+for the same person.
+
+### The reopen figure, and why it says less than it could
+
+The brief asks for "how many of their closed tickets were later reopened by the
+reporter" and notes the data is there. It is, but not in the shape the sentence
+implies.
+
+`reopen_count` is a column on `incidents`. It counts every reopen that ticket
+has ever had — by anyone, at any time, against any assignee. A ticket that
+Priya resolved in March, that was reopened, that Omar then resolved in May,
+carries a reopen that belongs to neither of them individually.
+
+The number that the brief describes — *reopened because this engineer's fix did
+not hold* — requires walking `incident_events` for each REOPENED and finding
+whose RESOLVED it followed. That is a window function over the event log and a
+materially larger query, and it is the right thing to build **if this becomes a
+performance metric**. It is not one yet.
+
+What ships is the weaker, computable claim: **of the tickets this engineer
+resolved in the window, how many carry a reopen.** The screen says "Resolved,
+then reopened" and the caption says "% of what they resolved came back". Both
+phrasings were chosen so that the label is true of the number underneath it. A
+quality signal that overstates itself is worse than none — it gets somebody a
+difficult conversation they did not earn.
+
+`reopen_rate_pct` is `None`, not `0.0`, when the engineer resolved nothing in
+the window, for the same reason every other percentage in `reporting.py` is:
+a zero denominator is a *meaning* decision. Nothing resolved means **no rate**.
+Zero percent would read as a flawless record, which is the opposite of what an
+empty period tells you.
+
+### `STAFF_ONLY`, and where that rule is actually enforced
+
+Seven of the eight report routes are `ADMIN_ONLY`. `GET /reports/engineers/{id}`
+is `STAFF_ONLY`, and the difference is not a relaxation — it is the guard §5.5
+asks for, put where it holds.
+
+A LEAD opens this page to decide who gets the work. An engineer opens it on
+themselves. An admin opens it on anyone. An employee must not reach it at all.
+The `RequireRole` on the route is a courtesy that stops a wrong link rendering
+a 403 screen; **the dependency on the endpoint is the enforcement**, and it
+holds when somebody types the URL, shares it, or calls the API directly.
+
+### The two links in, and what they replace
+
+- **The assignee column** on the ticket tables becomes a link. It is the
+  natural place to ask "who is this, and are they buried" while triaging.
+- **The engineer workload rows** on the admin dashboard now go to the person,
+  not to a filtered ticket list. This is a genuine reversal: those rows have
+  pointed at `?assignee_id=…` since M7. Clicking a row in a table *about people*
+  and landing on a list of *tickets* answers a question you did not ask — and
+  the ticket list is one click further on from the page you land on instead.
+
+### 6.2 — more specialties, and the label that sat under "None"
+
+The specialty list is the category groups, so "offer more" was not a new list:
+`seed/categories.py` gained three groups — **Cleaning & Waste**, **Safety &
+Security**, **Deliveries & Moves**, fourteen subcategories between them — and
+the specialty field offers them because it always offered whatever the tree
+holds.
+
+The overlap was the smaller half and the more interesting one. A MUI `Select`
+with `multiple` renders its value *inside* the field, and an empty multi-select
+renders the literal string "None" there — on top of a label that has not
+floated up, because MUI shrinks the label when it believes the field is
+non-empty and an empty array is not. The ticket page's filters look correct
+because they pass `slotProps={{ inputLabel: { shrink: true } }}`, pinning the
+label up unconditionally. That is the fix, copied verbatim, and it is the same
+two lines as the `displayEmpty` fix on the dashboard's Building filter.
+
+### The change nobody asked for: the demo world had to grow
+
+This was the owner's call, and it is the reason 6.1 is worth opening.
+
+Adding three category groups to the tree does not add a single ticket that uses
+them. `migrate` is idempotent and seeds categories; nothing backfills history.
+A demo database migrated after §6.2 has eight groups in every dropdown and
+tickets in five of them — so the engineer page's "What they fix" chart, the
+dashboard's category breakdown and the new specialty options all draw from a
+world where the newest third of the taxonomy is empty.
+
+Three numbers moved:
+
+- **300 tickets → 420.** Ten engineers across eight groups over ninety days
+  need enough history for each person to have a record worth reading. At 300
+  the thinnest engineer-group cells were a ticket or two.
+- **Six engineers → ten.** The roster is what the dashboard's "who is free /
+  who is buried / who knows about this" questions are asked against, and none
+  of them is interesting when everyone has one specialty and a similar load.
+  So: generalists with three groups and specialists with one, every group
+  covered at least twice, two groups covered three deep,
+  `ENGINEER_LOAD_WEIGHTS` deliberately uneven from 0.16 down to 0.05.
+- **The three new groups sit at 9% / 7% / 5%, not 2–5%.** The first pass gave
+  them a token share, which put Deliveries & Moves at about six tickets in
+  three months. That satisfies a test that every group appears and is not
+  enough to *look* at. A fifth of the queue between them is the honest shape
+  for a facilities team — rarer than broken-monitor traffic, common enough that
+  a chart segment is worth clicking.
+
+**The bug this caused is the one worth remembering.** `CATEGORY_GROUP_WEIGHTS`
+has always had a `.get(name, 0.1)` fallback, so a group added to the tree is
+picked whether or not this file knows about it. `SYMPTOMS` had **no** fallback
+— a plain dict subscript — so the first `seed_demo` after the categories landed
+died on `KeyError: 'Deliveries & Moves'` and took nineteen tests with it. One
+table tolerant of a new group and its neighbour not is the kind of asymmetry
+that is invisible until the day it isn't. Both are tolerant now:
+`GENERIC_SYMPTOMS` and `_symptoms_for()` mean a group added next year produces
+plausible tickets without touching this file.
+
+Four tests had hardcoded counts that were really assertions about the seed's
+size. They derive them from `DemoSpec` now, so the next person to change a
+number does not have to find out which tests were secretly about it.
+
+### 6.3 and 6.4 are not built, and that is a decision
+
+Both are recorded in the README's scope decisions rather than silently dropped.
+
+**6.3, the "needs help" escalation chain**, is the largest item in the brief and
+is backend work — a state-machine question, not a styling one. The brief itself
+lists five design questions to settle before any code, including whether it is a
+new `IncidentStatus` (which means new rows in `workflow.py` for every legal
+transition into and out of it, plus the notification rules, plus the frontend's
+`allowed-transitions` rendering, all of which follow for free if it is a status
+and none of which do if it is a flag) and how it relates to the *existing*
+escalation flag, which is reporter-facing and would then be the second thing in
+the product called "escalate". Half-answering that in the tail of a UI pass
+would put a rule somewhere other than the one place it belongs, which is the
+architecture rule this project has held to throughout.
+
+**6.4, automatic BUSY**, is a smaller question with the same shape: `BUSY` is
+currently the engineer's own statement about themselves, and capacity is an
+observation the system makes. Merging them means an engineer who marked
+themselves available is overruled by a ticket count, and an engineer at
+capacity cannot say "I am fine, send it". The capacity bar already shows the
+observation next to the statement, which keeps both readable. Deciding to fuse
+them is a product call worth taking deliberately, not as a side effect.
+
+### `bin/reset-demo-database.sh`
+
+New, and the reason is the two paragraphs above plus [D52](#d52--the-end-to-end-suite-had-buried-today-under-its-own-test-data): the e2e suite
+leaves its tickets behind by design, and the seed itself now changes between
+phases. `seed_demo` refuses to top up — it returns "Demo data is already
+present" and changes nothing, deliberately, so a second invoke cannot double a
+dataset — so the only way to a current demo world is drop, `migrate`, `seed_demo`,
+in that order. The script is that, with a typed confirmation and a
+`pg_terminate_backend` first, because Postgres will not drop a database the dev
+server still holds a pool against.
+
+It is local only. Aurora is `publicly_accessible = false` and unreachable from
+here, which is the intended blast radius.

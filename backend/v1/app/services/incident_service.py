@@ -160,6 +160,7 @@ def resolve_filters(query: IncidentQuery, user: User) -> IncidentFilters:
         created_to=query.created_to,
         specialty_group_ids=_resolve_specialties(query, user),
         sort=query.sort,
+        closed_last=query.closed_last,
     )
 
 

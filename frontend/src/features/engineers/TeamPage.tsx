@@ -1,16 +1,10 @@
 import Box from '@mui/material/Box';
-import Card from '@mui/material/Card';
-import CardContent from '@mui/material/CardContent';
-import Link from '@mui/material/Link';
 import Typography from '@mui/material/Typography';
-import { Link as RouterLink } from 'react-router-dom';
 
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
-import { PriorityChip } from '../../components/PriorityChip';
-import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
-import { incidentPath } from '../../routes';
+import { HomeTicketRow } from '../home/HomeTicketRow';
 import { AssignButton } from '../incidents/AssignButton';
 import { useIncidents } from '../incidents/hooks';
 import { useCategoryTree } from '../categories/hooks';
@@ -81,40 +75,31 @@ export function TeamPage() {
           />
         ) : (
           <Box sx={{ display: 'grid', gap: 1.5 }}>
+            {/*
+              §5.7: the same row the engineer home screen draws, with Assign
+              in place of Pick up. It used to be a card of its own with its
+              own typography, its own link treatment and its own idea of where
+              the chips go — three copies of a decision that only ever needed
+              one answer. The button is the whole of the real difference
+              between the two screens.
+
+              It brings the stretched link with it, so the card opens the
+              ticket from anywhere on it while Assign stays a button.
+            */}
             {(unassigned.data?.items ?? []).map((incident) => (
-              <Card key={incident.id}>
-                <CardContent
-                  sx={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    alignItems: 'center',
-                    gap: 2,
-                  }}
-                >
-                  <Box sx={{ flexGrow: 1, minWidth: 220 }}>
-                    <Link
-                      component={RouterLink}
-                      to={incidentPath(incident.id)}
-                      variant="subtitle2"
-                      underline="hover"
-                    >
-                      {incident.reference} · {incident.title}
-                    </Link>
-                    <Typography variant="caption" color="text.secondary" component="p">
-                      {incident.category.group_name} › {incident.category.name} ·{' '}
-                      {incident.location.path} · reported {relativeTime(incident.created_at)}
-                    </Typography>
-                  </Box>
-                  <StatusChip status={incident.status} />
-                  <PriorityChip priority={incident.priority} />
+              <HomeTicketRow
+                key={incident.id}
+                incident={incident}
+                detail={`${incident.category.group_name} › ${incident.category.name} · reported ${relativeTime(incident.created_at)}`}
+                actions={
                   <AssignButton
                     incidentId={incident.id}
                     reference={incident.reference}
                     groupId={incident.category.group_id}
                     currentAssigneeId={incident.assignee?.id ?? null}
                   />
-                </CardContent>
-              </Card>
+                }
+              />
             ))}
           </Box>
         )}

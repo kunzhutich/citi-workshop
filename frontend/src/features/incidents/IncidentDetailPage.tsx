@@ -16,9 +16,10 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
 import { StatusChip } from '../../components/StatusChip';
+import { TicketTitle } from '../../components/TicketTitle';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
-import { paths } from '../../routes';
 import { hasAnyAction } from './actionAvailability';
+import { useBackTarget } from './backTarget';
 import { ActionsBar, ActionsCard } from './IncidentActions';
 import { ActivityTimeline } from './ActivityTimeline';
 import { AssignDialog } from './AssignDialog';
@@ -68,6 +69,7 @@ type OpenDialog =
 export function IncidentDetailPage() {
   const { incidentId = '' } = useParams();
   const { user } = useAuth();
+  const backTarget = useBackTarget();
   const { isMobile } = useBreakpoint();
   const { notify } = useSnackbar();
 
@@ -90,13 +92,17 @@ export function IncidentDetailPage() {
 
   return (
     <Box>
+      {/* Named and aimed by `backTarget.ts`, from the state the link that
+          opened this ticket carried — so it goes back to the list you were
+          looking at, filters and page number intact, and says which list that
+          was. "All tickets" is what it falls back to for a pasted link. */}
       <Button
         component={RouterLink}
-        to={paths.allTickets}
+        to={backTarget.to}
         startIcon={<ArrowBackIcon />}
         sx={{ mb: 2, ml: -1 }}
       >
-        All tickets
+        {backTarget.label}
       </Button>
 
       <QueryState
@@ -110,9 +116,7 @@ export function IncidentDetailPage() {
               <Typography variant="overline" color="text.secondary">
                 {ticket.reference}
               </Typography>
-              <Typography variant="h1" component="h1" sx={{ overflowWrap: 'anywhere' }}>
-                {ticket.title}
-              </Typography>
+              <TicketTitle density="page">{ticket.title}</TicketTitle>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
                 {/*
                   The one test id in the application. "In progress" appears

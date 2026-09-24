@@ -28,6 +28,15 @@ export function useEngineers(query: engineersApi.EngineerQuery = {}, enabled = t
   });
 }
 
+/** One engineer by id, for their profile page. */
+export function useEngineer(userId: string) {
+  return useQuery({
+    queryKey: queryKeys.engineers.detail(userId),
+    queryFn: () => engineersApi.getEngineer(userId),
+    enabled: userId !== '',
+  });
+}
+
 /** Create an engineer, returning the temporary password shown once. */
 export function useCreateEngineer() {
   const queryClient = useQueryClient();

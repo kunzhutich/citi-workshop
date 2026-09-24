@@ -1,32 +1,35 @@
-import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
-import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
-import DragHandleIcon from '@mui/icons-material/DragHandle';
-import PriorityHighIcon from '@mui/icons-material/PriorityHigh';
-import Chip, { type ChipProps } from '@mui/material/Chip';
-import type { ReactElement } from 'react';
+import { type ChipProps } from '@mui/material/Chip';
 
 import type { IncidentPriority } from '../api/types';
 import { priorityLabel } from '../display/labels';
+import { UniformChip } from './UniformChip';
 
 /**
- * A ticket's priority, with an icon as well as a colour.
+ * A ticket's priority.
  *
- * The icon is not decoration. Colour alone fails for the roughly one person in
- * twelve with a red-green deficiency, and "critical" is exactly the row they
- * most need to find — so the arrow carries the same message independently.
+ * **The arrows are gone, and that is safe.** They were added on the reasoning
+ * that "colour alone fails for the roughly one person in twelve with a
+ * red-green deficiency" — which is true of colour alone, and this chip has
+ * never been colour alone. It carries the word *Critical*. WCAG 1.4.1 is about
+ * colour being the *only* visual means of conveying information, and the label
+ * has always been the other one. The icons were a third channel behind a
+ * second, and four of them in a table column made every row noisier than the
+ * rows helped.
+ *
+ * **CRITICAL is filled where the other three are outlined.** That is the real
+ * answer to the problem the arrows were reaching for: the row people most need
+ * to find is now the only one with a solid block of colour in it, which is a
+ * difference in *form* rather than in hue, and survives both a red-green
+ * deficiency and a black-and-white printout. The outlined three stay outlined
+ * so that a list of ordinary tickets does not turn into a wall of blocks.
+ *
+ * Every priority chip is the same width, whatever the word. See `UniformChip`.
  */
 const PRIORITY_COLORS: Record<IncidentPriority, ChipProps['color']> = {
   LOW: 'default',
   MEDIUM: 'info',
   HIGH: 'warning',
   CRITICAL: 'error',
-};
-
-const PRIORITY_ICONS: Record<IncidentPriority, ReactElement> = {
-  LOW: <ArrowDownwardIcon />,
-  MEDIUM: <DragHandleIcon />,
-  HIGH: <ArrowUpwardIcon />,
-  CRITICAL: <PriorityHighIcon />,
 };
 
 export interface PriorityChipProps {
@@ -36,12 +39,12 @@ export interface PriorityChipProps {
 
 export function PriorityChip({ priority, size = 'small' }: PriorityChipProps) {
   return (
-    <Chip
+    <UniformChip
+      family="priority"
       label={priorityLabel(priority)}
       color={PRIORITY_COLORS[priority]}
-      icon={PRIORITY_ICONS[priority]}
       size={size}
-      variant="outlined"
+      variant={priority === 'CRITICAL' ? 'filled' : 'outlined'}
     />
   );
 }

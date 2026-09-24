@@ -46,6 +46,8 @@ from app.schemas.report import (
     CategoryGroupCount,
     CommunicationReport,
     DayCount,
+    EngineerDetailReport,
+    EngineerGroupCount,
     EngineerWorkload,
     EngineerWorkloadReport,
     EscalatedTicket,
@@ -317,6 +319,51 @@ def engineer_workload(session: Session, window: ReportWindow) -> EngineerWorkloa
         for row in repository.engineer_workload(session, window)
     ]
     return EngineerWorkloadReport(window=window, engineers=engineers)
+
+
+def _share(part: int, whole: int) -> float | None:
+    """Return `part` as a percentage of `whole`, or None when `whole` is zero.
+
+    `None` rather than 0.0, deliberately, and for the same reason the reporting
+    queries return NULL at a zero denominator: an engineer who resolved nothing
+    has no reopen rate, and 0% would read as a flawless one.
+    """
+    if whole == 0:
+        return None
+    return round(part * 100 / whole, 1)
+
+
+def engineer_detail(
+    session: Session, user_id: uuid.UUID, window: ReportWindow
+) -> EngineerDetailReport:
+    """Build `/reports/engineers/{user_id}`.
+
+    The reopen rate is computed here rather than in SQL for the same reason
+    every other percentage in this module is: the zero denominator is a
+    *meaning* decision, not an arithmetic one. An engineer who resolved nothing
+    in the window has no reopen rate — `None`, which the screen renders as a
+    dash — and is not 0%, which would read as a perfect record.
+    """
+    totals = repository.engineer_detail(session, user_id, window)
+    resolved = totals.resolved_in_period if totals is not None else 0
+    reopened = totals.reopened_in_period if totals is not None else 0
+
+    return EngineerDetailReport(
+        window=window,
+        user_id=user_id,
+        resolved_in_period=resolved,
+        closed_in_period=totals.closed_in_period if totals is not None else 0,
+        reopened_in_period=reopened,
+        reopen_rate_pct=_share(reopened, resolved),
+        resolved_by_group=[
+            EngineerGroupCount(
+                group_id=row.group_id,
+                group_name=row.group_name,
+                count=row.count,
+            )
+            for row in repository.engineer_resolved_by_group(session, user_id, window)
+        ],
+    )
 
 
 # --- Blocked and escalated ---------------------------------------------------

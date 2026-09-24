@@ -19,8 +19,14 @@ features are planned.
 **🚀 Deployed to AWS and live: <https://d3jo3ezb7ss05m.cloudfront.net>** *(2026-09-23)*
 
 The sign-in screen carries a **demo account picker** — one click fills the form, so you
-can see all three personas without typing. The deployed database holds the same 90-day
-demo world as local: 300 incidents, 37 users, 3 buildings.
+can see all three personas without typing. The deployed database holds a 90-day demo
+world of its own: 300 incidents, 37 users, 3 buildings, seeded once on 2026-09-23.
+
+It was seeded **before** the category tree and the engineer roster grew, and there is no
+top-up path, so a freshly seeded local database is now the larger of the two — 420
+incidents, 41 users, 8 category groups. Nothing in the application depends on the
+difference; it is worth knowing only so that a figure quoted from one is not expected of
+the other.
 
 ⚠️ **Load the page about a minute before you need it.** Aurora Serverless v2 runs at
 `min_capacity = 0` and sleeps when idle; the first request after a quiet period waits for
@@ -484,16 +490,33 @@ POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print
 POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action': 'seed_demo'}, None))"
 ```
 
-That writes 3 buildings, ~14 floors, ~420 desks, ~34 meeting rooms, 1 admin, 6 engineers,
-30 employees and 300 incidents over 90 days, with ~1,800 **backdated** event rows, in under
+That writes 3 buildings, 14 floors, ~414 desks, ~34 meeting rooms, 1 admin, 10 engineers,
+30 employees and 420 incidents over 90 days, with ~2,600 **backdated** event rows, in under
 a second. Every account shares the password the payload prints (`AcmeDemo2026!`); the admin
 is `demo.admin@acme.inc`. To use it, set `POSTGRES_NAME=acme_demo` in `backend/v1/.env` and
 restart uvicorn; change it back afterwards.
 
 `seed_demo` **refuses to run unless `IS_LOCAL` is true**, and it is not idempotent in the
-top-up sense: a second run finds its own buildings, writes nothing and says so. To
-regenerate, drop the database and repeat. [docs/DEMO-SCRIPT.md](./docs/DEMO-SCRIPT.md) is a
-5-minute walkthrough built on this dataset.
+top-up sense: a second run finds its own buildings, writes nothing and says so — so a
+second invoke can never silently double a dataset.
+
+**To rebuild the demo world, use the script rather than the two commands above:**
+
+```sh
+./bin/reset-demo-database.sh          # drop, migrate, seed_demo — asks first
+```
+
+Two things make this necessary rather than merely convenient. The end-to-end suite
+reports real tickets through the real API and leaves them behind on purpose, so a few
+runs put a wall of today's tickets on the dashboard's daily chart. And the seed itself
+changes between phases: an existing database picks up new *categories* from `migrate`,
+which is idempotent, but nothing backfills tickets that use them or invents engineers
+added to the roster — so every breakdown-by-group chart shows a taxonomy with holes in
+it until the world is rebuilt. The script is local-only; Aurora is not publicly
+accessible and is unreachable from a laptop by design.
+
+[docs/DEMO-SCRIPT.md](./docs/DEMO-SCRIPT.md) is a 5-minute walkthrough built on this
+dataset.
 
 ### 6. Troubleshooting
 
@@ -761,6 +784,10 @@ to demonstrate. Fine for a throwaway sandbox; not a pattern to copy. See
 `frontend/src/features/auth/demoAccounts.ts`, which says the same thing next to the
 credentials themselves.
 
+Scope decisions, all deliberate. The three that are **decided and simply not done**
+— the escalation chain, automatic BUSY, and the preferences table — are collected in
+[docs/TODO.md](./docs/TODO.md) with what to settle before starting each.
+
 Scope decisions, all deliberate:
 
 - **No email at all** — no verification on registration, and no notification ever leaves
@@ -773,8 +800,32 @@ Scope decisions, all deliberate:
   visibility hook that would scope them exists and is unused.
 - **Response times are wall-clock**, not business hours. A ticket raised on Friday evening
   and fixed Monday morning reports ~60 hours.
+- **The admin's dashboard arrangement is stored in the browser, not the database.** Hiding
+  and reordering sections is kept in `localStorage`, keyed on the user id, so it survives
+  reloads and restarts indefinitely — but it belongs to one browser on one machine. An
+  admin who arranges the dashboard on a laptop sees the default on a desktop. **A
+  `user_preferences` table and an endpoint are the next step here**, deliberately deferred:
+  the schema is one row per user and the work is a migration, a model, a schema, a
+  repository, a service, a router and the hooks to call it. `dashboardLayout.ts` is the
+  only file that touches storage, so moving to the API changes that file and nothing else.
 - **A Kanban board and SLA targets are unbuilt** (stretch S2, S3). In-app notifications
   (S1) are built.
+- **An engineer cannot ask another engineer for help.** A junior who is stuck marks a
+  ticket BLOCKED, which tells the reporter something is in the way but routes the ticket
+  to nobody. An escalation chain — junior to senior to lead — was specified and not
+  built, because the first question it raises is whether "needs help" is a new
+  `IncidentStatus` or a flag beside the existing workflow. A status means new rows in
+  `workflow.py` for every legal transition into and out of it, and gets the notification
+  rules and the frontend's button rendering for free; a flag is cheaper and is one more
+  rule that is not in the table this project treats as the single source of truth. It
+  also has to be reconciled with the *existing* escalation flag, which is reporter-facing
+  and would otherwise be the second thing in the product called "escalate". That is a
+  design decision worth taking on its own, not in the tail of a UI pass.
+- **Reaching capacity does not set an engineer to BUSY.** `BUSY` is the engineer's own
+  statement about themselves; `active_ticket_count` against `max_active_tickets` is an
+  observation the system makes, and the capacity bar shows the two side by side. Fusing
+  them means an engineer who said they were available is overruled by a ticket count, and
+  one at capacity cannot say "I am fine, send it". Left as two facts, deliberately.
 - **Notifications are not retrospective.** The table starts empty on an existing database.
   The history to reconstruct which notifications *would* have been sent is all there in
   `incident_events` and `incident_notes` — what is not there is which of them anybody

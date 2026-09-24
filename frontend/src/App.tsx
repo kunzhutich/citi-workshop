@@ -6,6 +6,7 @@ import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
 import { RegisterPage } from './features/auth/RegisterPage';
 import { CategoriesPage } from './features/categories/CategoriesPage';
+import { EngineerDetailPage } from './features/engineers/EngineerDetailPage';
 import { EngineersPage } from './features/engineers/EngineersPage';
 import { TeamPage } from './features/engineers/TeamPage';
 import { FacilitiesPage } from './features/facilities/FacilitiesPage';
@@ -87,6 +88,11 @@ export default function App() {
                 emptyTitle="No tickets yet"
                 emptyDescription="Nothing has been reported in this workspace."
                 offerReport
+                // §5.4: an employee arrives on their own building, because
+                // "is this already reported" is a question about where they
+                // are. Staff do not — an admin or an engineer opening "all
+                // tickets" means all of them.
+                defaultToOwnBuilding
               />
             }
           />
@@ -101,8 +107,12 @@ export default function App() {
               element={
                 <IncidentsPage
                   title="My queue"
-                  description="The tickets assigned to you."
-                  preset={{ mine: 'assigned' }}
+                  description="The tickets assigned to you, with finished work last."
+                  // §5.6. `closed_last` is a prefix to whatever sort the
+                  // engineer picks rather than a sort of its own: the sort
+                  // says how to arrange the work, this says that finished
+                  // work goes at the end of it however it is arranged.
+                  preset={{ mine: 'assigned', closed_last: true }}
                   emptyTitle="Nothing is assigned to you"
                   emptyDescription="Work assigned to you by a lead or an admin appears here."
                 />
@@ -131,6 +141,19 @@ export default function App() {
 
           <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['LEAD']} />}>
             <Route path={paths.team} element={<TeamPage />} />
+          </Route>
+
+          {/*
+            An engineer's page is **staff**, not admin and not LEAD. A lead
+            opens it to decide who to hand work to, an admin to see how
+            somebody is doing, and an engineer on themselves — so the guard is
+            every staff role at any level, matching `STAFF_ONLY` on
+            `GET /reports/engineers/{id}`. An employee cannot reach it, which
+            §5.5 asks for and which the API enforces rather than this route
+            relying on nobody drawing a link to it.
+          */}
+          <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} />}>
+            <Route path={paths.engineerDetail} element={<EngineerDetailPage />} />
           </Route>
 
           <Route element={<RequireRole roles={['FACILITY_ADMIN']} />}>

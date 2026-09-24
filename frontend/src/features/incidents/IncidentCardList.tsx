@@ -10,7 +10,9 @@ import { EscalatedFlag } from '../../components/EscalatedFlag';
 import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
+import { TicketTitle } from '../../components/TicketTitle';
 import { incidentPath } from '../../routes';
+import { useTicketLinkState } from './backTarget';
 
 export interface IncidentCardListProps {
   incidents: IncidentListItem[];
@@ -29,11 +31,17 @@ export interface IncidentCardListProps {
  * it.
  */
 export function IncidentCardList({ incidents }: IncidentCardListProps) {
+  const ticketLinkState = useTicketLinkState();
+
   return (
     <Box sx={{ display: 'grid', gap: 1.5 }}>
       {incidents.map((incident) => (
         <Card key={incident.id}>
-          <CardActionArea component={RouterLink} to={incidentPath(incident.id)}>
+          <CardActionArea
+            component={RouterLink}
+            to={incidentPath(incident.id)}
+            state={ticketLinkState}
+          >
             <CardContent>
               <Box
                 sx={{
@@ -51,14 +59,16 @@ export function IncidentCardList({ incidents }: IncidentCardListProps) {
                 </Typography>
               </Box>
 
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {incident.title}
-              </Typography>
+              {/* The flag leads the title here too, so it is in the same place
+                  on every card rather than at the end of a sentence. */}
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
+                {incident.is_escalated ? <EscalatedFlag /> : null}
+                <TicketTitle density="card">{incident.title}</TicketTitle>
+              </Box>
 
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1 }}>
                 <StatusChip status={incident.status} />
                 <PriorityChip priority={incident.priority} />
-                {incident.is_escalated ? <EscalatedFlag /> : null}
               </Box>
 
               <Typography variant="caption" color="text.secondary">

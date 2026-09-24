@@ -157,10 +157,10 @@ export function ReportPage() {
               </Box>
             </ReportSection>
 
-            {showSubcategories && group ? (
-              <ReportSection
-                step={2}
-                question="Which one?"
+            <ReportSection
+              step={2}
+              revealed={Boolean(showSubcategories && group)}
+              question="Which one?"
                 action={
                   <Link
                     component="button"
@@ -185,7 +185,12 @@ export function ReportPage() {
                     },
                   }}
                 >
-                  {group.children.map((option) => (
+                  {/* `unmountOnExit` means these only exist while the
+                      section is revealed, and it is revealed only when a group
+                      is chosen — but the guard used to be the ternary that
+                      narrowed the type, and `Collapse` cannot narrow anything.
+                      The fallback is unreachable and keeps it honest. */}
+                  {(group?.children ?? []).map((option) => (
                     <SelectableCard
                       key={option.id}
                       label={option.name}
@@ -199,11 +204,9 @@ export function ReportPage() {
                     {fieldErrors.category_id}
                   </Alert>
                 ) : null}
-              </ReportSection>
-            ) : null}
+            </ReportSection>
 
-            {showLocation ? (
-              <ReportSection step={3} question="Where?">
+            <ReportSection step={3} revealed={showLocation} question="Where?">
                 <LocationPicker
                   tree={facilities.data}
                   locationDetail={locationDetail}
@@ -212,11 +215,9 @@ export function ReportPage() {
                   onChange={setLocation}
                   fieldErrors={fieldErrors}
                 />
-              </ReportSection>
-            ) : null}
+            </ReportSection>
 
-            {showDetails ? (
-              <ReportSection step={4} question="Tell us more">
+            <ReportSection step={4} revealed={showDetails} question="Tell us more">
                 <Box sx={{ display: 'grid', gap: 2, maxWidth: 640 }}>
                   <TextField
                     label="Title"
@@ -241,11 +242,9 @@ export function ReportPage() {
                     required
                   />
                 </Box>
-              </ReportSection>
-            ) : null}
+            </ReportSection>
 
-            {showPriority ? (
-              <ReportSection step={5} question="How urgent is it?">
+            <ReportSection step={5} revealed={showPriority} question="How urgent is it?">
                 <Box
                   sx={{
                     display: 'grid',
@@ -279,8 +278,7 @@ export function ReportPage() {
                 >
                   Report this issue
                 </Button>
-              </ReportSection>
-            ) : null}
+            </ReportSection>
 
             {!showPriority ? (
               <Typography variant="body2" color="text.secondary">

@@ -949,9 +949,11 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | "Priority then age" ordering on the engineer's home list | `features/home/sortTickets.ts` | `sortByPriorityThenAge` — client-side, over a fixed top-N |
 | How engineers are ordered in the assign dialog | `features/engineers/hooks.ts` | `sortForAssignment`; the API decides who may actually be assigned |
 | Who sees which navigation item | `layout/navigation.ts` | `navItemsFor`, `reportNavItem` |
-| Which navigation item is highlighted | `layout/navigation.ts` | `activeNavPath` — longest matching prefix |
+| Which screen a URL belongs to | `layout/navigation.ts` | `activeNavItem` — longest matching prefix; `activeNavPath` is it, for the shell's highlight |
+| **What the ticket page's back link says, and where it goes** | `features/incidents/backTarget.ts` | `backTargetFor`, `DEFAULT_BACK_TARGET`; `useTicketLinkState` is what every link to a ticket carries |
 | Which items reach the mobile bottom bar | `layout/navigation.ts` | the `inBottomNav` flag |
 | Where the desktop/mobile switch happens | `hooks/useBreakpoint.ts` | `MOBILE_MAX_WIDTH` = 899, aligned with MUI's `md` |
+| How many columns the ticket filter bar has | `features/incidents/IncidentFilterBar.tsx` | `FilterControls`' `gridTemplateColumns` — `auto-fit`, driven by the bar's own width rather than the window's (D44) |
 | Where a dialog is full screen | `components/ResponsiveDialog.tsx` | one place, so no screen forgets |
 | Where confirmations appear | `components/SnackbarProvider.tsx` | top on a phone, bottom on desktop |
 | What a status is called, and what colour it is | `display/labels.ts`, `display/statusColor.ts` | `statusLabel`, `statusChipColor` |
@@ -968,7 +970,7 @@ each contain one line, and that line names a `NotificationType` and never a pers
 | What a stepper step says about its own state | `features/incidents/WorkflowStepper.tsx` | `describeStepState`, `aria-current="step"` |
 | What a chart says when it cannot be seen | `features/dashboard/BreakdownChart.tsx`, `FlowChart.tsx` | `summarise` in each; `role="img"` |
 | How an async state change is announced | `components/QueryState.tsx`, `components/FullPageProgress.tsx` | `role="status"` + `aria-live="polite"` |
-| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible` |
+| The visible focus ring, and why it needs `body` in front of it | `theme.ts` | `MuiCssBaseline` → `body :focus-visible`, plus the two `.MuiAppBar-root` rules that move it off a bare `<input>` and onto the field (D46) |
 | Which status colours were contrast-checked, and against which surfaces | `theme.ts` | `palette.info` / `warning` / `success` / `error` — both ratios are in the comment |
 | Which accessibility rules the build enforces | `e2e/accessibility.spec.ts` | `WCAG_AA` |
 | Global styling, palette, component defaults | `theme.ts` | `theme` — there are no `.css` files of ours |
@@ -7971,3 +7973,914 @@ one looks fine in a screenshot.
 | **`useInfiniteQuery`** | TanStack Query's accumulating fetch: pages are appended rather than replacing each other, which is what "Load more" needs. The same hook the ticket lists use on a phone. |
 | **`secondaryAction`** | Material UI's slot for a control beside a list item's main target. It renders the control as a *sibling* of the `ListItemButton` inside the `<li>`, which is what keeps a button from being nested inside an anchor. |
 | **Read rate** | Of the notifications sent to reporters inside the reporting period, the share that have been read at any time since. Depressed by recent activity, inherently — a notification sent an hour ago has had an hour. |
+
+---
+
+## Phase R1 — The redesign brief, section 1: the four bugs
+
+*[`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
+after using the built application, grouped by the order they want them done. Section 1
+is "things that are wrong now", and this is that section and nothing else — no theme,
+no shared components, no new features. Four reported bugs, which turned out to be
+three causes, plus a fifth found while proving the fixes.*
+
+### 1. What was built
+
+| File | What changed |
+| --- | --- |
+| `features/incidents/IncidentFilterBar.tsx` | The controls grid stops switching layout on a *viewport* breakpoint and switches on its own width instead. This is §1.1. |
+| `features/incidents/backTarget.ts` | **New.** Where the ticket page's back link goes and what it is called. §1.2 and §1.4 are one thing. |
+| `features/incidents/backTarget.test.ts` | **New.** Fifteen assertions over the label rule and the validation. |
+| `features/incidents/IncidentDetailPage.tsx` | The back link is drawn from `useBackTarget()` rather than being a literal. |
+| `layout/navigation.ts` | `activeNavItem` extracted from `activeNavPath`, so two callers share one longest-prefix rule. |
+| `features/incidents/IncidentTable.tsx`, `IncidentCardList.tsx`, `features/home/HomeTicketRow.tsx`, `features/dashboard/NeedsAttentionPanel.tsx`, `features/engineers/TeamPage.tsx`, `features/notifications/NotificationsPage.tsx` | Every link that leads to a ticket now carries `state={ticketLinkState}`. One line each. |
+| `theme.ts` | The app bar's focus ring moves off the bare `<input>` and onto the field around it. This is §1.3. |
+| `layout/TicketSearchField.tsx` | Drops its own white-border-on-focus rule, so there is one focus indicator rather than two. |
+| `e2e/responsive.spec.ts` | **New test** — *"the ticket list does not scroll sideways at any width"*, fifteen widths instead of two. |
+| `e2e/navigation.spec.ts` | **New file.** The round trip: filter a list, open a ticket, come back. |
+| `e2e/fixtures/test.ts`, `e2e/accessibility.spec.ts` | `exact: true` on three "Sign in" locators. Without it the whole suite fails in its own fixture — see §6. |
+
+Decisions: [D44](DECISION-LOG.md#d44--the-sideways-scroll-a-viewport-breakpoint-deciding-a-layout-inside-a-narrower-box),
+[D45](DECISION-LOG.md#d45--correcting-the-brief-the-filters-were-never-lost-on-the-browsers-back-button),
+[D46](DECISION-LOG.md#d46--one-focus-ring-on-the-app-bars-search-box-drawn-around-the-box),
+[D47](DECISION-LOG.md#d47--the-end-to-end-suite-could-not-run-at-all-and-had-not-been-able-to-for-some-time).
+
+### 2. Why it is shaped this way
+
+**§1.1 — the grid asks about its own width, not the window's.**
+
+The old template was `{ xs: '1fr', md: 'minmax(200px, 2fr) repeat(4, minmax(140px, 1fr)) auto' }`.
+Material UI's breakpoint keys compile to media queries, and a media query knows one
+thing: how wide the *window* is. The filter bar is not the window wide. It is inside
+`<main>`, beside a 248px permanent drawer, inside 48px of padding:
+
+```
+window 1200px  →  <main> content box ≈ 900px  →  grid minimums ≈ 950px  →  50px of overflow
+window  900px  →  <main> content box ≈ 620px  →  grid minimums ≈ 950px  → 330px of overflow
+```
+
+A grid track cannot shrink below its `minmax()` minimum, so the bar pushed out of
+`<main>` and the document scrolled sideways. The replacement —
+`repeat(auto-fit, minmax(min(100%, 160px), 1fr))` — has no threshold in it at all:
+it fits as many 160px columns as the box holds and shares the remainder between them.
+`min(100%, 160px)` is the phone half of that; without it a container narrower than one
+column is still overflowed by one column.
+
+The rejected alternatives are in D44. The short version: `overflow-x: hidden` hides the
+controls rather than reaching them, and a container query would still need a threshold,
+one that at a safe value (1040px) is most of a 1400px window.
+
+**§1.2 and §1.4 — one link, two symptoms.**
+
+The brief lists these separately and they are the same eight lines. The back link was
+`<Button to={paths.allTickets}>All tickets</Button>` — a fixed destination and a fixed
+label. It therefore always said "All tickets", and it always went to a bare `/tickets`,
+discarding the query string that *is* a filtered list's state.
+
+The browser's own back button was never affected. `useIncidentFilters` writes filters
+with `replace`, so the entry the list sits on already carries them. That was measured
+before anything was changed — four list screens, two widths, `page.goBack()` — and it
+came back intact every time. D45 records it, because the brief's diagnosis pointed at
+the filters and the fault was in the link.
+
+The origin travels in **React Router navigation state**, which is stored in the history
+entry: it survives a reload, comes back correctly on forward and back, and is absent
+exactly when it should be — a pasted URL — which is what the fallback is for.
+
+The **label is not a table of its own.** `backTargetFor` asks `navigation.ts`, so the
+link names each screen the way that user's own sidebar names it. An admin's sidebar says
+"Tickets" where an employee's says "All tickets", and the back link agrees with whichever
+one the reader has been looking at.
+
+**§1.3 — the ring was on the wrong element.**
+
+S6 added `body .MuiAppBar-root :focus-visible` so that focus is visible on a
+primary-coloured bar, where a primary-coloured ring is not. The selector lands on the
+focusable element, and inside a Material UI text field that is the bare `<input>` — so
+the ring was a hard white rectangle that stopped short of the search icon and knew
+nothing about the field's rounded border. Text inputs match `:focus-visible` on a mouse
+click too, so this was every use of the control, not a keyboard edge case.
+
+The ring moves to `.MuiInputBase-root:has(:focus-visible)` — the whole field. The point
+of the fix is that the indicator still exists: deleting a focus style is the thing S6 was
+written to stop, and tabbing from the search box to the bell was checked, and
+screenshotted, to prove the buttons kept theirs.
+
+### 3. How the pieces connect
+
+One journey, which is all of §1.2 and §1.4:
+
+```
+/tickets?status=BLOCKED&page=2         the list, filters in the URL
+  └─ IncidentTable row
+     └─ useTicketLinkState()           features/incidents/backTarget.ts
+        ├─ useLocation()               → pathname + search, exactly as it stands
+        └─ backTargetFor(location, user)
+           └─ activeNavItem(pathname, [...navItemsFor(user), Notifications])
+                                       layout/navigation.ts — longest prefix wins
+        = { from: { label: 'Tickets', to: '/tickets?status=BLOCKED&page=2' } }
+     └─ <Link to={incidentPath(id)} state={…}>     react-router stores it in history.state
+        │
+        ▼
+/tickets/6f3a…                         the ticket
+  └─ IncidentDetailPage
+     └─ useBackTarget()
+        └─ useLocation().state → readBackTarget()  shape- and prefix-checked
+     └─ <Button to={backTarget.to}>{backTarget.label}</Button>
+        │  "← Tickets"
+        ▼
+/tickets?status=BLOCKED&page=2         the same list, filters and page intact
+```
+
+The two halves never meet except through the history entry, which is what makes a
+reload in the middle work: the state is in the entry, not in a React ref.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How many columns the ticket filter bar has | `features/incidents/IncidentFilterBar.tsx` | the `gridTemplateColumns` on `FilterControls` — container-driven, no breakpoint |
+| **What the ticket page's back link says, and where it goes** | `features/incidents/backTarget.ts` | `backTargetFor`, `DEFAULT_BACK_TARGET` |
+| What a link to a ticket has to carry for that to work | `features/incidents/backTarget.ts` | `useTicketLinkState` |
+| Which navigation state is trustworthy | `features/incidents/backTarget.ts` | `readBackTarget` |
+| Which screen a URL belongs to | `layout/navigation.ts` | `activeNavItem` — and `activeNavPath` on top of it |
+| Where focus is drawn on the app bar | `theme.ts` | `MuiCssBaseline` → the three `.MuiAppBar-root` rules |
+
+### 5. How to change it
+
+**To make a new screen a possible back destination:** if it is in `navItemsFor`, nothing
+— it already is. If it is not (the inbox is the only one today), add it to
+`EXTRA_ORIGINS` in `backTarget.ts`.
+
+**To add a new link to a ticket:** call `useTicketLinkState()` in the component and pass
+`state={ticketLinkState}` beside `to={incidentPath(id)}`. Forgetting it is not a crash —
+the ticket page falls back to "All tickets" — which is the failure mode worth knowing
+about, because it is quiet.
+
+**To add a control to the ticket filter bar:** add it inside the grid. Nothing else. The
+column count is worked out from the available width, so there is no template to widen and
+no breakpoint to revisit.
+
+**To change the focus ring:** `theme.ts`, the `MuiCssBaseline` block. There are three
+rules and they are ordered: the page's primary ring, the app bar's white one, and the
+pair that moves the app bar's ring from an input to the field around it.
+
+### 6. Gotchas
+
+**A test measures the width it was given.** `playwright.config.ts` runs two projects,
+375px and 1440px. The overflow lived between 900 and 1290, so *"no screen scrolls
+sideways"* passed for months over four broken screens. Any assertion about a layout with
+a threshold in it has to sweep, not sample — which is why the new test lists fifteen
+widths and says so in a comment.
+
+**And a new test has to be seen to fail.** The sweep was run once with
+`IncidentFilterBar`'s old template put back, and it fails at the first width in the band
+— *"at 900px, expected <= 1, received 318"*. A test written after a fix, never run
+against the fault, is indistinguishable from one that asserts nothing.
+
+**Chrome shows this class of fault before Firefox does.** Chrome on Linux draws a classic
+15px scrollbar, which comes off the layout width; Firefox's overlay scrollbars do not.
+Every window width therefore lands 15px further into an overflow band in Chrome. It
+shifts the band; it does not create it. "It looks fine in Firefox" is not evidence.
+
+**Playwright's headless Chromium has no scrollbar at all.** `window.innerWidth -
+documentElement.clientWidth` is 0 there and 15 in a headed browser, which is another
+15px of difference between what CI measures and what the owner sees. The diagnosis for
+D44 was done headed for that reason.
+
+**The end-to-end suite could not start.** 95 of 96 tests failed in the shared sign-in
+fixture, because `DemoAccountPicker` added a button called "Sign in as someone" and
+`getByRole('button', { name: 'Sign in' })` then matched two controls. It is fixed here
+with `exact: true`, and the number "82 e2e pass" in this guide, `BUILD-STATUS.md` and the
+README was stale from the moment the picker landed. See D47.
+
+**The suite also needs the right admin password.** `E2E_ADMIN_PASSWORD='AcmeLocalDev2026!!'`
+against the `acme_demo` database — the fixture's default has one `!`, the database has
+two. Running without it does not merely fail: each run spends failed sign-ins against the
+admin's `login_attempts` row, and ten inside fifteen minutes locks the account with a 429
+until the window expires. This is recorded in `BUILD-STATUS.md` and is easy to rediscover
+the slow way.
+
+**`state` is not a prop.** Navigation state survives a reload because it is serialised
+into `history.state`, which means it can be stale (written by an older bundle) or edited
+by hand. `readBackTarget` validates rather than trusts, and refuses a destination that is
+not an in-app absolute path.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **`auto-fit` / `auto-fill`** | CSS Grid's "as many tracks as fit" keywords for `repeat()`. `auto-fill` keeps the empty tracks it created; `auto-fit` collapses them to zero, so the remaining columns stretch to fill the row. The bar uses `auto-fit`, which is why six controls sit on one row at 1400px and three at 900px. |
+| **The RAM pattern** | `repeat(auto-fit, minmax(min(100%, X), 1fr))` — "repeat, auto, minmax". The `min(100%, X)` is the load-bearing part: a bare `minmax(X, 1fr)` still overflows a container narrower than `X`. |
+| **Media query vs. container query** | A media query (`@media`, and every Material UI breakpoint key) asks about the viewport. A container query (`@container`) asks about a named ancestor. Most layout questions inside an application shell are really the second kind, which is what D44 is about. |
+| **`min-content` width** | The narrowest a box can be without its contents overflowing. A grid track's `minmax()` minimum is a floor the browser will not go below, so a template whose minimums exceed the container overflows rather than compressing. |
+| **Navigation state** | React Router's `state` option on a link or `navigate()`. Stored in the browser's `history.state` for that entry, so it survives a reload and is restored on back/forward — unlike a React ref or a module variable, and unlike the query string, it is not visible in the address bar and is not part of what a user can copy. |
+| **`:has()`** | The CSS relational pseudo-class: `.field:has(:focus-visible)` matches the field *containing* a focus-visible element. It is what lets a ring be drawn around a composed control when the focusable part of it is buried inside. |
+| **`:focus-visible` on a text input** | Browsers always treat a focused text input as focus-visible, including after a mouse click, because a caret that is not obviously placed is a usability problem. That is why §1.3's white box appeared on click and not only on Tab. |
+| **Strict mode (Playwright)** | Playwright refuses a locator that matches more than one element, rather than silently taking the first. It is the behaviour that turned one new button into 95 failing tests — and the reason those tests failed loudly rather than quietly testing the wrong control. |
+
+---
+
+## Phase R2 — The redesign brief, section 2: the theme
+
+*Section 2 of [`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
+brown primary, and a third colour to be proposed. It is one palette and no layout, and
+it lands before the per-screen work because it touches every screen. The brief's own
+warning — that two things validated against the old palette will break quietly — turned
+out to be the most useful sentence in it.*
+
+### 1. What was built
+
+| File | What changed |
+| --- | --- |
+| `theme.ts` | The whole `palette` block: cream `background.default`, brown `primary`, a two-step ochre `secondary`, three re-derived status colours, the `workflow` slot — and one `MuiToggleButton` override, which axe found and the unit test could not (D50). |
+| `display/statusColor.ts` | IN_PROGRESS moves from `primary` to `workflow`. |
+| `features/incidents/WorkflowStepper.tsx` | The stepper's reached steps and connectors take `workflow.main` instead of following the brand. |
+| `theme.test.ts` | **New block.** Every palette slot asserted against both surfaces a chip is drawn on, plus the focus ring against the page. The guard S6 never had. |
+| `features/dashboard/chartPalette.ts` | Both categorical slots and all four ramp steps, re-derived on the new third colour's hue. |
+| `playwright.config.ts`, `e2e/fixtures/api.ts` | Unrelated to the palette: the e2e admin credentials, committed so a bare `npx playwright test` works. |
+
+Decisions: [D48](DECISION-LOG.md#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it),
+[D49](DECISION-LOG.md#d49--what-the-new-palette-cost-blocked-and-in-progress-are-now-the-same-brown),
+[D50](DECISION-LOG.md#d50--the-colour-the-new-contrast-test-could-not-have-caught),
+[D51](DECISION-LOG.md#d51--the-brand-is-brown-the-workflow-is-blue).
+
+### 2. Why it is shaped this way
+
+**The page background is not a cosmetic token.** `#f4f6fa` has relative luminance
+0.920; `#f0eada` has 0.824. An outlined chip is drawn *on that surface* — and
+`PriorityChip` is outlined, on every row of every list — so changing it moved the whole
+status palette closer to its own background. Three of S6's four pinned colours dropped
+below 4.5:1 and nothing said a word. They were re-derived by walking each one down its
+own hue at constant saturation until it cleared 4.6 against the cream; hue drift is 0.2°
+at worst, so they are the same colours a step darker, not new ones.
+
+**`background.paper` stays `#ffffff`.** Two reasons, and the second is the load-bearing
+one: cards a shade lighter than the page is what makes them read as cards, and
+`chartPalette.ts` is validated against the surface its marks are painted on. Holding
+that one colour still means the chart figures moved only because the hues were chosen to
+move, never because the ground shifted underneath them.
+
+**The third colour is ochre, in two steps.** `secondary.main` in this application is
+never text — it is always a *surface carrying white text*: the avatar initials, the note
+dot on the timeline. White on the brief's `#a9743a` is 4.00:1, which fails for 15px
+initials. So `main` is the ochre snapped until white clears the bar, and `light` keeps
+the literal value for washes and hovers where nothing sits on top. The choice between
+ochre, clay and olive was decided on two measurements rather than taste — see D48's
+table.
+
+**The charts were re-derived onto the new palette, and then put back.** R2 moved them to
+the ochre hue and every check passed; the owner reverted them, and the reason belongs in
+this guide rather than in a commit: *a chart is read by someone who has never seen this
+application before, and blue is a convention they already have while brown is a brand
+they do not.* No measurement decided it — both palettes are legal — so coherence with the
+interface lost to legibility to a stranger.
+
+The discarded derivation is still worth having done. It established three things a
+hand-tune would not have, all recorded in `chartPalette.ts`: the brand brown is below
+both the lightness band and the chroma floor and reads grey at bar size; two warm hues
+cannot carry a two-series chart through protanopia, which is what the blue-and-orange
+pair had quietly been getting right all along; and the ramp's lightest step is a 2:1
+floor, not a preference — the ochre attempt failed it at 1.80:1.
+
+### 3. How the pieces connect
+
+One colour, from the token to the pixel, and the two surfaces that decide it:
+
+```
+theme.ts  palette.warning.main = '#a94e08'
+  │
+  ├─ StatusChip  variant="filled"     → white label ON #a94e08     → 5.56:1  (needs 4.5)
+  │    statusChipColor(BLOCKED) = 'warning'          display/statusColor.ts
+  │
+  └─ PriorityChip variant="outlined"  → #a94e08 label ON a surface
+       PRIORITY_COLORS.HIGH = 'warning'              components/PriorityChip.tsx
+         ├─ inside a Card   → on background.paper   #ffffff → 5.56:1
+         └─ on a list page  → on background.default #f0eada → 4.63:1   ← the one that broke
+```
+
+The chart palette is a separate path that never touches the theme:
+
+```
+features/dashboard/chartPalette.ts   SERIES_PRIMARY = '#b46d00'
+  └─ BreakdownChart / FlowChart  → drawn on a Card → background.paper #ffffff
+       validated with the data-viz validator against that exact surface
+```
+
+Those two paths are deliberately not connected. A chip is a token beside its own word; a
+chart mark is a block of colour a reader may have to tell from the block next to it. M7
+established the split and this phase kept it.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Every brand colour | `theme.ts` | `palette` |
+| Which surfaces a chip is drawn on, and the ratios | `theme.ts` | the `background` and status comments |
+| That those ratios are true | `theme.test.ts` | "the status palette against the surfaces it is drawn on" |
+| Every chart colour and the checks behind them | `features/dashboard/chartPalette.ts` | `SERIES_PRIMARY`, `SERIES_SECONDARY`, `PRIORITY_RAMP` |
+| That the ramp stays a ramp | `features/dashboard/chartPalette.test.ts` | — |
+| Which status is which colour | `display/statusColor.ts` | `statusChipColor` |
+
+### 5. How to change it
+
+**To change a brand colour:** edit `theme.ts`, then run `npx vitest run src/theme.test.ts`.
+It will tell you which surface you broke and by how much. If a colour fails, do not pick
+a new one — walk the same hue darker until it clears, so the palette keeps its identity.
+
+**To change the page background:** the same, and then re-read `chartPalette.ts`, because
+its figures are quoted against `background.paper`. If you move *that*, every number in
+that file has to be re-run through the validator.
+
+**To add a chart series:** the ramp and the two categorical slots are the whole palette.
+A third categorical slot is not a new hex — run the validator on the candidate set first,
+because adjacent-pair separation is a property of the set, not of the colour.
+
+### 6. Gotchas
+
+**A palette comment is not a test.** S6 wrote eight contrast figures into `theme.ts` and
+they were right on the day. Nothing recomputed them, so a single background change made
+three of them false and the suite stayed green. The numbers are asserted now, read off
+the theme rather than written down twice.
+
+**The brand and the workflow are two colours now, and confusing them is how this went
+wrong once already.** `primary` is the product speaking — app bar, call to action, focus
+ring. `workflow` is the ticket speaking — the IN_PROGRESS chip and the stepper. They were
+one slot until the redesign, which was invisible while `primary` was navy and obvious the
+moment it went brown: IN_PROGRESS landed at OKLab ΔE 13.4 from BLOCKED, two browns, under
+the 15 floor, on the pair an engineer scans a queue for. Against the navy it is 30.9. See
+D49 for the measurement and D51 for the fix.
+
+**A custom palette slot needs `augmentColor`.** Material UI fills in `light`, `dark` and
+`contrastText` for its own five slots and nothing else. `workflow: { main }` type-checks,
+renders, and produces a **grey** filled chip, because `Chip` reads a `contrastText` that
+is not there. 349 unit tests and the type-checker were all happy with the grey one; a
+screenshot was what caught it.
+
+**A unit test over "the colours we chose" cannot see a library default.** The axe run
+caught an unselected `ToggleButton` at 4.38:1 on the cream page — Material UI's
+`action.active`, a colour this application never named, so `theme.test.ts` passed while
+the screen failed. Any other default built on `action.*` alpha is in the same position.
+Treat a background change as a reason to run the whole accessibility suite, not the unit
+tests alone. See D50.
+
+**Earth tones read as grey in a chart.** OKLCH chroma below 0.10 is the threshold, and
+most of a tasteful brown palette is under it. This is why the chart hues are more
+saturated than anything in the interface: a bar has no label leaning against it.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **OKLCH / OKLab** | A perceptual colour space: `L` lightness, `C` chroma (colourfulness), `H` hue angle. Distances in it correspond roughly to how different two colours *look*, which RGB distances do not — which is why every measurement in this phase is taken there and not in hex. |
+| **Chroma floor** | The chroma below which a hue stops reading as a colour and reads as grey. 0.10 for a chart mark. Most muted earth tones sit under it. |
+| **ΔE (Delta E)** | Distance between two colours in OKLab, ×100. The data-viz gates are ≥8 under simulated colour-blindness and ≥15 under normal vision, for marks that carry meaning by colour alone. |
+| **Relative luminance** | The 0–1 brightness figure WCAG contrast is built from. Not the same as OKLCH `L`; the contrast ratio is `(lighter + 0.05) / (darker + 0.05)` of these. |
+| **Snapping a colour** | Holding hue and saturation and moving lightness until a threshold is met, rather than choosing a new colour. What keeps a re-derived palette recognisably the same palette. |
+| **Ordinal ramp** | One hue, several steps, light to dark, for categories that genuinely have an order — priority here. Distinct from a *sequential* ramp (continuous magnitude), whose lightest step may fade into the surface; an ordinal one's may not, because every step is a mark someone has to see. |
+
+---
+
+## Phase R3 — The redesign brief, section 3: the shared chips
+
+*Section 3 is four small requests that are one component: the status, priority and
+level chips should be one width per family, roomier inside, the priority arrows should
+go, CRITICAL should be filled, and the escalation flag should lead a title rather than
+trail it. Done per-screen it would have been done three times and got three answers,
+which is why the brief groups it here.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `components/UniformChip.tsx` | **New.** The one place a chip's width and padding are decided. A `styled(Chip)` taking a `family`, plus the three pinned widths. |
+| `components/StatusChip.tsx` | Draws on `UniformChip`. Otherwise unchanged. |
+| `components/PriorityChip.tsx` | Icons gone; CRITICAL filled, the other three outlined. |
+| `components/LevelChip.tsx` | **New.** Was a bare `<Chip variant="outlined">` written out at two call sites. |
+| `components/EscalatedFlag.tsx` | Keeps its natural width and gains `flexShrink: 0`, which is what stops a long title squashing it. |
+| `features/incidents/IncidentTable.tsx` | Flag before the title; both chip columns cut to the pinned width plus a cell's padding. |
+| `features/incidents/IncidentCardList.tsx`, `features/home/HomeTicketRow.tsx` | Flag before the title. |
+| `features/engineers/EngineerRoster.tsx`, `features/incidents/AssignDialog.tsx` | Use `LevelChip`. |
+| `e2e/chips.spec.ts` | **New.** Widths, fills, icon absence and flag alignment, in a browser, at both viewports. |
+
+Decision: [D53](DECISION-LOG.md#d53--chips-one-width-per-family-and-the-arrows-come-off).
+
+### 2. Why it is shaped this way
+
+**A width is a measurement, so it was measured.** The three pinned widths come from
+rendering the real screens with `CHIP_WIDTH` set to zero and reading the boxes back.
+Counting characters would have been a guess about Roboto's metrics; the numbers that
+came out — 88.8, 73.3, 62.8 — are what the font actually does at 13px with 12px of
+padding either side.
+
+**And then asserted, because a comment is not a test.** This project has already had
+three measured numbers rot in a comment while the suite stayed green (D48). `e2e/chips.spec.ts`
+re-measures in a browser at 1440 and 375.
+
+**`styled()`, not a theme override.** The rule is for three families, not for every
+chip in the application. A `MuiChip` override in `theme.ts` would have pinned the
+specialty chips and the inbox's "New" badge too, whose lengths are real information.
+
+**The arrows came off, and the reason they were there did not survive contact.** The
+comment justifying them said colour alone fails a red-green reader — true, and this chip
+was never colour alone: it carries the word *Critical*. Filling CRITICAL is the better
+answer to the same worry, because it is a difference in form rather than hue.
+
+### 3. How the pieces connect
+
+```
+UniformChip.tsx
+  CHIP_WIDTH = { status: 92, priority: 76, level: 64 }   ← measured, asserted in e2e
+  LABEL_PADDING = 12                                      ← the "they are tight" fix
+     │  styled(Chip) → minWidth, centred label
+     ├─ StatusChip    family="status"    colour from display/statusColor.ts
+     ├─ PriorityChip  family="priority"  variant = CRITICAL ? filled : outlined
+     └─ LevelChip     family="level"     outlined, no colour
+
+IncidentTable.tsx
+  COLUMN_WIDTHS.status   = 92 + 32   ← the chip, plus a TableCell's padding
+  COLUMN_WIDTHS.priority = 76 + 32     the slack that used to hold an icon is gone
+```
+
+The chip decides its width; the column is told what the chip decided. Before this the
+column was sized against the longest *word* and the chip against nothing, so the two
+could drift apart — and had.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How wide a chip of each family is | `components/UniformChip.tsx` | `CHIP_WIDTH` |
+| How much room a chip's label gets | `components/UniformChip.tsx` | `LABEL_PADDING` |
+| Which families are uniform, and which are not | `components/UniformChip.tsx` | `ChipFamily` — three members, deliberately |
+| Which priority is filled | `components/PriorityChip.tsx` | the `variant` expression |
+| That any of the above is still true | `e2e/chips.spec.ts` | — |
+| Where the escalation flag sits | the three list components | the flag precedes the title element |
+
+### 5. How to change it
+
+**To add a status, priority or level:** nothing here changes unless the new label is
+longer than the family's current longest. If it is, set that family's `CHIP_WIDTH` to
+zero, run the app, read the natural widths, and pin the new maximum — then update
+`e2e/chips.spec.ts`, which names the numbers.
+
+**To make another chip uniform:** add a member to `CHIP_WIDTH` and pass the new `family`.
+Think first about whether its content has a meaningful length; if it does, it belongs
+with the specialty chips, which are deliberately left alone.
+
+**To change the padding:** `LABEL_PADDING` moves all three families and therefore all
+three pinned widths. Re-measure; do not adjust the widths by arithmetic.
+
+### 6. Gotchas
+
+**The pinned widths and the table's column widths are two numbers that must agree.**
+`IncidentTable` writes them as `92 + 32` and `76 + 32` rather than `124` and `108` so
+that the relationship is visible, but it is still a copy — there is no import. If
+`CHIP_WIDTH` moves, that file has to move with it.
+
+**An escalated ticket's title truncates sooner.** The flag takes about 100px out of the
+cell it now shares with the title. Tightening the two chip columns gave some of that
+back; the rest is the price of the alignment. It is most visible on
+`/tickets?is_escalated=true`, where every row carries a flag.
+
+**`family` must not reach the DOM.** It is a transient prop, filtered out by
+`shouldForwardProp`. Without that filter React warns about an unknown attribute on a
+`<div>` and the warning appears once per chip, which on a full ticket list is fifty.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Transient prop** | A prop a `styled()` component consumes to decide its own CSS and must not pass down to the DOM element. Emotion and Material UI filter them with `shouldForwardProp`. |
+| **`minWidth` vs `width`** | `minWidth` lets a chip grow if its label is somehow longer than expected; a fixed `width` would clip it. Since the pinned value *is* the longest label, every chip lands on exactly that width, and an unexpected one degrades by being wide rather than by being unreadable. |
+| **Filled vs outlined chip** | Material UI's two chip variants: a block of colour with white text, or a coloured border and label on the surface behind it. The distinction is a channel independent of hue, which is why CRITICAL uses it. |
+
+---
+
+## Phase R4 — The redesign brief, section 4: layout and mobile
+
+*Seven requests about where things sit, most of them on a phone. Two are the owner
+overruling decisions this project made earlier and wrote down at the time, which is the
+most useful kind of feedback and the kind that leaves the most stale prose behind.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `layout/AppShell.tsx` | The bottom navigation bar is deleted; the phone's drawer opens from the right; the FAB and `<main>` stop reserving 56px for a bar that is gone. |
+| `layout/navigation.ts` | `NavItem.inBottomNav` removed — no consumer left. |
+| `theme.ts` | The drawer's border follows its anchor. |
+| `components/ResponsiveDialog.tsx` | No longer full screen on a phone: 16px of page on every side and a `maxHeight`. |
+| `components/RowActions.tsx` | **New.** The buttons acting on one row, full width and stacked on a phone. |
+| `components/FilterRow.tsx` | **New.** A filter row that reflows to the width it has. Used by the ticket lists, the engineer roster and the users page. |
+| `components/TicketTitle.tsx` | **New.** One treatment per surface, and the written-down rule. |
+| `features/facilities/FacilitiesPage.tsx` | The floor name moves inside the seat card so both columns start on one line; `Collapse` on the panel; a phone scrolls it into view. |
+| `e2e/responsive.spec.ts` | The bottom-bar assertions are gone; the drawer's side and the dialog's margins are asserted instead. |
+| `layout/AppShell.test.tsx`, `layout/navigation.test.ts` | Bottom-bar cases removed, surviving halves kept. |
+
+Decision: [D54](DECISION-LOG.md#d54--section-4-the-phone-loses-a-navigation-bar-and-gains-its-screen-back).
+
+### 2. Why it is shaped this way
+
+**Three new components, and all three exist for the same reason.** Each is a rule that
+was about to be written at four call sites: "a row's buttons go full width on a phone",
+"a filter row reflows", "a ticket title is ink at this size". Written once, the fifth
+call site cannot forget it — and the buttons, fields and titles themselves stay ignorant
+of the viewport, which is what keeps `AssignButton` usable anywhere.
+
+**`FilterRow` is D44's fix promoted to a rule.** The sideways-scroll bug was a
+viewport breakpoint deciding a layout inside a box narrower than the viewport. That was
+fixed on the ticket list in R1 and left as one screen's special case; the engineers and
+users pages had the same shape in a flex row with hardcoded widths. They now share one
+container-driven grid, and the widths those pages were setting to work around it are
+gone.
+
+**`RowActions` deliberately uses a viewport media query**, built from `MOBILE_MAX_WIDTH`
+so it cannot drift from `useBreakpoint`. By D44's lesson a container query would be more
+honest; it is not used because "is this a phone" is a viewport question everywhere else
+in this application, and one component answering it differently would be a worse fault
+than the one it fixed.
+
+**Deleting the bottom bar deleted an accessibility problem too.** Two navigation
+landmarks could be on screen at once, so each needed a distinct name — "Main" and "Quick
+links" — for a screen-reader user not to be offered "navigation, navigation". There is
+one now. The name stays because a page snapshot that says which surface it is costs one
+attribute.
+
+### 3. How the pieces connect
+
+What a phone screen is made of, after this phase:
+
+```
+AppShell
+ ├─ AppBar (fixed)         bell · menu button, in the right corner
+ ├─ Drawer anchor="right"  ← the whole of the phone's navigation now
+ │    └─ theme.ts gives it a left border, because that is the edge it has
+ ├─ <main>  pb: 3          ← was 80px, to clear a bar that no longer exists
+ │    └─ the screen
+ │         ├─ FilterRow          one column at 343px, several at 1089px
+ │         ├─ TicketTitle        ink, sized by how much screen the ticket owns
+ │         └─ RowActions         100% wide below 900px, natural above
+ └─ Fab  bottom: 16        ← was 72
+```
+
+And the facilities page, which is the one screen whose two columns had to be taught to
+start together:
+
+```
+Box (grid, 1fr at xs)
+ ├─ Paper  buildings          top: 225
+ └─ Box ref={seatPaneRef}     top: 225   ← measured, not assumed
+      └─ Collapse in={floor selected}
+           └─ Paper
+                ├─ toolbar: floor name + four buttons   ← used to sit above the Paper
+                └─ TableContainer
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which navigation surface a width gets | `layout/AppShell.tsx` | the `isMobile` branches |
+| Which side the phone's drawer comes from | `layout/AppShell.tsx` | `anchor="right"` on the temporary `Drawer` |
+| How big a dialog is | `components/ResponsiveDialog.tsx` | the `slotProps.paper` branch |
+| That a row's buttons go full width on a phone | `components/RowActions.tsx` | the media query, built from `MOBILE_MAX_WIDTH` |
+| How a row of filters reflows | `components/FilterRow.tsx` | `minColumn`, and the `auto-fit` template |
+| **What a ticket title looks like** | `components/TicketTitle.tsx` | `TitleDensity` — and the table in its docstring |
+| Where the phone/desktop line is | `hooks/useBreakpoint.ts` | `MOBILE_MAX_WIDTH` — imported by `RowActions`, never repeated |
+
+### 5. How to change it
+
+**To add a control to a filter row:** drop it in. Do not give it a width — the grid cell
+is its width, and a `minWidth` inside one is how the engineers page ended up opting out
+of the theme.
+
+**To add a button to a row:** put it inside the existing `RowActions`. It needs no
+`fullWidth` and no viewport prop.
+
+**To render a ticket title anywhere new:** use `TicketTitle` and pick the density from
+the table in its docstring. If none of the three fits, the honest move is a fourth
+density with a reason, not an `sx` override at the call site — that is how six
+treatments happened.
+
+**To move the phone/desktop line:** `MOBILE_MAX_WIDTH`, and nothing else.
+
+### 6. Gotchas
+
+**`scrollIntoView({ behavior: 'smooth' })` ignores the stylesheet.** `theme.ts` sets
+`scroll-behavior: auto !important` under `prefers-reduced-motion`, which covers CSS-driven
+scrolling and not a scroll asked for in JavaScript. The facilities page checks
+`matchMedia` itself. Any future scripted scroll has to do the same.
+
+**Deleting a surface means deleting what asserted it — carefully.** Two `AppShell` tests
+covered the bottom bar *and* something that still exists. Deleting them whole would have
+quietly dropped coverage of the sidebar's absence at phone width and of the drawer being
+out of the DOM until opened. Each kept its surviving half.
+
+**A full-width button inside a `Badge` needs the badge stretched too.** `Badge` shrink-wraps
+its child, so a `fullWidth` button inside one leaves the count floating in the middle of the
+row instead of on the button's corner. The filter button sets `display: block` on the badge
+and repositions the dot.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Transient prop** | A prop a `styled()` component uses to pick its own CSS and must not forward to the DOM. `FilterRow`'s `minColumn` is one. |
+| **`Collapse`** | Material UI's height transition. `unmountOnExit` takes the content out of the DOM when closed, which is what keeps a collapsed panel out of the accessibility tree rather than merely invisible. |
+| **Landmark** | An element a screen reader can jump between — `<header>`, `<nav>`, `<main>`. Two of the same kind on one page need distinct accessible names to be choosable, which is why the phone once had "Main" and "Quick links". |
+| **`auto-fit` vs a breakpoint** | `auto-fit` divides the width the element actually has; a breakpoint asks how wide the window is. Inside an application shell those are different numbers, and D44 is the bug that difference caused. |
+
+---
+
+## Phase R5 — The redesign brief, section 5: the per-persona screens
+
+*Seven items, one per screen, and the only section of the brief that needed the API to
+change. It is also where two of the owner's own observations landed mid-phase — a card
+that should be clickable and a scroll that fired too early — so the section is larger than
+its list.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `features/dashboard/dashboardLayout.ts` | **New.** The section catalogue, the stored arrangement, and the rules for reading it back. The only file that touches storage. |
+| `features/dashboard/useDashboardLayout.ts` | **New.** The arrangement as state, written through on every change. |
+| `features/dashboard/DashboardLayoutDialog.tsx` | **New.** Switches and arrows, grouped by scope. |
+| `features/dashboard/AdminDashboardPage.tsx` | Sections become a map of nodes rendered in the admin's order; a Customise button opens the dialog. |
+| `features/dashboard/BreakdownChart.tsx` | A `shape` prop: bars or a pie, sharing the header, the table twin and the summary. |
+| `features/dashboard/chartPalette.ts` | `PRIORITY_SLICES` and `CATEGORICAL_SLICES`. |
+| `features/users/groupUsers.ts` + test | **New.** Admins, engineers LEAD→SENIOR→JUNIOR, employees. |
+| `features/users/UsersPage.tsx` | One `<tbody>` per section, each with a heading row. |
+| `features/incidents/AssignDialog.tsx` | Name · level · availability on line one; every specialty chip on line two, the ticket's group filled green. |
+| `features/incidents/IncidentsPage.tsx` | `defaultToOwnBuilding`, applied once, into the URL. |
+| `features/incidents/IncidentTable.tsx` | Rows open their ticket; the reference stays a real link. |
+| `components/stretchedLink.ts` | **New.** A whole card that is a link, with buttons that still work. |
+| `app/schemas/incident.py`, `app/repositories/incidents.py`, `app/routers/incidents.py`, `app/services/incident_service.py` | `closed_last`, the one backend change. |
+
+Decisions: [D55](DECISION-LOG.md#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job),
+[D56](DECISION-LOG.md#d56--the-first-click-that-did-nothing-twice),
+[D57](DECISION-LOG.md#d57--two-pies-and-why-they-are-not-painted-in-the-chip-colours),
+[D58](DECISION-LOG.md#d58--section-5-the-per-persona-screens-and-one-backend-flag).
+
+### 2. Why it is shaped this way
+
+**The one backend change is where it is because a list is paged.** "Closed tickets last"
+looks like a frontend sort until you notice the browser only holds twenty-five rows: a
+closed ticket would sink to the bottom of page one and still sit above every open ticket
+on page two. `closed_last` prefixes the ORDER BY rather than being a sort of its own,
+because the sort says how to arrange the work and this says that finished work goes at
+the end of it however it is arranged.
+
+**The dashboard arrangement is in `localStorage`, and the README says so.** It does not
+expire — the worry it was weighed against — but it is per-browser. `dashboardLayout.ts`
+is the only file that touches storage precisely so that a `user_preferences` table later
+is a one-file change.
+
+**Reordering cannot cross the period/current line**, which is the same rule the rest of
+the dashboard is built on. A stored arrangement is sorted by scope before it is applied,
+so even a hand-edited one in `localStorage` cannot put a live figure under the period
+heading.
+
+**Two clickable-row mechanisms, deliberately.** Cards use a stretched link — one real
+anchor grown over the card, buttons lifted above it — because a `CardActionArea` around a
+button produces invalid markup and swallows the button. Tables use a click handler,
+because an overlay inside a `<td>` has to escape the cell and, more importantly, would
+block selecting text. In both, **the link is what carries the keyboard and the screen
+reader**; the row or card is a convenience on top.
+
+### 3. How the pieces connect
+
+The dashboard, after this phase:
+
+```
+AdminDashboardPage
+ ├─ useDashboardLayout()                 ← reads localStorage once, on mount
+ │    └─ dashboardLayout.resolveSections()
+ │         ├─ unknown ids dropped, new sections appended in catalogue order
+ │         └─ sorted by scope, so a saved order cannot cross the line
+ ├─ PeriodScopeHeading + the period tiles     ← always, never in the catalogue
+ ├─ arranged('period', periodSections)        ← the admin's order, hidden ones gone
+ ├─ CurrentScopeHeading + the live tiles      ← always
+ └─ arranged('current', currentSections)
+```
+
+And a click on a ticket card:
+
+```
+HomeTicketRow (Card, position: relative)
+ ├─ TicketTitle → <Link sx={stretchedLink}>   ::after covers the card
+ └─ RowActions  sx={aboveStretchedLink}       zIndex 1 — the buttons survive
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which dashboard sections exist | `features/dashboard/dashboardLayout.ts` | `DASHBOARD_SECTIONS` |
+| What a saved arrangement may say | `features/dashboard/dashboardLayout.ts` | `readLayout`, `resolveSections`, `moveSection` |
+| Which charts are pies | `features/dashboard/AdminDashboardPage.tsx` | the `shape` prop on two cards |
+| What colour a pie slice is | `features/dashboard/chartPalette.ts` | `PRIORITY_SLICES`, `CATEGORICAL_SLICES` |
+| The order accounts are listed in | `features/users/groupUsers.ts` | `USER_GROUPS`, `groupUsers` |
+| Which specialty chip is green | `features/incidents/AssignDialog.tsx` | `EngineerRow` — `id === ticketGroupId` |
+| Where an employee's ticket list starts | `features/incidents/IncidentsPage.tsx` | `defaultToOwnBuilding` |
+| That finished work sorts last | `app/repositories/incidents.py` | `_order_by` — the `closed_last` prefix |
+| How a card is clickable without breaking its buttons | `components/stretchedLink.ts` | the three exported `sx` fragments |
+
+### 5. How to change it
+
+**To add a dashboard section:** add a row to `DASHBOARD_SECTIONS` and a node to the
+matching map in `AdminDashboardPage`. Arrangements saved before it exists will show it —
+`resolveSections` appends unknown-to-them sections in catalogue order rather than
+dropping them.
+
+**To move the arrangement to the API:** `dashboardLayout.ts`'s `readLayout` and
+`writeLayout`, and nothing else. `useDashboardLayout` would gain a query and a mutation;
+the dialog and the page are already talking to `resolveSections`.
+
+**To make another card clickable:** the three fragments in `stretchedLink.ts`, all three.
+Missing `aboveStretchedLink` silently disables the buttons, which is why the e2e suite
+asserts a button still acts rather than trusting the comment.
+
+### 6. Gotchas
+
+**`localStorage` throws, and not only when it is full.** A private window, blocked site
+data or a locked-down browser makes even reading it raise. Every access in
+`dashboardLayout.ts` is wrapped; a dashboard must not fail to render for want of a
+preference.
+
+**Changing a chip changes a test that never mentioned it.** §5.3 replaced the "Specialty"
+badge with named chips, and `e2e/assignment.spec.ts` was asserting the badge from three
+phases ago. It now asserts the thing the brief actually asked for — the chip named after
+the ticket's group, filled green, checked as paint rather than as a class name.
+
+**A full backend run against a database somebody is also browsing will error.** Two runs
+produced one teardown error each, on a *different* test each time; a third with nothing
+else touching the database passed 828 clean. Contention, not a defect — but worth knowing
+before chasing one.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Stretched link** | One real `<a>` in a card, grown to the card's size by an absolutely positioned `::after`. Keeps the markup valid and the accessible name the title's, where wrapping everything in an anchor would do neither. |
+| **Transient/order prefix** | An ORDER BY term placed *before* the requested sort, so it takes precedence without replacing it. `closed_last` is one. |
+| **`<tbody>` per section** | A table may have several bodies. It is what lets one table carry section headings while keeping every column aligned down the page, which five stacked tables would not. |
+
+---
+
+## Phase R6 — The redesign brief, section 6: an engineer becomes a page
+
+*Two of the four items in §6 were built. The other two — the "needs help" escalation
+chain and automatic BUSY — are state-machine questions rather than UI ones, and are
+recorded as scope decisions rather than started. The item nobody listed, growing the
+demo world, turned out to be the condition for the built half being worth opening.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/repositories/reports.py` | **New queries.** `engineer_detail()` — resolved, closed and reopened counts for one engineer over a window. `engineer_resolved_by_group()` — what they fixed, joined through the subcategory to its parent. |
+| `app/services/reporting.py` | `engineer_detail()` assembles the report and computes the reopen rate; `_share()` returns `None` at a zero denominator. |
+| `app/routers/reports.py` | `GET /reports/engineers/{user_id}`, `STAFF_ONLY` — the only report route that is not admin-only. |
+| `app/schemas/report.py` | `EngineerDetailReport`, `EngineerGroupCount`. |
+| `app/seed/categories.py` | Three new groups — Cleaning & Waste, Safety & Security, Deliveries & Moves — and fourteen subcategories. |
+| `app/seed/demo.py` | 420 tickets (was 300), ten engineers (was six), renormalised group weights, `GENERIC_SYMPTOMS` + `_symptoms_for()` so a new group cannot break the seed. |
+| `features/engineers/EngineerDetailPage.tsx` | **New.** The page: header, basics, a filtered period half, and a live "on their plate now" half. |
+| `features/engineers/EngineerBasics.tsx` | **New.** The old dialog's editable fields, as a section. |
+| `features/engineers/EngineerDialog.tsx` | Creation only now, with the label fix from §6.2. |
+| `features/engineers/EngineerRoster.tsx` | Rows link to the page. |
+| `features/dashboard/EngineerWorkloadTable.tsx` | Rows now go to the person, not to a filtered ticket list. |
+| `features/dashboard/DashboardFilterBar.tsx` | A `note` prop, because the default caption describes the admin dashboard's two halves and is wrong anywhere else. |
+| `features/incidents/IncidentTable.tsx` | The assignee cell is a link to their page. |
+| `api/reports.ts`, `api/engineers.ts`, `api/queryKeys.ts`, `features/*/hooks.ts` | `getEngineerDetailReport`, `getEngineer`, and their keys. |
+| `routes.ts`, `App.tsx` | `/engineers/:userId`, guarded for staff at any level. |
+| `bin/reset-demo-database.sh` | **New.** Drop, migrate, seed — the only way to a current demo world. |
+
+Decision: [D59](DECISION-LOG.md#d59--section-6-an-engineer-is-a-page-and-the-demo-world-grew-to-fill-it).
+
+### 2. Why it is shaped this way
+
+**A page, not a bigger modal.** The dialog held *settings*, and a dialog is right for
+settings. The question people arrive with — is this the person to give the next ticket
+to — needs a period, an output figure, a breakdown and a live queue. A date range
+floating above a settings form reads as filtering the settings, which is why the period
+could not simply be added to the dialog.
+
+**The reopen figure deliberately claims less than the brief asked for.** `reopen_count`
+is a column on `incidents` counting every reopen that ticket ever had, by anyone, against
+any assignee. "Reopened because *this* engineer's fix did not hold" needs the event log
+walked for each REOPENED to find whose RESOLVED it followed — a window function over
+`incident_events`, and the right build if this ever becomes a performance metric. What
+ships is *they resolved it and it was later reopened*, and the screen says exactly that.
+**The label was written to be true of the number underneath it**, which is the whole
+discipline here: a quality signal that overstates itself earns somebody a difficult
+conversation they did not deserve.
+
+**`STAFF_ONLY`, and the guard is on the endpoint.** A LEAD opens this page to hand work
+out, an engineer opens it on themselves, an admin opens it on anyone, and an employee
+must not reach it. `RequireRole` on the route stops a wrong link rendering a 403 screen;
+the dependency on `GET /reports/engineers/{id}` is what holds when somebody types the URL.
+
+**The workload rows changed where they point, and that is a reversal.** Since M7 they
+went to `?assignee_id=…`. Clicking a row in a table *about people* and landing on a list
+of *tickets* answers a question you did not ask — and from the person's page the ticket
+list is one click further on.
+
+**The seed grew because the taxonomy did.** `migrate` is idempotent and seeds categories;
+nothing backfills history. A database migrated after §6.2 shows eight groups in every
+dropdown and tickets in five of them, so every chart the new page draws would have had an
+empty third. Three numbers moved together — 300→420 tickets, 6→10 engineers, and the new
+groups at 9/7/5% rather than a token 2–5% that put Deliveries & Moves at about six tickets
+in three months.
+
+### 3. How the pieces connect
+
+An admin opens the dashboard, sees Priya Raman at 90% capacity, and clicks her row:
+
+1. `EngineerWorkloadTable.tsx` renders the name as a `RouterLink` to `engineerPath(user_id)`.
+2. React Router matches `paths.engineerDetail` in `App.tsx`, inside
+   `RequireRole roles={['ENGINEER','FACILITY_ADMIN']}` — no level, because this is staff,
+   not lead.
+3. `EngineerDetailPage` mounts and fires **three** queries, on purpose:
+   - `useEngineer(userId)` → `GET /engineers/{id}` — who they are, for the header and
+     `EngineerBasics`.
+   - `useEngineerDetailReport(userId, periodParams)` → `GET /reports/engineers/{id}` —
+     the period half.
+   - `useIncidents({ assignee_id, status: [OPEN, IN_PROGRESS, BLOCKED], sort: '-priority' })`
+     → `GET /incidents` — the live half, **unscoped by the period**, because what
+     somebody is holding is a question about today (the same split as [D9](DECISION-LOG.md#d9)).
+4. The report request lands on `routers/reports.py`, clears `STAFF_ONLY` in
+   `security/dependencies.py`, and reaches `services/reporting.py:engineer_detail()`.
+5. That calls two repository functions. `engineer_detail()` returns three counts in one
+   row — `count(*)`, plus two `FILTER (WHERE …)` aggregates over the same scan.
+   `engineer_resolved_by_group()` joins `incidents → categories → categories (aliased
+   parent)` and groups by the parent.
+6. The service computes `reopen_rate_pct` in Python via `_share()`, because the zero
+   denominator is a meaning decision, not an arithmetic one.
+7. TanStack Query caches under `['reports','engineer-detail',userId,params]`. Changing the
+   date range changes `params`, so it is a new key and a new fetch; the old data stays on
+   screen dimmed by `isStale` rather than flashing a spinner.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Who may see an engineer's figures | `app/routers/reports.py` — `STAFF_ONLY` on the route |
+| What "resolved in the period" means | `app/repositories/reports.py:engineer_detail()` — the window applies to `resolved_at`, not `created_at` |
+| What the reopen number counts | same function's docstring — the weaker claim, stated |
+| No rate without a denominator | `app/services/reporting.py:_share()` |
+| Which groups exist | `app/seed/categories.py` — the specialty list *is* the category tree |
+| How big the demo world is | `app/seed/demo.py:DemoSpec` — every count derives from it, including in tests |
+| That the period does not reach the live queue | `EngineerDetailPage.tsx` — the `useIncidents` call takes no window |
+
+### 5. How to change it
+
+**To add a figure to the engineer page:** add the aggregate to
+`repositories/reports.py:engineer_detail()`, a field to `EngineerDetailReport`, a line in
+`services/reporting.py:engineer_detail()`, a `StatTile` on the page. Four files, in that
+order.
+
+**To add a category group:** one entry in `seed/categories.py` with its subcategories.
+Nothing else is required — `CATEGORY_GROUP_WEIGHTS` and `SYMPTOMS` both fall back now —
+but give it a weight and its own phrases if you want it to look like the others, and run
+`bin/reset-demo-database.sh` or the tickets will not exist.
+
+**To rebuild the demo world:** `./bin/reset-demo-database.sh`. There is no top-up path;
+`seed_demo` refuses when demo buildings already exist, deliberately, so a second invoke
+cannot double a dataset.
+
+### 6. Gotchas
+
+**`migrate` adds categories but not tickets.** This is the trap the phase was built
+around. An existing database picks up new groups silently and correctly, and every chart
+that breaks down by group then shows a taxonomy with holes in it. The data is only as new
+as the last rebuild.
+
+**One lookup table tolerant of a new key and its neighbour not.**
+`CATEGORY_GROUP_WEIGHTS` has always had `.get(name, 0.1)`; `SYMPTOMS` was a plain
+subscript. The first `seed_demo` after the three groups landed died on
+`KeyError: 'Deliveries & Moves'` and took nineteen tests with it. Both are tolerant now.
+
+**An empty MUI multi-select renders "None" over its own label.** MUI floats the label when
+it thinks the field is non-empty, and an empty array is not. `slotProps={{ inputLabel: {
+shrink: true } }}` pins it up. The ticket filters already did this; the specialty field
+did not.
+
+**Four seed tests were secretly assertions about the seed's size.** They had literal
+counts in them, so changing `DemoSpec.incidents` failed tests that never mentioned it.
+They derive from `DemoSpec` now.
+
+**A docstring can end up above the wrong function.** Two new API helpers were inserted
+between an existing docstring and the function it described, which type-checks, lints and
+tests clean while documenting the wrong thing. Caught by reading the diff, not by any
+tool.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **`FILTER (WHERE …)`** | A SQL aggregate qualifier — `count(*) FILTER (WHERE status = 'CLOSED')`. Three counts over one scan instead of three queries. |
+| **Aliased self-join** | `aliased(Category)` lets one table appear twice in a query. Incidents are filed against a subcategory; the group is its parent row in the same table. |
+| **Zero denominator** | A rate with nothing to divide. Returned as `None` and rendered as a dash, never as 0%, which would read as a perfect record. |
+| **Top-up** | Seeding more data into an already-seeded database. Not supported: `seed_demo` refuses, so a dataset cannot be silently doubled. |

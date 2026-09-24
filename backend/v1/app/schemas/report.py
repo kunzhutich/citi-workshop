@@ -270,6 +270,48 @@ class EngineerWorkloadReport(BaseModel):
     engineers: list[EngineerWorkload]
 
 
+class EngineerGroupCount(BaseModel):
+    """One category group and how many of it this engineer resolved."""
+
+    group_id: uuid.UUID
+    group_name: str
+    count: int
+
+
+class EngineerDetailReport(BaseModel):
+    """`/reports/engineers/{user_id}` — one engineer's output over a period.
+
+    Deliberately separate from `EngineerWorkloadReport`, which answers "who is
+    free right now" across the whole roster. This answers "how is this person
+    doing", which wants different numbers and a window applied to them.
+    """
+
+    window: ReportWindow
+    user_id: uuid.UUID
+    resolved_in_period: int = Field(description="Tickets this engineer resolved in the window.")
+    closed_in_period: int = Field(
+        description=(
+            "Of those, the ones that reached CLOSED — the reporter agreed, or an admin did."
+        ),
+    )
+    reopened_in_period: int = Field(
+        description=(
+            "Of the tickets they resolved in the window, how many carry a reopen. "
+            "Read as 'they resolved it and it came back', not as fault: the count is "
+            "the incident's own `reopen_count`, which does not know whose fix it "
+            "followed."
+        ),
+    )
+    reopen_rate_pct: float | None = Field(
+        description=(
+            "`reopened_in_period` over `resolved_in_period`. Null when nothing was resolved."
+        ),
+    )
+    resolved_by_group: list[EngineerGroupCount] = Field(
+        description="What kind of problem they fix, for reading beside their specialties.",
+    )
+
+
 class BlockedGroup(BaseModel):
     """Blocked tickets sharing one reason, and how long they have been stuck.
 

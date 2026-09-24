@@ -50,22 +50,6 @@ describe('navItemsFor', () => {
     ]);
   });
 
-  it('keeps the mobile bottom bar to at most four items for every role', () => {
-    const users = [
-      makeUser(),
-      makeEngineer('JUNIOR'),
-      makeEngineer('SENIOR'),
-      makeEngineer('LEAD'),
-      makeAdmin(),
-    ];
-
-    for (const user of users) {
-      const bottom = navItemsFor(user).filter((item) => item.inBottomNav);
-      expect(bottom.length).toBeGreaterThanOrEqual(3);
-      expect(bottom.length).toBeLessThanOrEqual(4);
-    }
-  });
-
   it('offers every role the report button', () => {
     expect(reportNavItem.path).toBe(paths.report);
   });

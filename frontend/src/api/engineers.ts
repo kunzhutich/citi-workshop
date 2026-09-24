@@ -66,6 +66,12 @@ export async function listEngineers(query: EngineerQuery = {}): Promise<Page<Eng
   return data;
 }
 
+/** One engineer, for their profile page. */
+export async function getEngineer(userId: string): Promise<Engineer> {
+  const { data } = await apiClient.get<Engineer>(`/engineers/${userId}`);
+  return data;
+}
+
 /**
  * Create an engineer account and its profile.
  *

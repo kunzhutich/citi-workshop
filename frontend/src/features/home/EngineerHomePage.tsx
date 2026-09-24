@@ -15,8 +15,14 @@ import { paths } from '../../routes';
 import { HomeTicketRow } from './HomeTicketRow';
 import { sortByPriorityThenAge } from './sortTickets';
 
-/** How many rows each list shows before deferring to the full screen. */
-const LIST_LIMIT = 6;
+/**
+ * How many rows each list shows before deferring to the full screen.
+ *
+ * Seven, and the same for both columns so they start level. It is a home
+ * screen: enough to see what the day looks like, few enough that "See my
+ * queue" is still the thing you press when you want the whole of it.
+ */
+const LIST_LIMIT = 7;
 
 export interface EngineerHomePageProps {
   user: CurrentUser;
@@ -121,6 +127,29 @@ export function EngineerHomePage({ user }: EngineerHomePageProps) {
         </QueryState>
       </Box>
 
+      {/*
+        Two columns once there is room for them, one below the other when
+        there is not.
+
+        A ticket row is a fixed amount of information — a reference, a title,
+        two chips and a location — and on a wide screen a single column
+        stretches all of that across 1,100px to say the same thing it said in
+        500. Side by side, the same screen answers both of an engineer's
+        questions at once: what is mine, and what could be.
+
+        `lg` rather than the 900px phone/desktop line: at `md` the two columns
+        would be about 300px each, which is narrower than a ticket row reads
+        well at. This is a question about whether two of these fit, not about
+        whether the device is a phone.
+      */}
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 3,
+          gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' },
+          alignItems: 'start',
+        }}
+      >
       <Box>
         <Box
           sx={{
@@ -172,6 +201,7 @@ export function EngineerHomePage({ user }: EngineerHomePageProps) {
       ) : (
         <Alert severity="info">New tickets are assigned to you by your lead or admin.</Alert>
       )}
+      </Box>
     </Stack>
   );
 }

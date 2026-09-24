@@ -772,3 +772,90 @@ def personal_counts(
         scope,
     )
     return session.execute(statement).one()
+
+
+def engineer_detail(session: Session, user_id: uuid.UUID, window: ReportWindow) -> Row[Any] | None:
+    """Return one engineer's output over the window, with the reopen signal.
+
+    Three numbers that the dashboard's roster does not carry, because they are
+    about a person rather than about the queue:
+
+    * `resolved_in_period` — tickets this engineer resolved inside the window.
+      The same definition `engineer_workload` uses, so the two agree.
+    * `closed_in_period` — of those, the ones that reached CLOSED. A resolved
+      ticket is the engineer's claim; a closed one is the reporter's agreement,
+      or an admin's.
+    * `reopened_in_period` — **of the tickets they resolved in the window, how
+      many carry a reopen**. This is the quality signal the redesign brief asks
+      for, and the honest version of it is subtle enough to state:
+
+      `reopen_count` is a column on `incidents` and counts every reopen a
+      ticket has ever had, by anyone, at any time. Scoping it to "reopened
+      because *this* engineer's fix did not hold" would mean reading the event
+      log for a REOPENED event whose preceding RESOLVED was theirs, which is a
+      window function over `incident_events` and a different, larger query.
+      What is counted here is the weaker claim — *they resolved it and it was
+      later reopened* — which is why the screen labels it "Resolved, then
+      reopened" rather than anything that assigns blame.
+
+    The window is applied to `resolved_at` and not to `created_at`, for the
+    same reason `engineer_workload` does: the subject is what the engineer
+    *did* in the period, not which tickets happened to be raised in it.
+    """
+    resolved_in_window = [
+        Incident.assignee_id == user_id,
+        Incident.resolved_at.is_not(None),
+        Incident.resolved_at >= window.date_from,
+        Incident.resolved_at <= window.date_to,
+    ]
+    if window.building_id is not None:
+        resolved_in_window.append(Incident.building_id == window.building_id)
+
+    statement = select(
+        func.count(Incident.id).label("resolved_in_period"),
+        func.count(Incident.id)
+        .filter(Incident.status == IncidentStatus.CLOSED)
+        .label("closed_in_period"),
+        func.count(Incident.id).filter(Incident.reopen_count > 0).label("reopened_in_period"),
+    ).where(*resolved_in_window)
+
+    return session.execute(statement).one_or_none()
+
+
+def engineer_resolved_by_group(
+    session: Session, user_id: uuid.UUID, window: ReportWindow
+) -> Sequence[Row[Any]]:
+    """Return what this engineer resolved in the window, by category group.
+
+    The breakdown worth looking at on a person's page: not "how many", which
+    the counts above already say, but *what kind of problem they fix*. Read
+    beside their specialties it answers whether someone's declared subjects and
+    their actual work agree.
+
+    Joined through the subcategory to its parent, because an incident is filed
+    against a subcategory and the group is the level anybody thinks in.
+    """
+    parent = aliased(Category)
+    clauses: list[ColumnElement[bool]] = [
+        Incident.assignee_id == user_id,
+        Incident.resolved_at.is_not(None),
+        Incident.resolved_at >= window.date_from,
+        Incident.resolved_at <= window.date_to,
+    ]
+    if window.building_id is not None:
+        clauses.append(Incident.building_id == window.building_id)
+
+    statement = (
+        select(
+            parent.id.label("group_id"),
+            parent.name.label("group_name"),
+            func.count(Incident.id).label("count"),
+        )
+        .join(Category, Category.id == Incident.category_id)
+        .join(parent, parent.id == Category.parent_id)
+        .where(*clauses)
+        .group_by(parent.id, parent.name)
+        .order_by(func.count(Incident.id).desc(), parent.name.asc())
+    )
+
+    return session.execute(statement).all()

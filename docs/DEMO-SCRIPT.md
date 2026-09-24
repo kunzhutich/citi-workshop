@@ -176,18 +176,23 @@ cd backend/v1 && .venv/bin/uvicorn app.main:app --reload --port 8000
 cd frontend   && npm run dev
 ```
 
-If `acme_demo` does not exist on this machine, create it — takes about a second:
+If `acme_demo` does not exist on this machine — or has not been rebuilt for a while —
+one script does the whole thing, in about a second:
 
 ```sh
-sudo -u postgres createdb acme_demo
-cd backend/v1
-POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'migrate'}, None))"
-POSTGRES_NAME=acme_demo .venv/bin/python -c "from function import handler; print(handler({'action':'seed_demo'}, None))"
+./bin/reset-demo-database.sh
 ```
 
-**Put `.env` back to `POSTGRES_NAME=acme_incidents_dev` when the demo is over**, or the
-next Playwright run will create its accounts in the demo database. (Some already exist
-there from previous runs — see "What you will see that is not in the script".)
+It drops, migrates and re-seeds, which is the only path to a current demo world:
+`seed_demo` refuses to top up an already-seeded database, on purpose. **Run it the day
+before a demo**, for two reasons. Playwright reports real tickets through the real API
+and leaves them behind, so a few runs put a wall of today's tickets on the admin's daily
+chart. And the seed itself changes between phases — a database that was merely migrated
+has the newest category groups in every dropdown and no tickets in them.
+
+The demo world regenerates from a fixed random seed, so its shape comes back identical;
+what moves is the dates, which rebase to the day you run it. That is the point — it is
+what keeps a demo looking recent.
 
 ### 2. Three signed-in browsers, not one
 
@@ -228,7 +233,8 @@ password: this account pre-dates the demo seed and had its password changed thro
 gate. If it will not take, `demo.admin@acme.inc` / `AcmeDemo2026!` is also a facility
 admin in this database and works identically.
 
-Every other seeded account — 6 engineers, 30 employees — uses `AcmeDemo2026!`.
+Every other seeded account — 6 engineers on the deployed database, 10 on a freshly
+seeded local one, and 30 employees either way — uses `AcmeDemo2026!`.
 
 ### 4. Thirty seconds of dry run
 
@@ -510,14 +516,15 @@ Then click any KPI tile, for example **Blocked**.
 
 ### Afterwards *(local only)*
 
-```sh
-# backend/v1/.env
-POSTGRES_NAME=acme_incidents_dev   # and restart uvicorn
-```
+Nothing to undo. `backend/v1/.env` stays on `POSTGRES_NAME=acme_demo` — that is now its
+permanent setting, and the Playwright suite is pointed at the same database deliberately
+(`playwright.config.ts` carries the demo admin's credentials). The tickets you created
+during the demo stay where they are; `./bin/reset-demo-database.sh` clears them along
+with everything else the next time you rebuild.
 
-**If you demonstrated from the deployed URL there is nothing to undo** — no `.env`, no
-servers. The ticket you created stays in the deployed database, which is expected; there
-is no reset and none is needed.
+**If you demonstrated from the deployed URL there is nothing to undo either** — no
+`.env`, no servers. The ticket you created stays in the deployed database, which is
+expected; there is no reset there and none is needed.
 
 ---
 

@@ -56,18 +56,17 @@ describe('desktop layout', () => {
 });
 
 describe('mobile layout', () => {
-  it('shows a bottom bar and hides the sidebar at phone width', () => {
+  it('hides the sidebar at phone width and puts the navigation behind a button', () => {
     setViewportWidth(375);
 
     renderShell(makeUser());
 
+    // Nothing else: there used to be a bottom bar carrying a subset of these
+    // links, and R4 deleted it. The menu button is now the whole of the
+    // phone's navigation, which is why its absence would be a much worse
+    // failure than it was.
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: 'Quick links' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open navigation' })).toBeInTheDocument();
-    // A link, not a button. The bottom bar used to navigate imperatively
-    // through `BottomNavigation`'s `onChange`; its items go somewhere, so
-    // they are anchors now and announce themselves as such.
-    expect(screen.getByRole('link', { name: 'My tickets' })).toBeInTheDocument();
   });
 
   it('treats a tablet at 768 px as mobile', () => {
@@ -265,25 +264,26 @@ describe('accessibility scaffolding', () => {
     expect(screen.getByRole('link', { name: 'All tickets' })).not.toHaveAttribute('aria-current');
   });
 
-  it('names the phone surfaces distinctly, and the open drawer hides the one behind it', async () => {
+  it('keeps the phone navigation out of the tree until the drawer is opened', async () => {
     setViewportWidth(375);
 
     renderShell(makeUser());
 
-    // Closed: the bottom bar is the navigation, and the drawer is not in the
-    // DOM at all — MUI keeps a temporary Drawer unrendered until it opens.
-    expect(screen.getByRole('navigation', { name: 'Quick links' })).toBeInTheDocument();
+    // Closed, the drawer is not in the DOM at all — Material UI keeps a
+    // temporary Drawer unrendered until it opens. That is what makes its
+    // absence a meaningful assertion rather than a visibility check.
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('navigation')).toHaveLength(0);
 
     await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
 
-    // Open: the drawer is modal, so everything behind it leaves the
-    // accessibility tree. Exactly one navigation is ever exposed, which is
-    // why the two names never have to be told apart in practice — and why
-    // they are still different, so that a page snapshot of either one says
-    // which surface it is.
+    // Open, there is exactly one navigation on a phone. Until R4 there were
+    // two — a bottom bar and this — and the pair needed distinct names so a
+    // screen-reader user was not offered "navigation, navigation". Deleting
+    // the bar deleted that problem; the name stays because a snapshot that
+    // says which surface it is costs one attribute.
     expect(screen.getByRole('navigation', { name: 'Main' })).toBeInTheDocument();
-    expect(screen.queryByRole('navigation', { name: 'Quick links' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('navigation')).toHaveLength(1);
   });
 
   it('renders exactly one main landmark', () => {

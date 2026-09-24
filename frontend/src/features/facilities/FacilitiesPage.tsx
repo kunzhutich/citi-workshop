@@ -21,14 +21,16 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { describeError } from '../../api/errors';
 import type { Building, BuildingNode, Floor, FloorNode, Seat } from '../../api/types';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { seatTypeLabel } from '../../display/labels';
+import { revealScroll } from '../../display/revealScroll';
 import { BuildingDialog, BulkSeatsDialog, FloorDialog, SeatDialog } from './FacilityDialogs';
 import {
   useBulkCreateSeats,
@@ -73,6 +75,47 @@ export function FacilitiesPage() {
   const [includeInactive, setIncludeInactive] = useState(false);
   const [expandedBuildingId, setExpandedBuildingId] = useState<string | null>(null);
   const [selectedFloorId, setSelectedFloorId] = useState<string | null>(null);
+  const { isMobile } = useBreakpoint();
+  const seatPaneRef = useRef<HTMLDivElement | null>(null);
+
+  /*
+   * On a phone, bring the seats into view after a floor is chosen.
+   *
+   * The two columns are side by side on a desktop and stacked on a phone, so
+   * a tap on "Level 3" filled a panel a screenful below the fold and looked
+   * like it had done nothing at all. §4.7 of the redesign brief.
+   *
+   * **Why this is not one effect on `selectedFloorId`.** It was, and it was
+   * wrong on exactly one click: the first. The panel arrives inside a
+   * `Collapse`, so at the moment the id changes it is still zero pixels tall
+   * — the effect scrolled to an empty box that was already on screen, and
+   * nothing appeared to happen. Every click after that worked, because by
+   * then the panel had height. A first-click-only fault, which is the kind a
+   * developer never sees and a user only ever sees.
+   *
+   * So there are two moments, and they are genuinely different: the panel
+   * *opening* (the transition has to finish first — `onEntered`), and the
+   * floor changing while it is already open (no transition runs at all, so
+   * there is nothing to wait for). `paneOpen` tells them apart.
+   *
+   * The reduced-motion handling lives in `display/revealScroll.ts`, which the
+   * report questionnaire shares.
+   */
+  const paneOpen = useRef(false);
+
+  const scrollToSeats = useCallback(() => {
+    if (isMobile) {
+      revealScroll(seatPaneRef.current);
+    }
+  }, [isMobile]);
+
+  useEffect(() => {
+    // Only the already-open case. The opening case is `onEntered` below,
+    // because a panel that has not finished growing has nowhere to scroll to.
+    if (selectedFloorId !== null && paneOpen.current) {
+      scrollToSeats();
+    }
+  }, [selectedFloorId, scrollToSeats]);
   const [dialog, setDialog] = useState<Dialog>({ kind: 'none' });
 
   const tree = useFacilityTree(includeInactive);
@@ -180,9 +223,38 @@ export function FacilitiesPage() {
               </List>
             </Paper>
 
-            <Box>
-              {selectedFloor ? (
-                <SeatPane
+            {/*
+              §4.7. Three things about this column.
+
+              Its top edge lines up with the buildings panel beside it: the
+              floor's name and its buttons moved *inside* the seat panel's own
+              card, so the two cards start on the same line. Before, the
+              heading sat at that line on its own and the table began below it,
+              which read as the right-hand column having slipped down.
+
+              `Collapse` rather than a bare conditional, so choosing a floor
+              opens the panel instead of teleporting it. `theme.ts` already
+              turns every transition off under `prefers-reduced-motion`.
+
+              And `seatPaneRef` is what the phone scrolls to — see the effect
+              above. On a desktop the panel is beside the list and needs no
+              help; on a phone it is a screen further down, and without this
+              a tap appeared to do nothing.
+            */}
+            <Box ref={seatPaneRef}>
+              <Collapse
+                in={selectedFloor !== undefined}
+                unmountOnExit
+                onEntered={() => {
+                  paneOpen.current = true;
+                  scrollToSeats();
+                }}
+                onExited={() => {
+                  paneOpen.current = false;
+                }}
+              >
+                {selectedFloor ? (
+                  <SeatPane
                   floor={selectedFloor}
                   onAddSeat={() =>
                     setDialog({ kind: 'seat', floorId: selectedFloor.id, seat: null })
@@ -206,11 +278,13 @@ export function FacilitiesPage() {
                     setDialog({ kind: 'seat', floorId: selectedFloor.id, seat })
                   }
                   onRemoveSeat={(seat) => void remove(() => deleteSeat.mutateAsync(seat.id))}
-                  onReactivateSeat={(seat) =>
-                    void updateSeat.mutateAsync({ id: seat.id, payload: { is_active: true } })
-                  }
-                />
-              ) : (
+                    onReactivateSeat={(seat) =>
+                      void updateSeat.mutateAsync({ id: seat.id, payload: { is_active: true } })
+                    }
+                  />
+                ) : null}
+              </Collapse>
+              {selectedFloor ? null : (
                 <EmptyState
                   title="Pick a floor"
                   description="Choose a building, then a floor, to see its desks and rooms."
@@ -396,7 +470,15 @@ function SeatPane({
   onReactivateSeat,
 }: SeatPaneProps) {
   return (
-    <Box>
+    /*
+      One card, with the floor's name as its own toolbar.
+      §4.7: the heading used to sit above this card on the page background, so
+      the buildings panel's top edge and the seats table's top edge were a
+      heading's height apart and the column looked dropped. Inside the card,
+      the two panels start on the same line and the name is attached to the
+      thing it names.
+    */
+    <Paper variant="outlined">
       <Box
         sx={{
           display: 'flex',
@@ -404,10 +486,13 @@ function SeatPane({
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 1,
-          mb: 2,
+          px: 2,
+          py: 1.5,
+          borderBottom: 1,
+          borderColor: 'divider',
         }}
       >
-        <Typography variant="h2" component="h2">
+        <Typography variant="h3" component="h2">
           {floor.name}
         </Typography>
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
@@ -427,17 +512,19 @@ function SeatPane({
       </Box>
 
       {floor.seats.length === 0 ? (
-        <EmptyState
-          title="Nothing on this floor yet"
-          description="Paste a list of desk codes to fill it in one go."
-          action={
-            <Button variant="contained" onClick={onBulkAdd}>
-              Add many
-            </Button>
-          }
-        />
+        <Box sx={{ p: 2 }}>
+          <EmptyState
+            title="Nothing on this floor yet"
+            description="Paste a list of desk codes to fill it in one go."
+            action={
+              <Button variant="contained" onClick={onBulkAdd}>
+                Add many
+              </Button>
+            }
+          />
+        </Box>
       ) : (
-        <TableContainer component={Paper} variant="outlined">
+        <TableContainer>
           <Table size="small" aria-label={`Places on ${floor.name}`}>
             <TableHead>
               <TableRow>
@@ -480,6 +567,6 @@ function SeatPane({
           </Table>
         </TableContainer>
       )}
-    </Box>
+    </Paper>
   );
 }

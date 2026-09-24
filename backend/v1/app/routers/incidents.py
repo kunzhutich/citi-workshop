@@ -102,6 +102,10 @@ def get_incident_query(
     mine: Annotated[MineFilter | None, Query(description="Your own tickets.")] = None,
     specialty: Annotated[bool, Query(description="Engineers: your specialty groups.")] = False,
     sort: IncidentSort | None = None,
+    closed_last: Annotated[
+        bool,
+        Query(description="Put closed tickets after the rest, whatever `sort` says."),
+    ] = False,
 ) -> IncidentQuery:
     """Collect the list filters from the query string into one model."""
     return IncidentQuery(
@@ -121,6 +125,7 @@ def get_incident_query(
         mine=mine,
         specialty=specialty,
         sort=sort,
+        closed_last=closed_last,
     )
 
 

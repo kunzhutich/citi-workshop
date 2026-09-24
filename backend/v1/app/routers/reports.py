@@ -42,6 +42,7 @@ from app.schemas.report import (
     BlockedEscalatedReport,
     CategoriesReport,
     CommunicationReport,
+    EngineerDetailReport,
     EngineerWorkloadReport,
     LocationsReport,
     MyReport,
@@ -50,7 +51,7 @@ from app.schemas.report import (
     ResponseTimesReport,
     SummaryReport,
 )
-from app.security.dependencies import ADMIN_ONLY, CurrentUser, DbSession
+from app.security.dependencies import ADMIN_ONLY, STAFF_ONLY, CurrentUser, DbSession
 from app.services import reporting as service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -149,6 +150,28 @@ def get_response_times(session: DbSession, window: ReportPeriod) -> ResponseTime
 def get_engineer_workload(session: DbSession, window: ReportPeriod) -> EngineerWorkloadReport:
     """Return every active engineer's live load and what they resolved in the period."""
     return service.engineer_workload(session, window)
+
+
+@router.get(
+    "/engineers/{user_id}",
+    response_model=EngineerDetailReport,
+    dependencies=[STAFF_ONLY],
+    summary="One engineer's output over a period, and how much of it came back",
+)
+def get_engineer_detail(
+    user_id: uuid.UUID, session: DbSession, window: ReportPeriod
+) -> EngineerDetailReport:
+    """Return what this engineer resolved in the window, and the reopen signal.
+
+    **Staff, not admin only**, and that is the one thing about this route worth
+    reading twice. Seven of the other reports are `ADMIN_ONLY`; this one backs
+    the engineer profile page, which a LEAD opens to decide who to hand work
+    to and which an engineer can open on themselves. An employee cannot —
+    §5.5 of the redesign brief is explicit that an employee must not reach an
+    engineer's profile, and this dependency is what enforces it rather than the
+    absence of a link on a screen.
+    """
+    return service.engineer_detail(session, user_id, window)
 
 
 @router.get(

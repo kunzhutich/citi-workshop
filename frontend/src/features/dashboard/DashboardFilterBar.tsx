@@ -2,6 +2,7 @@ import Box from '@mui/material/Box';
 import MenuItem from '@mui/material/MenuItem';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import type { ReactNode } from 'react';
 
 import { useFacilityTree } from '../facilities/hooks';
 import {
@@ -12,6 +13,15 @@ import {
 
 export interface DashboardFilterBarProps {
   controls: DashboardFilterControls;
+  /**
+   * What the dates and the building apply to on *this* screen.
+   *
+   * The default names the admin dashboard's two halves, which is wrong
+   * anywhere else — the engineer profile page reuses these controls and has no
+   * blocked-or-escalated section for the sentence to be about. A caption that
+   * describes a screen the reader is not looking at is worse than none.
+   */
+  note?: ReactNode;
 }
 
 /**
@@ -34,7 +44,7 @@ export interface DashboardFilterBarProps {
  * fight a date grid to say "last 30 days", and a preset link still means the
  * last thirty days when it is opened next week.
  */
-export function DashboardFilterBar({ controls }: DashboardFilterBarProps) {
+export function DashboardFilterBar({ controls, note }: DashboardFilterBarProps) {
   const { filters, setFilters } = controls;
   const facilities = useFacilityTree();
   const isCustom = filters.rangeId === CUSTOM_RANGE_ID;
@@ -111,9 +121,13 @@ export function DashboardFilterBar({ controls }: DashboardFilterBarProps) {
       </Box>
 
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-        The building applies to everything below. The date range applies to the period
-        section only — what is blocked or escalated <strong>right now</strong> is counted
-        however old it is.
+        {note ?? (
+          <>
+            The building applies to everything below. The date range applies to the period
+            section only — what is blocked or escalated <strong>right now</strong> is counted
+            however old it is.
+          </>
+        )}
       </Typography>
     </Box>
   );

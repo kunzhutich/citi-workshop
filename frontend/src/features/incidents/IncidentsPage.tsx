@@ -2,11 +2,13 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import TablePagination from '@mui/material/TablePagination';
 import Typography from '@mui/material/Typography';
+import { useEffect, useRef } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 
 import type { IncidentQuery } from '../../api/incidents';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, QueryState } from '../../components/QueryState';
+import { useAuth } from '../../auth/AuthContext';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { paths } from '../../routes';
 import { useIncidents, useIncidentsInfinite } from './hooks';
@@ -29,6 +31,15 @@ export interface IncidentsPageProps {
   emptyDescription: string;
   /** Whether to offer "Report an issue" from the empty state. */
   offerReport?: boolean;
+  /**
+   * Start an employee on their own building, once, when they arrive with no
+   * filters of their own.
+   *
+   * §5.4, and only All Tickets asks for it. An employee opening "every
+   * incident" is almost always checking whether their problem is already
+   * reported, and a problem is somewhere — the building they are standing in.
+   */
+  defaultToOwnBuilding?: boolean;
 }
 
 /**
@@ -49,9 +60,45 @@ export function IncidentsPage({
   emptyTitle,
   emptyDescription,
   offerReport = false,
+  defaultToOwnBuilding = false,
 }: IncidentsPageProps) {
   const { isMobile } = useBreakpoint();
+  const { user } = useAuth();
   const controls = useIncidentFilters();
+
+  /*
+   * The default building, applied to the URL rather than to the query.
+   *
+   * Writing it into the address bar is what makes it a *default* instead of a
+   * hidden rule: the filter bar shows it, `AppliedFilterChips` can remove it,
+   * the view is still the bookmarkable thing BUILD-PLAN §10 asks for, and a
+   * link somebody sends means what it says.
+   *
+   * `applied` is a ref rather than a condition on the filters, because the
+   * obvious condition — "no building chosen" — is also true the moment the
+   * employee clears the filter, and the page would put it straight back.
+   * Once per mount, then never again.
+   */
+  const applied = useRef(false);
+  useEffect(() => {
+    if (applied.current) {
+      return;
+    }
+    applied.current = true;
+
+    const ownBuilding = user?.last_building_id ?? null;
+    if (
+      defaultToOwnBuilding &&
+      ownBuilding !== null &&
+      user?.role === 'EMPLOYEE' &&
+      controls.activeCount === 0
+    ) {
+      controls.setFilters({ buildingId: ownBuilding });
+    }
+    // Deliberately once, on mount. See `applied`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const query = toQuery(controls.filters, preset);
 
   // Both hooks run on every render so their order never changes; `enabled`

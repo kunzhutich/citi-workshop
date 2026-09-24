@@ -17,7 +17,7 @@ import { useFacilityTree } from '../facilities/hooks';
 import { useIncidents } from '../incidents/hooks';
 import { BlockedByReasonPanel } from './BlockedByReasonPanel';
 import { BreakdownChart, type BreakdownDatum } from './BreakdownChart';
-import { PRIORITY_RAMP } from './chartPalette';
+import { CATEGORICAL_SLICES, PRIORITY_SLICES } from './chartPalette';
 import { CommunicationPanel } from './CommunicationPanel';
 import { DashboardFilterBar } from './DashboardFilterBar';
 import { EngineerWorkloadTable } from './EngineerWorkloadTable';
@@ -34,7 +34,13 @@ import {
 import { ACTIVE_STATUSES, currentListLink, periodListLink } from './listLinks';
 import { NeedsAttentionPanel, UNASSIGNED_HOURS } from './NeedsAttentionPanel';
 import { CurrentScopeHeading, PeriodScopeHeading } from './ScopeHeading';
+import { Fragment, useState, type ReactNode } from 'react';
+
+import TuneIcon from '@mui/icons-material/Tune';
+
 import { StatTile, StatTileGrid } from './StatTile';
+import { DashboardLayoutDialog } from './DashboardLayoutDialog';
+import { useDashboardLayout } from './useDashboardLayout';
 import { useDashboardFilters } from './useDashboardFilters';
 
 /** How many unowned tickets to fetch when looking for the stale ones. */
@@ -72,6 +78,13 @@ const UNASSIGNED_PAGE_SIZE = 50;
 export function AdminDashboardPage() {
   const controls = useDashboardFilters();
   const { filters, periodParams, scopeParams } = controls;
+
+  // Which sections this admin keeps, and in what order. §5.2. `isVisible` is
+  // the only thing the markup below asks — the storage, the ordering and the
+  // refusal to move a section across the period/current line all live in
+  // `dashboardLayout.ts`.
+  const layout = useDashboardLayout();
+  const [customising, setCustomising] = useState(false);
 
   const summary = useSummaryReport(periodParams);
   const categories = useCategoriesReport(periodParams);
@@ -120,6 +133,228 @@ export function AdminDashboardPage() {
     live.data?.scope.as_of,
   );
 
+  /*
+   * Each optional section as a node, looked up by the id `dashboardLayout.ts`
+   * knows it by.
+   *
+   * A map rather than JSX in a fixed order, because the order is the admin's
+   * now. The two headline tile rows and the two scope headings are *not* in
+   * here: they render unconditionally, above whatever this is arranged into,
+   * for the reason that file gives.
+   */
+  const periodSections: Record<string, ReactNode> = {
+    'flow': (
+      <Box sx={{ mt: 3 }}>
+        <QueryState
+          isPending={summary.isPending}
+          error={summary.error}
+          errorFallback="Could not load the daily flow."
+        >
+          <FlowChart perDay={summary.data?.per_day ?? []} isStale={summary.isFetching} />
+        </QueryState>
+      </Box>
+    ),
+    'breakdowns': (
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 2,
+          gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' },
+          mt: 2,
+          alignItems: 'start',
+        }}
+      >
+        <QueryState
+          isPending={summary.isPending}
+          error={summary.error}
+          errorFallback="Could not load the status breakdown."
+        >
+          <BreakdownChart
+            title="By status"
+            caption="Where this period's tickets stand now"
+            isStale={summary.isFetching}
+            emptyMessage="Nothing was reported in this period"
+            data={INCIDENT_STATUSES.filter((status) => statusCount(status) > 0).map((status) => ({
+              key: status,
+              label: statusLabel(status),
+              value: statusCount(status),
+              href: periodListLink(scope, { statuses: [status] }),
+            }))}
+          />
+        </QueryState>
+
+        <QueryState
+          isPending={summary.isPending}
+          error={summary.error}
+          errorFallback="Could not load the priority breakdown."
+        >
+          <BreakdownChart
+            title="By priority"
+            caption="What this period's tickets were made of"
+            shape="pie"
+            isStale={summary.isFetching}
+            emptyMessage="Nothing was reported in this period"
+            data={INCIDENT_PRIORITIES.map((priority) => ({
+              key: priority,
+              label: priorityLabel(priority),
+              value:
+                summary.data?.by_priority.find((row) => row.priority === priority)?.count ?? 0,
+              href: periodListLink(scope, { priorities: [priority] }),
+              // The priority chips' hues at slice steps, not the chips
+              // themselves — the chip orange and the chip red are ΔE 1.9 apart
+              // under deuteranopia and would be one slice. chartPalette.ts has
+              // the numbers and why the chips are right to be what they are.
+              color: PRIORITY_SLICES[priority],
+            })).filter((datum) => datum.value > 0)}
+          />
+        </QueryState>
+
+        <QueryState
+          isPending={categories.isPending}
+          error={categories.error}
+          errorFallback="Could not load the category breakdown."
+        >
+          <CategoryBreakdown
+            groups={categories.data?.groups ?? []}
+            drillGroupId={filters.drillGroupId}
+            onDrill={(groupId) => controls.setFilters({ drillGroupId: groupId })}
+            scope={scope}
+            isStale={categories.isFetching}
+          />
+        </QueryState>
+
+        <QueryState
+          isPending={locations.isPending}
+          error={locations.error}
+          errorFallback="Could not load the building breakdown."
+        >
+          <BreakdownChart
+            title="By building"
+            caption="Where this period's tickets came from"
+            shape="pie"
+            isStale={locations.isFetching}
+            emptyMessage="Nothing was reported in this period"
+            data={(locations.data?.buildings ?? []).map((building, index) => ({
+              key: building.building_id,
+              label: building.building_code,
+              value: building.count,
+              href: periodListLink(scope, { buildingId: building.building_id }),
+              // By position in a sorted list, which is the one case where that
+              // is honest: buildings have no inherent order and no identity a
+              // colour could follow, so the alternative is a hash of a UUID.
+              // Capped at three by the palette — see CATEGORICAL_SLICES.
+              color: CATEGORICAL_SLICES[index % CATEGORICAL_SLICES.length],
+            }))}
+          />
+        </QueryState>
+      </Box>
+    ),
+    'response-times': (
+      <Box sx={{ mt: 3 }}>
+        <Typography variant="h3" component="h3" gutterBottom>
+          How fast the team reacted
+        </Typography>
+        <QueryState
+          isPending={responseTimes.isPending}
+          error={responseTimes.error}
+          errorFallback="Could not load the response times."
+        >
+          <StatTileGrid>
+            {/*
+              "Median", not "average". BUILD-PLAN section 10 says average; the
+              endpoint computes percentile_cont(0.5) so that one ticket left
+              over a long weekend cannot move the headline, and the label has
+              to say which statistic it is showing.
+            */}
+            <StatTile
+              label="Median time to assign"
+              value={formatHours(responseTimes.data?.overall.median_assign_hours ?? null)}
+              caption={overCount(responseTimes.data?.overall.assigned_count, 'assigned')}
+              isStale={responseTimes.isFetching}
+            />
+            <StatTile
+              label="Median time to acknowledge"
+              value={formatHours(responseTimes.data?.overall.median_acknowledge_hours ?? null)}
+              caption={overCount(responseTimes.data?.overall.acknowledged_count, 'acknowledged')}
+              isStale={responseTimes.isFetching}
+            />
+            <StatTile
+              label="Median time to resolve"
+              value={formatHours(responseTimes.data?.overall.median_resolve_hours ?? null)}
+              caption={overCount(responseTimes.data?.overall.resolved_count, 'resolved')}
+              isStale={responseTimes.isFetching}
+            />
+          </StatTileGrid>
+        </QueryState>
+      </Box>
+    ),
+    /*
+     * The brief's seventh business question, which had a report and no screen
+     * until S1 gave it something to measure. It sits inside the period block
+     * because every number on it is about activity in the window — including
+     * the read rate, which counts notifications *sent* in the period rather
+     * than tickets raised in it (D29). That is why it is in this map and not
+     * the "right now" one: a reader can hide it, not move it across.
+     */
+    'communication': (
+      <QueryState
+        isPending={communication.isPending}
+        error={communication.error}
+        errorFallback="Could not load the communication figures."
+      >
+        <CommunicationPanel report={communication.data} isStale={communication.isFetching} />
+      </QueryState>
+    ),
+    'workload': (
+      <Box sx={{ mt: 3 }}>
+        <QueryState
+          isPending={workload.isPending}
+          error={workload.error}
+          errorFallback="Could not load the engineer workload."
+        >
+          <EngineerWorkloadTable
+            engineers={workload.data?.engineers ?? []}
+            periodFrom={reportWindow?.from}
+            periodTo={reportWindow?.to}
+            buildingId={filters.buildingId}
+            isStale={workload.isFetching}
+          />
+        </QueryState>
+      </Box>
+    ),
+  };
+
+  const currentSections: Record<string, ReactNode> = {
+    'needs-attention': (
+      <NeedsAttentionPanel
+        escalated={live.data?.escalated ?? []}
+        escalatedTotal={live.data?.escalated_total ?? 0}
+        unassigned={unassigned.data?.items ?? []}
+        isPending={unassigned.isPending}
+        error={unassigned.error}
+        asOf={live.data?.scope.as_of}
+        buildingId={filters.buildingId}
+      />
+    ),
+    'blocked-reasons': (
+      <BlockedByReasonPanel
+        groups={live.data?.blocked ?? []}
+        total={live.data?.blocked_total ?? 0}
+        buildingId={filters.buildingId}
+      />
+    ),
+  };
+
+  const currentCount = layout.sections.filter(
+    (section) => section.scope === 'current' && section.visible,
+  ).length;
+
+  /** The sections of one scope, in the admin's order, minus the hidden ones. */
+  const arranged = (scope: 'period' | 'current', nodes: Record<string, ReactNode>) =>
+    layout.sections
+      .filter((section) => section.scope === scope && section.visible)
+      .map((section) => <Fragment key={section.id}>{nodes[section.id]}</Fragment>);
+
   return (
     <Box>
       <PageHeader
@@ -127,7 +362,25 @@ export function AdminDashboardPage() {
         description="How the queue is doing, and what needs somebody today."
       />
 
-      <DashboardFilterBar controls={controls} />
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <DashboardFilterBar controls={controls} />
+        </Box>
+        <Button
+          size="small"
+          startIcon={<TuneIcon />}
+          onClick={() => setCustomising(true)}
+          sx={{ flexShrink: 0, mt: 1 }}
+        >
+          Customise
+        </Button>
+      </Box>
+
+      <DashboardLayoutDialog
+        open={customising}
+        onClose={() => setCustomising(false)}
+        controls={layout}
+      />
 
       {/* --- Period ---------------------------------------------------- */}
 
@@ -188,169 +441,7 @@ export function AdminDashboardPage() {
         </StatTileGrid>
       </QueryState>
 
-      <Box sx={{ mt: 3 }}>
-        <QueryState
-          isPending={summary.isPending}
-          error={summary.error}
-          errorFallback="Could not load the daily flow."
-        >
-          <FlowChart perDay={summary.data?.per_day ?? []} isStale={summary.isFetching} />
-        </QueryState>
-      </Box>
-
-      <Box
-        sx={{
-          display: 'grid',
-          gap: 2,
-          gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' },
-          mt: 2,
-          alignItems: 'start',
-        }}
-      >
-        <QueryState
-          isPending={summary.isPending}
-          error={summary.error}
-          errorFallback="Could not load the status breakdown."
-        >
-          <BreakdownChart
-            title="By status"
-            caption="Where this period's tickets stand now"
-            isStale={summary.isFetching}
-            emptyMessage="Nothing was reported in this period"
-            data={INCIDENT_STATUSES.filter((status) => statusCount(status) > 0).map((status) => ({
-              key: status,
-              label: statusLabel(status),
-              value: statusCount(status),
-              href: periodListLink(scope, { statuses: [status] }),
-            }))}
-          />
-        </QueryState>
-
-        <QueryState
-          isPending={summary.isPending}
-          error={summary.error}
-          errorFallback="Could not load the priority breakdown."
-        >
-          <BreakdownChart
-            title="By priority"
-            caption="Most urgent first; darker is more urgent"
-            isStale={summary.isFetching}
-            emptyMessage="Nothing was reported in this period"
-            data={INCIDENT_PRIORITIES.map((priority) => ({
-              key: priority,
-              label: priorityLabel(priority),
-              value:
-                summary.data?.by_priority.find((row) => row.priority === priority)?.count ?? 0,
-              href: periodListLink(scope, { priorities: [priority] }),
-              // A genuinely ordered scale, so a single-hue ramp is information
-              // rather than decoration. See chartPalette.ts.
-              color: PRIORITY_RAMP[priority],
-            })).filter((datum) => datum.value > 0)}
-          />
-        </QueryState>
-
-        <QueryState
-          isPending={categories.isPending}
-          error={categories.error}
-          errorFallback="Could not load the category breakdown."
-        >
-          <CategoryBreakdown
-            groups={categories.data?.groups ?? []}
-            drillGroupId={filters.drillGroupId}
-            onDrill={(groupId) => controls.setFilters({ drillGroupId: groupId })}
-            scope={scope}
-            isStale={categories.isFetching}
-          />
-        </QueryState>
-
-        <QueryState
-          isPending={locations.isPending}
-          error={locations.error}
-          errorFallback="Could not load the building breakdown."
-        >
-          <BreakdownChart
-            title="By building"
-            caption="Where this period's tickets were reported"
-            isStale={locations.isFetching}
-            emptyMessage="Nothing was reported in this period"
-            data={(locations.data?.buildings ?? []).map((building) => ({
-              key: building.building_id,
-              label: building.building_code,
-              value: building.count,
-              href: periodListLink(scope, { buildingId: building.building_id }),
-            }))}
-          />
-        </QueryState>
-      </Box>
-
-      <Box sx={{ mt: 3 }}>
-        <Typography variant="h3" component="h3" gutterBottom>
-          How fast the team reacted
-        </Typography>
-        <QueryState
-          isPending={responseTimes.isPending}
-          error={responseTimes.error}
-          errorFallback="Could not load the response times."
-        >
-          <StatTileGrid>
-            {/*
-              "Median", not "average". BUILD-PLAN section 10 says average; the
-              endpoint computes percentile_cont(0.5) so that one ticket left
-              over a long weekend cannot move the headline, and the label has
-              to say which statistic it is showing.
-            */}
-            <StatTile
-              label="Median time to assign"
-              value={formatHours(responseTimes.data?.overall.median_assign_hours ?? null)}
-              caption={overCount(responseTimes.data?.overall.assigned_count, 'assigned')}
-              isStale={responseTimes.isFetching}
-            />
-            <StatTile
-              label="Median time to acknowledge"
-              value={formatHours(responseTimes.data?.overall.median_acknowledge_hours ?? null)}
-              caption={overCount(responseTimes.data?.overall.acknowledged_count, 'acknowledged')}
-              isStale={responseTimes.isFetching}
-            />
-            <StatTile
-              label="Median time to resolve"
-              value={formatHours(responseTimes.data?.overall.median_resolve_hours ?? null)}
-              caption={overCount(responseTimes.data?.overall.resolved_count, 'resolved')}
-              isStale={responseTimes.isFetching}
-            />
-          </StatTileGrid>
-        </QueryState>
-      </Box>
-
-      {/*
-        The brief's seventh business question, which had a report and no
-        screen until S1 gave it something to measure. It sits inside the
-        period block because every number on it is about activity in the
-        window — including the read rate, which counts notifications *sent*
-        in the period rather than tickets raised in it (D29).
-      */}
-      <QueryState
-        isPending={communication.isPending}
-        error={communication.error}
-        errorFallback="Could not load the communication figures."
-      >
-        <CommunicationPanel report={communication.data} isStale={communication.isFetching} />
-      </QueryState>
-
-      <Box sx={{ mt: 3 }}>
-        <QueryState
-          isPending={workload.isPending}
-          error={workload.error}
-          errorFallback="Could not load the engineer workload."
-        >
-          <EngineerWorkloadTable
-            engineers={workload.data?.engineers ?? []}
-            periodFrom={reportWindow?.from}
-            periodTo={reportWindow?.to}
-            buildingId={filters.buildingId}
-            isStale={workload.isFetching}
-          />
-        </QueryState>
-      </Box>
+      {arranged('period', periodSections)}
 
       {/* --- Right now --------------------------------------------------- */}
 
@@ -404,25 +495,18 @@ export function AdminDashboardPage() {
           sx={{
             display: 'grid',
             gap: 2,
-            gridTemplateColumns: { xs: '1fr', lg: '2fr 1fr' },
+            // Two columns while both panels are shown, one when the admin has
+            // turned one off — a lone panel in a 2fr column with empty space
+            // beside it looks like something failed to load.
+            gridTemplateColumns: {
+              xs: '1fr',
+              lg: currentCount === 2 ? '2fr 1fr' : '1fr',
+            },
             mt: 2,
             alignItems: 'start',
           }}
         >
-          <NeedsAttentionPanel
-            escalated={live.data?.escalated ?? []}
-            escalatedTotal={live.data?.escalated_total ?? 0}
-            unassigned={unassigned.data?.items ?? []}
-            isPending={unassigned.isPending}
-            error={unassigned.error}
-            asOf={live.data?.scope.as_of}
-            buildingId={filters.buildingId}
-          />
-          <BlockedByReasonPanel
-            groups={live.data?.blocked ?? []}
-            total={live.data?.blocked_total ?? 0}
-            buildingId={filters.buildingId}
-          />
+          {arranged('current', currentSections)}
         </Box>
       </QueryState>
     </Box>

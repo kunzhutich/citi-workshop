@@ -13,6 +13,7 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 import function
+from app.seed.categories import CATEGORY_GROUPS
 from app.migrations import build_alembic_config
 from app.models.category import Category
 from app.models.enums import UserRole
@@ -42,13 +43,9 @@ def test_migrate_reports_schema_and_reference_data(_migrated_database: Engine) -
     assert response["action"] == "migrate"
     result = response["result"]
     assert result["schema"] == "upgraded to head"
-    assert result["categories"]["groups"] == [
-        "Hardware",
-        "Software",
-        "Network & Access",
-        "Meeting Rooms",
-        "Building & Facilities",
-    ]
+    # Derived from the seed, not listed again: §6.2 added three groups and a
+    # literal list here was one of four tests that had to be edited to agree.
+    assert result["categories"]["groups"] == [group.name for group in CATEGORY_GROUPS]
 
 
 def test_migrate_leaves_the_database_usable(_migrated_database: Engine) -> None:
@@ -59,7 +56,10 @@ def test_migrate_leaves_the_database_usable(_migrated_database: Engine) -> None:
         groups = connection.scalar(text("SELECT count(*) FROM categories WHERE parent_id IS NULL"))
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
 
-    assert groups == 5
+    # Counted against the seed rather than a literal, so adding a category
+    # group is one edit instead of two. Getting that wrong is what §6.2's three
+    # new groups did to four tests at once.
+    assert groups == len(CATEGORY_GROUPS)
     # Compared against the script directory's head rather than a literal, so
     # adding a revision does not mean editing this test to agree with it.
     assert revision == head_revision()

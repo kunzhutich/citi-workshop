@@ -65,6 +65,16 @@ export function useResponseTimesReport(params: ReportPeriodParams, enabled = tru
 }
 
 /** Every engineer's live load, and what they resolved during the period. */
+/** One engineer's output over the period, for their profile page. */
+export function useEngineerDetailReport(userId: string, params: ReportPeriodParams) {
+  return useQuery({
+    queryKey: queryKeys.reports.engineerDetail(userId, params),
+    queryFn: () => reportsApi.fetchEngineerDetail(userId, params),
+    placeholderData: keepPrevious,
+    enabled: userId !== '',
+  });
+}
+
 export function useEngineerWorkloadReport(params: ReportPeriodParams, enabled = true) {
   return useQuery({
     queryKey: queryKeys.reports.engineerWorkload(params),
