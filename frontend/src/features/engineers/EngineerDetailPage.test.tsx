@@ -98,6 +98,19 @@ const LIVE_TICKET = makeIncidentListItem({
   title: 'Lift stuck between floors two and three',
 });
 
+/**
+ * A second one they are holding.
+ *
+ * The live queue is two columns now, and a box with one thing in it is not an
+ * arrangement — with a single ticket, "these are laid out in columns" would
+ * have nothing to be true of and the assertion below would be about a box
+ * found by walking up from the only element there is.
+ */
+const SECOND_LIVE_TICKET = makeIncidentListItem({
+  id: 'live-2',
+  title: 'Meeting room projector will not wake',
+});
+
 /** A ticket from the table at the bottom, which lists finished work too. */
 const HISTORIC_TICKET = makeIncidentListItem({
   id: 'old-1',
@@ -127,7 +140,7 @@ beforeEach(() => {
     Promise.resolve(
       query.closed_last
         ? page<IncidentListItem>([HISTORIC_TICKET])
-        : page<IncidentListItem>([LIVE_TICKET], 17),
+        : page<IncidentListItem>([LIVE_TICKET, SECOND_LIVE_TICKET], 17),
     ),
   );
 });
@@ -229,11 +242,128 @@ describe('the page’s headings', () => {
     expect(topLevel[0]).toHaveTextContent('Priya Raman');
   });
 
+  it('heads the two sections with one size of heading, neither of them in a card', async () => {
+    await renderLoaded();
+
+    const details = screen.getByRole('heading', { level: 2, name: 'Details' });
+    const queue = screen.getByRole('heading', { level: 2, name: 'On their plate now' });
+
+    // Outside the card, not merely present: inside a `CardContent` it starts
+    // 16px below the top of its column, which is what had the left of the
+    // screen beginning lower than the right. The card is asserted to still be
+    // there, and to follow the heading — deleting it would satisfy the line
+    // above on its own.
+    expect(details.closest('.MuiCard-root')).toBeNull();
+    const card = screen.getByRole('textbox', { name: 'Full name' }).closest('.MuiCard-root');
+    expect(card).not.toBeNull();
+    expect(details.compareDocumentPosition(card as Element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    // The same size as each other. Read off the two elements rather than
+    // compared to a number, because the claim is that they match and not what
+    // they match at — but an empty string also equals an empty string, so the
+    // value has to be a size before the comparison means anything.
+    const size = getComputedStyle(details).fontSize;
+    expect(size).toMatch(/^[\d.]+(rem|px|em)$/);
+    expect(size).toBe(getComputedStyle(queue).fontSize);
+  });
+
   it('shows the level beside the name rather than at the far end of the row', async () => {
     await renderLoaded();
 
     const title = screen.getByRole('heading', { name: 'Priya Raman' });
     expect(title.parentElement).toHaveTextContent('Lead');
+  });
+});
+
+/**
+ * The arrangement above the divider.
+ *
+ * jsdom resolves declarations and runs no layout engine, so nothing here can
+ * measure that the details block is 30% of a line — and a test that claimed to
+ * would be asserting the thing next to the thing it means, which is what D24,
+ * D25, D35 and D40 are each an entry about. What is readable is the rule that
+ * decides it, and on this screen the rule is the whole point: every number in
+ * it is a flex basis or a grid floor, so the *container* chooses when the
+ * sections stack and when the tickets stop being two columns. A breakpoint put
+ * back here would pass every other test in the suite and scroll a phone
+ * sideways, which is D44 exactly.
+ */
+describe('the two sections above the divider', () => {
+  /** The section boxes: the one the details heading is in, and the live one. */
+  function sections(): { details: HTMLElement; live: HTMLElement } {
+    const details = screen.getByRole('heading', { name: 'Details' }).parentElement;
+    const live = screen.getByTestId('scope-label-current').parentElement;
+    expect(details).not.toBeNull();
+    expect(live).not.toBeNull();
+    return { details: details as HTMLElement, live: live as HTMLElement };
+  }
+
+  /** `flex: 3 1 204px` read back as the two numbers that matter. */
+  function flexOf(node: HTMLElement): { grow: number; basis: number } {
+    const parts = getComputedStyle(node).flex.split(/\s+/);
+    expect(parts, `no flex declaration on ${node.className}`).toHaveLength(3);
+    return { grow: Number(parts[0]), basis: Number.parseFloat(parts[2]) };
+  }
+
+  it('gives the queue seven tenths and the form three, at every width and not one', async () => {
+    await renderLoaded();
+
+    const details = flexOf(sections().details);
+    const live = flexOf(sections().live);
+
+    // Grow factors of 3 and 7 are what make the split uneven. Bases in the
+    // *same* ratio are what hold it there: an even pair of bases with uneven
+    // growth drifts back towards even as the container widens, because only
+    // the remainder is shared out. So the claim is the ratio of one pair
+    // against the ratio of the other, rather than four numbers.
+    expect(details.grow / live.grow).toBeCloseTo(3 / 7);
+    expect(details.basis / live.basis).toBeCloseTo(details.grow / live.grow);
+
+    // And their sum is unchanged from the 680px the even halves added up to,
+    // which is the width the two of them stop sharing a line at. R7 chose it
+    // against the container's width rather than the window's; rebalancing the
+    // split was not supposed to move it.
+    expect(details.basis + live.basis).toBe(680);
+  });
+
+  it('lays the live tickets out in columns the box decides on', async () => {
+    await renderLoaded();
+
+    // The box the two tickets share, found by walking up from one of them —
+    // a test id would only assert that somebody put the id where the test
+    // looks for it.
+    const second = screen.getByText(SECOND_LIVE_TICKET.title);
+    let list: HTMLElement | null = screen.getByText(LIVE_TICKET.title);
+    while (list && !list.contains(second)) {
+      list = list.parentElement;
+    }
+    expect(list, 'the two live tickets share no ancestor').not.toBeNull();
+    expect(sections().live).toContainElement(list);
+
+    const columns = getComputedStyle(list as HTMLElement).gridTemplateColumns;
+    expect(columns).toContain('auto-fit');
+    // `min(100%, …)` is the half of the idiom that is easiest to drop and the
+    // one the phone depends on: without it a container narrower than one
+    // column is still overflowed by one column.
+    expect(columns).toContain('min(100%');
+  });
+
+  it('lengthens the capacity bar from here, leaving the shared one as it was', async () => {
+    await renderLoaded();
+
+    // `CapacityBar` is in the roster's table and the dashboard's workload
+    // table as well, a bar to a row, and 320px of it there would push the
+    // columns beside it off the screen. So this screen wraps it rather than
+    // widening it, and both halves of that are asserted: the wrapper asks for
+    // the length, and the component still asks for what the tables need.
+    const bar = screen.getByLabelText('17 of 15 tickets');
+    const own = bar.parentElement as HTMLElement;
+    const wrapper = own.parentElement as HTMLElement;
+
+    expect(getComputedStyle(own).minWidth).toBe('120px');
+    expect(flexOf(wrapper).basis).toBe(320);
   });
 });
 

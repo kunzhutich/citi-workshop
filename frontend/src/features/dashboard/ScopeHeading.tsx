@@ -44,6 +44,16 @@ import { formatDate, formatDateTime } from '../../display/time';
 export type ScopeKind = 'period' | 'current';
 
 /**
+ * How much of a title row a section's own controls may ask for.
+ *
+ * The only thing ever passed as `actions` is `DashboardFilterBar`, and this is
+ * what its two selects want side by side: 200px each and the 16px between
+ * them. It is written here rather than there because a box cannot ask its
+ * parent for room — the parent is the only one who can offer it.
+ */
+const ACTIONS_WIDTH = 416;
+
+/**
  * The icon and the words for each tense, written down once.
  *
  * Two screens now say "Right now" and mean the same thing by it — the
@@ -108,6 +118,10 @@ export interface ScopeHeadingProps {
    * and a filter bar at the top would then be claiming the half above it too.
    * Empty on the admin dashboard, where the bar is the page's and belongs
    * above both sections.
+   *
+   * Whatever is passed gets {@link ACTIONS_WIDTH} to arrange itself in, or the
+   * whole line where that is narrower — a slot, rather than however much room
+   * its own contents happened to demand.
    */
   actions?: ReactNode;
 }
@@ -236,12 +250,24 @@ function SectionHeading({
           </Box>
           {detail}
         </Box>
-        {/* `minWidth: 0` and no `flexShrink: 0`. The engineer page's two
-            selects are 424px of content side by side, and a box that refused
-            to shrink would carry all of it onto a 327px phone line and scroll
-            the whole document sideways — D44's fault exactly. Shrinking lets
-            the bar's own `flexWrap` stack the selects instead. */}
-        {actions ? <Box sx={{ minWidth: 0 }}>{actions}</Box> : null}
+        {/* `min(100%, ACTIONS_WIDTH)` where this used to be `minWidth: 0`, and
+            the two halves of that expression answer two different faults.
+
+            The `0` was there to let the box shrink, which is what stops 424px
+            of selects being carried onto a 327px phone line and scrolling the
+            whole document sideways — D44's fault exactly. `min(100%, …)` keeps
+            that, and keeps it the same way `FilterRow` does: on a phone the
+            percentage is the smaller half, so this box is never wider than the
+            line it sits on, whatever is inside it.
+
+            What the `0` also did was leave the box sized to exactly its own
+            contents, and a filter bar asked to arrange itself inside its
+            max-content width has nothing to arrange — the engineer page's two
+            selects came down one per line with several hundred pixels of
+            nothing beside them. A slot worth dividing is the other half. */}
+        {actions ? (
+          <Box sx={{ minWidth: `min(100%, ${ACTIONS_WIDTH}px)` }}>{actions}</Box>
+        ) : null}
       </Box>
     </Box>
   );

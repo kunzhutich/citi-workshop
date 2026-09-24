@@ -23,19 +23,63 @@ import { CapacityBar } from './CapacityBar';
 import { EngineerBasics } from './EngineerBasics';
 import { useEngineer } from './hooks';
 
-/** How many of their current tickets the right-hand column lists. */
+/** How many of their current tickets the live section lists. */
 const CURRENT_LIMIT = 8;
 
 /**
- * Narrowest a half may be before the two of them stop sharing a line.
+ * The two sections above the divider: what each wants, and what each gets.
  *
- * A flex basis rather than a breakpoint, deliberately. D44 is the entry about
- * a layout switched on the *window's* width while the box holding it was 248px
- * of drawer and 48px of padding narrower — this asks the box instead, so the
- * columns split when there is room for them and stack when there is not,
+ * Flex bases rather than a breakpoint, deliberately. D44 is the entry about a
+ * layout switched on the *window's* width while the box holding it was 248px
+ * of drawer and 48px of padding narrower — these ask the box instead, so the
+ * sections split when there is room for them and stack when there is not,
  * whatever the window is doing around them.
+ *
+ * **They are 3:7 and not 1:1**, because the two sides are not the same job.
+ * The left is seven fields and a Save button, and a form does not read better
+ * for being wider; the right is a queue of tickets, which does. The grow
+ * factors are 3 and 7 to match, and the bases are in that ratio too — which is
+ * what holds the split at *every* width rather than at one. Even bases with
+ * uneven growth drift back towards even as the container widens, because the
+ * even part is fixed and only the remainder is shared.
+ *
+ * Their sum is what decides when the split stops being a split, and it is the
+ * 680px the even halves added up to, so the width at which the two stack has
+ * not moved. Below it each one is alone on its line and takes all of it.
  */
-const HALF_BASIS = 340;
+const DETAILS_BASIS = 204;
+const CURRENT_BASIS = 476;
+
+/**
+ * How long the capacity bar is on this screen.
+ *
+ * `CapacityBar` asks for 120px and is right to: the roster draws one in every
+ * row of a table, the dashboard's workload table does the same, and the assign
+ * dialog puts one beside every candidate — a bar that claimed 320px in any of
+ * those would push what is next to it off the screen. So the room comes from
+ * this caller, a wrapper this box's width which the bar then fills, rather
+ * than from a prop. A prop would be a second place to decide one thing, and
+ * with all three of the other callers wanting the default it would exist to be
+ * passed exactly once.
+ *
+ * A definite width rather than `1 1 auto`: a bar is read as a proportion, and
+ * past a point more length does not make "17 / 15" any clearer — it only
+ * leaves the availability word stranded at the far end of a 700px line.
+ */
+const CAPACITY_BAR_WIDTH = 320;
+
+/**
+ * Narrowest a column of live tickets may be before there is only one of them.
+ *
+ * The live section is 70% of the line and holds two columns, so each is about
+ * 35% of the page — but "two columns" has to be something the box decides
+ * rather than a number written down, or a phone gets two 160px cards. This is
+ * `auto-fit` with a floor, which is the answer `FilterRow` gives to the same
+ * question for the same reason (D44): two columns while two of these and the
+ * gap fit, one when they do not. On a 375px screen the sections have already
+ * stacked, so this box is the full 343px of it, and one column is what fits.
+ */
+const TICKET_COLUMN = 260;
 
 /**
  * One engineer's page — §6.1 of the redesign brief, rearranged in R7.
@@ -62,6 +106,16 @@ const HALF_BASIS = 340;
  * period" over the tiles and the chart — and the date controls sit inside the
  * period heading rather than above the whole page, so they cannot look like
  * they reach the half above them.
+ *
+ * **The top of the page is 30/70 rather than in halves**, which is the shape
+ * of the two questions rather than a preference. The left is a form — seven
+ * fields that do not read better for being wider — and the right is a queue,
+ * which does: at 70% it holds two columns of tickets instead of one, so eight
+ * of them are four rows rather than eight and the divider below is reachable
+ * without scrolling past them. Every number in that arrangement is a flex
+ * basis or a grid floor, so the container decides when it stops being an
+ * arrangement: on a phone the two sections stack and the two ticket columns
+ * become one, and nothing had to know how wide the window was (D44).
  *
  * **The ticket table at the bottom is `IncidentsPage` with a preset**, the
  * same component the four list screens are. It brings its own filter bar,
@@ -137,11 +191,29 @@ export function EngineerDetailPage() {
             {/* --- Their settings, and what they are holding ---------------- */}
 
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'flex-start' }}>
-              <Box sx={{ flex: `1 1 ${HALF_BASIS}px`, minWidth: 0 }}>
+              <Box sx={{ flex: `3 1 ${DETAILS_BASIS}px`, minWidth: 0 }}>
+                {/*
+                  The heading the card used to draw inside itself, lifted out
+                  of it — and written here rather than left there, because its
+                  size is a fact about the *pair*: it has to match "On their
+                  plate now" opposite, and a pair that must match is easier to
+                  keep matching when both ends are in one file.
+
+                  Out of the card is what puts the two sections on one line. A
+                  heading inside a `CardContent` starts 16px of padding below
+                  the top of its column, so the left side began lower than the
+                  right for no reason a reader could see. The margins are the
+                  ones `ScopeLabel` carries opposite, so what follows each
+                  heading — the card here, the capacity bar there — starts at
+                  the same height as well.
+                */}
+                <Typography variant="h3" component="h2" sx={{ mt: 0.5, mb: 1 }}>
+                  Details
+                </Typography>
                 <EngineerBasics engineer={engineer.data} />
               </Box>
 
-              <Box sx={{ flex: `1 1 ${HALF_BASIS}px`, minWidth: 0 }}>
+              <Box sx={{ flex: `7 1 ${CURRENT_BASIS}px`, minWidth: 0 }}>
                 <ScopeLabel kind="current" />
 
                 <Box
@@ -153,10 +225,15 @@ export function EngineerDetailPage() {
                     mb: 3,
                   }}
                 >
-                  <CapacityBar
-                    active={engineer.data.active_ticket_count}
-                    max={engineer.data.max_active_tickets}
-                  />
+                  {/* The bar fills this box, so this box is how long the bar
+                      is. See `CAPACITY_BAR_WIDTH` for why the length is asked
+                      for here and not inside the component. */}
+                  <Box sx={{ flex: `0 1 ${CAPACITY_BAR_WIDTH}px`, minWidth: 0 }}>
+                    <CapacityBar
+                      active={engineer.data.active_ticket_count}
+                      max={engineer.data.max_active_tickets}
+                    />
+                  </Box>
                   <Typography variant="body2" color="text.secondary">
                     {availabilityLabel(engineer.data.availability)}
                   </Typography>
@@ -181,7 +258,13 @@ export function EngineerDetailPage() {
                   {(current.data?.items.length ?? 0) === 0 ? (
                     <Alert severity="info">Nothing is assigned to them right now.</Alert>
                   ) : (
-                    <Box sx={{ display: 'grid', gap: 1.5 }}>
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${TICKET_COLUMN}px), 1fr))`,
+                        gap: 1.5,
+                      }}
+                    >
                       {(current.data?.items ?? []).map((incident) => (
                         <HomeTicketRow key={incident.id} incident={incident} />
                       ))}
@@ -191,8 +274,16 @@ export function EngineerDetailPage() {
                          * `/tickets?assignee_id=…`. That link now sends a
                          * reader off the page to reach a table that is four
                          * hundred pixels below them.
+                         *
+                         * `1 / -1` because it is about the whole list rather
+                         * than about the column it would otherwise land in,
+                         * beside the last ticket and reading as a note on it.
                          */
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ gridColumn: '1 / -1' }}
+                        >
                           The {CURRENT_LIMIT} most urgent of {currentTotal}. Every ticket they
                           have ever had, finished work included, is in the table below.
                         </Typography>
@@ -221,8 +312,13 @@ export function EngineerDetailPage() {
                * widgets the dates reach; here the two scope labels say it
                * structurally, above the things they are about, and a third
                * statement of it would be the line nobody reads.
+               *
+               * `narrow` because this is the bar in a slot rather than across
+               * a page: the two selects divide the room the heading gives them
+               * instead of asking for 200px each, and a custom range opens on
+               * a row underneath instead of between them.
                */
-              actions={<DashboardFilterBar controls={controls} note={false} />}
+              actions={<DashboardFilterBar controls={controls} note={false} narrow />}
             />
 
             <QueryState

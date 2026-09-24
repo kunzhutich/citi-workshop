@@ -6,7 +6,6 @@ import Checkbox from '@mui/material/Checkbox';
 import ListItemText from '@mui/material/ListItemText';
 import MenuItem from '@mui/material/MenuItem';
 import TextField from '@mui/material/TextField';
-import Typography from '@mui/material/Typography';
 import { useState } from 'react';
 
 import type { AvailabilityStatus, Engineer, EngineerLevel } from '../../api/types';
@@ -35,6 +34,13 @@ const AVAILABILITY: AvailabilityStatus[] = ['AVAILABLE', 'BUSY', 'ON_LEAVE'];
  * the kind of thing to be sure about before it takes effect. The button stays
  * disabled until something actually differs, so it is also the record of
  * whether there is anything to save.
+ *
+ * **It draws no heading of its own.** "Details" sits above the card, on
+ * `EngineerDetailPage`, for two reasons: a heading inside a `CardContent`
+ * starts 16px below the top of its column, which left this side of the screen
+ * beginning lower than the other side for no visible reason; and it has to be
+ * the same size as the heading over the section opposite, which is a fact
+ * about the pair rather than about either of them.
  */
 export interface EngineerBasicsProps {
   engineer: Engineer;
@@ -82,10 +88,6 @@ export function EngineerBasics({ engineer }: EngineerBasicsProps) {
   return (
     <Card>
       <CardContent>
-        <Typography variant="h3" component="h2" gutterBottom>
-          Details
-        </Typography>
-
         <FilterRow minColumn={220} sx={{ alignItems: 'start' }}>
           <TextField
             label="Full name"
