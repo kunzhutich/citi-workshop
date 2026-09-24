@@ -36,8 +36,12 @@
  * party and resolves nothing beyond its own origin.
  *
  * The four weights are the four the theme asks for: 400 body, 500
- * `subtitle2`, 600 headings and buttons, 700 the `overline` on the signed-out
- * screens. Adding a fifth to the theme means adding it here too, or the
+ * `subtitle2`, 600 headings and buttons, 700 `typography.fontWeightBold` —
+ * which is what every `<strong>` in the application resolves to, and what
+ * `theme.test.ts` pins. (Until R7 this last line named the `overline` on the
+ * signed-out screens, the one explicit 700 in `src/`; the logo replaced it,
+ * and the weight is still asked for by the theme.) Adding a fifth means
+ * adding it here too, or the
  * browser will synthesise it by smearing the nearest one — `theme.test.ts`
  * guards that. Note that `@fontsource/roboto` ships a 600 where upstream
  * Roboto historically did not.

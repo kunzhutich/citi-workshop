@@ -13,10 +13,10 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import Toolbar from '@mui/material/Toolbar';
-import Typography from '@mui/material/Typography';
 import { useState } from 'react';
 import { Link as RouterLink, Outlet, useLocation } from 'react-router-dom';
 
+import acmeLogoLight from '../assets/acme-logo-light.png';
 import { useAuth } from '../auth/AuthContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { SkipLink } from '../components/SkipLink';
@@ -140,14 +140,37 @@ export function AppShell() {
         })}
       >
         <Toolbar>
-          <Typography
-            variant="h6"
+          {/*
+            The mark rather than the words, and the light one because the bar
+            is `primary.main`.
+
+            **`alt` names the company, and that is not a style choice.** An
+            image is the whole of this link, so the `alt` *is* the link's
+            accessible name: `alt=""` would leave a link a screen reader
+            announces as "link" with nothing after it, and "ACME logo" would
+            describe the artwork instead of saying where the link goes. Home
+            is found by this exact name in `AppShell.test.tsx` and in two e2e
+            specs, which is as good a sign as any that it reads correctly.
+
+            Height is a responsive `sx` value rather than `isMobile`, unlike
+            every other width decision in this file: those choose which
+            components exist, while this is one element whose size changes,
+            which is CSS's own job and needs no measurement in JavaScript.
+            40px sits inside the 64px desktop toolbar, 28px inside the phone's
+            56px one; the width follows from the mark's own 2.6:1 ratio.
+          */}
+          <Box
             component={RouterLink}
             to={paths.home}
-            sx={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}
+            sx={{ display: 'flex', alignItems: 'center' }}
           >
-            ACME Facilities
-          </Typography>
+            <Box
+              component="img"
+              src={acmeLogoLight}
+              alt="ACME Facilities"
+              sx={{ display: 'block', height: { xs: 28, md: 40 }, width: 'auto' }}
+            />
+          </Box>
 
           <Box sx={{ flexGrow: 1 }} />
 

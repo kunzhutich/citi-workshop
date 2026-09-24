@@ -3337,3 +3337,81 @@ server still holds a pool against.
 
 It is local only. Aurora is `publicly_accessible = false` and unreachable from
 here, which is the intended blast radius.
+
+## D65 — Section F: the mark replaces the word, and the PNG is not the file we were given
+
+**The owner** attached two versions of the ACME mark — black lettering on
+white, white lettering on brown — for the navbar and the login page, "each
+using whichever version has contrast against its background", with one
+constraint: **crop freely, but do not crop out the red peak.**
+
+### The crop, and why the supplied files could not be used as they are
+
+Both files are 1254×1254 with the mark floating in the middle. Trimmed to
+content they are 731×281 and 734×283 — the same mark, 2.6:1, the peak sitting
+above the wordmark. Nothing needed to come off to fit a toolbar, so the peak
+was never in danger: at 2.6:1 a 40px-tall mark is about 104px wide, which is
+less room than the words "ACME Facilities" took.
+
+What did need doing is the background. The navbar is `primary.main` `#73362a`
+and the page behind the login card is `background.default` `#f0eada`; both
+supplied files carry an opaque rectangle of their own. The brown one's
+background samples at `srgb(115,56,44)` against the theme's `(115,54,42)` —
+two levels per channel, invisible — so **recolouring its rectangle to the
+theme's exact brown** was a real option and the simplest one. Rejected: it
+makes the asset depend on a palette token by coincidence rather than by
+reference, and the day somebody adjusts the brown the logo grows a visible
+box. The failure is silent and nobody would look for it in an image.
+
+**Chosen: transparency, extracted differently for each file**, because the two
+are different problems.
+
+- **Dark mark** (content on white): alpha is the distance of the *darkest*
+  channel from white, stretched so the red peak reaches full opacity rather
+  than the 89% its own green channel would imply. Anti-aliasing survives, and
+  the mark composites correctly on any light surface.
+- **Light mark** (content on brown): the same arithmetic does not work, because
+  white lettering and a red peak sit at very different distances from the
+  background and one normalisation cannot serve both — the peak came out at
+  57% opacity. So the flat background is keyed out and **the anti-aliased
+  fringe keeps its brown**. On the surface this version is used on that fringe
+  is invisible; anywhere else it would show as a faint halo, which is a real
+  limitation and the reason the two files are not interchangeable.
+
+Both were then quantised to 64 colours: 101 kB → 14 kB and 52 kB → 10 kB, with
+no visible difference at any size either is drawn at. They are 720px wide,
+which is 2× the largest surface (the login mark at ~104px, so 2× covers a
+retina screen with room over).
+
+### The accessible name is the decision, not a detail
+
+In the app bar the image is the *whole* of a link to home. Its `alt` therefore
+**is** the link's accessible name: `alt=""` leaves a screen reader announcing
+"link" followed by nothing, and "ACME logo" describes the artwork rather than
+the destination. It stays `ACME Facilities`, which is what it always was —
+`AppShell.test.tsx` and two end-to-end specs find home by that exact name, and
+the fact that they still pass unchanged is the evidence the name still
+resolves.
+
+On the signed-out screens the mark replaces an `overline` reading the same
+words rather than joining it, so the company is named once. It is content
+there and not decoration: nothing else on those screens says whose application
+this is, and the heading beneath it says "Sign in".
+
+### What moved that nobody asked to move
+
+`fonts.ts` named weight 700 as "the `overline` on the signed-out screens".
+That `sx={{ fontWeight: 700 }}` was the only explicit 700 in `src/`, and the
+mark removed it. The weight is still asked for — it is
+`typography.fontWeightBold`, which every `<strong>` resolves to and which
+`theme.test.ts` pins — so the import stays and the sentence was corrected.
+Left alone it would have been a comment that is wrong in a file whose entire
+purpose is explaining which weights exist and why.
+
+### What to look at rather than take on trust
+
+The lettering is a hairline, and on the brown bar at 28–40px it reads as a
+light warm grey rather than white. That is the asset, not the rendering, and a
+logotype is exempt from the contrast rules that govern text — but it is dimmer
+than the bell and the menu button beside it, and if the owner wants it louder
+the answer is a different source file, not a CSS filter.
