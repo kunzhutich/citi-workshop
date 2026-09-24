@@ -3155,3 +3155,182 @@ reads as something that failed to load, and on a filtered list most sections
 are empty most of the time. An engineer whose level has not arrived yet (the
 roster is a second request) is grouped as JUNIOR rather than vanishing: briefly
 in the wrong section is recoverable, in no section at all is a missing account.
+
+## D59 — Section 6: an engineer is a page, and the demo world grew to fill it
+
+Two items built (6.1, 6.2), two deliberately not (6.3, 6.4), and one change
+nobody asked for that turned out to be the condition for 6.1 being worth
+opening at all.
+
+### 6.1 — the modal becomes a page, because the question changed
+
+An engineer was an **Edit engineer** dialog: level, specialties, availability,
+capacity, a save button. Everything in it is a *setting*, and a dialog is the
+right shape for settings.
+
+The question people actually arrive with is not what an engineer's settings
+are. A lead opening somebody's record is deciding whether to hand them the next
+ticket. An admin is asking how they are doing. That needs a period, an output
+figure, a breakdown and a live queue — four things that do not fit in a modal,
+and one of which (the period) a modal cannot even hold honestly, because a
+date range floating above a settings form reads as filtering the settings.
+
+So `/engineers/:userId` is a page, and the old dialog's contents live on it as
+`EngineerBasics` — the same fields, the same mutation, now a section rather
+than the whole thing. `EngineerDialog` stays for **creation**, which genuinely
+is a form: you fill it in, you get a temporary password, you are done.
+
+**The route is keyed on the user id, not a profile id.** `engineer_profiles` is
+keyed that way too — the profile is an extension of a user and has no identity
+of its own — so a URL built from the profile's own key would be a second name
+for the same person.
+
+### The reopen figure, and why it says less than it could
+
+The brief asks for "how many of their closed tickets were later reopened by the
+reporter" and notes the data is there. It is, but not in the shape the sentence
+implies.
+
+`reopen_count` is a column on `incidents`. It counts every reopen that ticket
+has ever had — by anyone, at any time, against any assignee. A ticket that
+Priya resolved in March, that was reopened, that Omar then resolved in May,
+carries a reopen that belongs to neither of them individually.
+
+The number that the brief describes — *reopened because this engineer's fix did
+not hold* — requires walking `incident_events` for each REOPENED and finding
+whose RESOLVED it followed. That is a window function over the event log and a
+materially larger query, and it is the right thing to build **if this becomes a
+performance metric**. It is not one yet.
+
+What ships is the weaker, computable claim: **of the tickets this engineer
+resolved in the window, how many carry a reopen.** The screen says "Resolved,
+then reopened" and the caption says "% of what they resolved came back". Both
+phrasings were chosen so that the label is true of the number underneath it. A
+quality signal that overstates itself is worse than none — it gets somebody a
+difficult conversation they did not earn.
+
+`reopen_rate_pct` is `None`, not `0.0`, when the engineer resolved nothing in
+the window, for the same reason every other percentage in `reporting.py` is:
+a zero denominator is a *meaning* decision. Nothing resolved means **no rate**.
+Zero percent would read as a flawless record, which is the opposite of what an
+empty period tells you.
+
+### `STAFF_ONLY`, and where that rule is actually enforced
+
+Seven of the eight report routes are `ADMIN_ONLY`. `GET /reports/engineers/{id}`
+is `STAFF_ONLY`, and the difference is not a relaxation — it is the guard §5.5
+asks for, put where it holds.
+
+A LEAD opens this page to decide who gets the work. An engineer opens it on
+themselves. An admin opens it on anyone. An employee must not reach it at all.
+The `RequireRole` on the route is a courtesy that stops a wrong link rendering
+a 403 screen; **the dependency on the endpoint is the enforcement**, and it
+holds when somebody types the URL, shares it, or calls the API directly.
+
+### The two links in, and what they replace
+
+- **The assignee column** on the ticket tables becomes a link. It is the
+  natural place to ask "who is this, and are they buried" while triaging.
+- **The engineer workload rows** on the admin dashboard now go to the person,
+  not to a filtered ticket list. This is a genuine reversal: those rows have
+  pointed at `?assignee_id=…` since M7. Clicking a row in a table *about people*
+  and landing on a list of *tickets* answers a question you did not ask — and
+  the ticket list is one click further on from the page you land on instead.
+
+### 6.2 — more specialties, and the label that sat under "None"
+
+The specialty list is the category groups, so "offer more" was not a new list:
+`seed/categories.py` gained three groups — **Cleaning & Waste**, **Safety &
+Security**, **Deliveries & Moves**, fourteen subcategories between them — and
+the specialty field offers them because it always offered whatever the tree
+holds.
+
+The overlap was the smaller half and the more interesting one. A MUI `Select`
+with `multiple` renders its value *inside* the field, and an empty multi-select
+renders the literal string "None" there — on top of a label that has not
+floated up, because MUI shrinks the label when it believes the field is
+non-empty and an empty array is not. The ticket page's filters look correct
+because they pass `slotProps={{ inputLabel: { shrink: true } }}`, pinning the
+label up unconditionally. That is the fix, copied verbatim, and it is the same
+two lines as the `displayEmpty` fix on the dashboard's Building filter.
+
+### The change nobody asked for: the demo world had to grow
+
+This was the owner's call, and it is the reason 6.1 is worth opening.
+
+Adding three category groups to the tree does not add a single ticket that uses
+them. `migrate` is idempotent and seeds categories; nothing backfills history.
+A demo database migrated after §6.2 has eight groups in every dropdown and
+tickets in five of them — so the engineer page's "What they fix" chart, the
+dashboard's category breakdown and the new specialty options all draw from a
+world where the newest third of the taxonomy is empty.
+
+Three numbers moved:
+
+- **300 tickets → 420.** Ten engineers across eight groups over ninety days
+  need enough history for each person to have a record worth reading. At 300
+  the thinnest engineer-group cells were a ticket or two.
+- **Six engineers → ten.** The roster is what the dashboard's "who is free /
+  who is buried / who knows about this" questions are asked against, and none
+  of them is interesting when everyone has one specialty and a similar load.
+  So: generalists with three groups and specialists with one, every group
+  covered at least twice, two groups covered three deep,
+  `ENGINEER_LOAD_WEIGHTS` deliberately uneven from 0.16 down to 0.05.
+- **The three new groups sit at 9% / 7% / 5%, not 2–5%.** The first pass gave
+  them a token share, which put Deliveries & Moves at about six tickets in
+  three months. That satisfies a test that every group appears and is not
+  enough to *look* at. A fifth of the queue between them is the honest shape
+  for a facilities team — rarer than broken-monitor traffic, common enough that
+  a chart segment is worth clicking.
+
+**The bug this caused is the one worth remembering.** `CATEGORY_GROUP_WEIGHTS`
+has always had a `.get(name, 0.1)` fallback, so a group added to the tree is
+picked whether or not this file knows about it. `SYMPTOMS` had **no** fallback
+— a plain dict subscript — so the first `seed_demo` after the categories landed
+died on `KeyError: 'Deliveries & Moves'` and took nineteen tests with it. One
+table tolerant of a new group and its neighbour not is the kind of asymmetry
+that is invisible until the day it isn't. Both are tolerant now:
+`GENERIC_SYMPTOMS` and `_symptoms_for()` mean a group added next year produces
+plausible tickets without touching this file.
+
+Four tests had hardcoded counts that were really assertions about the seed's
+size. They derive them from `DemoSpec` now, so the next person to change a
+number does not have to find out which tests were secretly about it.
+
+### 6.3 and 6.4 are not built, and that is a decision
+
+Both are recorded in the README's scope decisions rather than silently dropped.
+
+**6.3, the "needs help" escalation chain**, is the largest item in the brief and
+is backend work — a state-machine question, not a styling one. The brief itself
+lists five design questions to settle before any code, including whether it is a
+new `IncidentStatus` (which means new rows in `workflow.py` for every legal
+transition into and out of it, plus the notification rules, plus the frontend's
+`allowed-transitions` rendering, all of which follow for free if it is a status
+and none of which do if it is a flag) and how it relates to the *existing*
+escalation flag, which is reporter-facing and would then be the second thing in
+the product called "escalate". Half-answering that in the tail of a UI pass
+would put a rule somewhere other than the one place it belongs, which is the
+architecture rule this project has held to throughout.
+
+**6.4, automatic BUSY**, is a smaller question with the same shape: `BUSY` is
+currently the engineer's own statement about themselves, and capacity is an
+observation the system makes. Merging them means an engineer who marked
+themselves available is overruled by a ticket count, and an engineer at
+capacity cannot say "I am fine, send it". The capacity bar already shows the
+observation next to the statement, which keeps both readable. Deciding to fuse
+them is a product call worth taking deliberately, not as a side effect.
+
+### `bin/reset-demo-database.sh`
+
+New, and the reason is the two paragraphs above plus [D52](#d52--the-end-to-end-suite-had-buried-today-under-its-own-test-data): the e2e suite
+leaves its tickets behind by design, and the seed itself now changes between
+phases. `seed_demo` refuses to top up — it returns "Demo data is already
+present" and changes nothing, deliberately, so a second invoke cannot double a
+dataset — so the only way to a current demo world is drop, `migrate`, `seed_demo`,
+in that order. The script is that, with a typed confirmation and a
+`pg_terminate_backend` first, because Postgres will not drop a database the dev
+server still holds a pool against.
+
+It is local only. Aurora is `publicly_accessible = false` and unreachable from
+here, which is the intended blast radius.

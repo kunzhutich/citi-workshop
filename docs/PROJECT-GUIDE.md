@@ -8726,3 +8726,161 @@ before chasing one.
 | **Stretched link** | One real `<a>` in a card, grown to the card's size by an absolutely positioned `::after`. Keeps the markup valid and the accessible name the title's, where wrapping everything in an anchor would do neither. |
 | **Transient/order prefix** | An ORDER BY term placed *before* the requested sort, so it takes precedence without replacing it. `closed_last` is one. |
 | **`<tbody>` per section** | A table may have several bodies. It is what lets one table carry section headings while keeping every column aligned down the page, which five stacked tables would not. |
+
+---
+
+## Phase R6 — The redesign brief, section 6: an engineer becomes a page
+
+*Two of the four items in §6 were built. The other two — the "needs help" escalation
+chain and automatic BUSY — are state-machine questions rather than UI ones, and are
+recorded as scope decisions rather than started. The item nobody listed, growing the
+demo world, turned out to be the condition for the built half being worth opening.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `app/repositories/reports.py` | **New queries.** `engineer_detail()` — resolved, closed and reopened counts for one engineer over a window. `engineer_resolved_by_group()` — what they fixed, joined through the subcategory to its parent. |
+| `app/services/reporting.py` | `engineer_detail()` assembles the report and computes the reopen rate; `_share()` returns `None` at a zero denominator. |
+| `app/routers/reports.py` | `GET /reports/engineers/{user_id}`, `STAFF_ONLY` — the only report route that is not admin-only. |
+| `app/schemas/report.py` | `EngineerDetailReport`, `EngineerGroupCount`. |
+| `app/seed/categories.py` | Three new groups — Cleaning & Waste, Safety & Security, Deliveries & Moves — and fourteen subcategories. |
+| `app/seed/demo.py` | 420 tickets (was 300), ten engineers (was six), renormalised group weights, `GENERIC_SYMPTOMS` + `_symptoms_for()` so a new group cannot break the seed. |
+| `features/engineers/EngineerDetailPage.tsx` | **New.** The page: header, basics, a filtered period half, and a live "on their plate now" half. |
+| `features/engineers/EngineerBasics.tsx` | **New.** The old dialog's editable fields, as a section. |
+| `features/engineers/EngineerDialog.tsx` | Creation only now, with the label fix from §6.2. |
+| `features/engineers/EngineerRoster.tsx` | Rows link to the page. |
+| `features/dashboard/EngineerWorkloadTable.tsx` | Rows now go to the person, not to a filtered ticket list. |
+| `features/dashboard/DashboardFilterBar.tsx` | A `note` prop, because the default caption describes the admin dashboard's two halves and is wrong anywhere else. |
+| `features/incidents/IncidentTable.tsx` | The assignee cell is a link to their page. |
+| `api/reports.ts`, `api/engineers.ts`, `api/queryKeys.ts`, `features/*/hooks.ts` | `getEngineerDetailReport`, `getEngineer`, and their keys. |
+| `routes.ts`, `App.tsx` | `/engineers/:userId`, guarded for staff at any level. |
+| `bin/reset-demo-database.sh` | **New.** Drop, migrate, seed — the only way to a current demo world. |
+
+Decision: [D59](DECISION-LOG.md#d59--section-6-an-engineer-is-a-page-and-the-demo-world-grew-to-fill-it).
+
+### 2. Why it is shaped this way
+
+**A page, not a bigger modal.** The dialog held *settings*, and a dialog is right for
+settings. The question people arrive with — is this the person to give the next ticket
+to — needs a period, an output figure, a breakdown and a live queue. A date range
+floating above a settings form reads as filtering the settings, which is why the period
+could not simply be added to the dialog.
+
+**The reopen figure deliberately claims less than the brief asked for.** `reopen_count`
+is a column on `incidents` counting every reopen that ticket ever had, by anyone, against
+any assignee. "Reopened because *this* engineer's fix did not hold" needs the event log
+walked for each REOPENED to find whose RESOLVED it followed — a window function over
+`incident_events`, and the right build if this ever becomes a performance metric. What
+ships is *they resolved it and it was later reopened*, and the screen says exactly that.
+**The label was written to be true of the number underneath it**, which is the whole
+discipline here: a quality signal that overstates itself earns somebody a difficult
+conversation they did not deserve.
+
+**`STAFF_ONLY`, and the guard is on the endpoint.** A LEAD opens this page to hand work
+out, an engineer opens it on themselves, an admin opens it on anyone, and an employee
+must not reach it. `RequireRole` on the route stops a wrong link rendering a 403 screen;
+the dependency on `GET /reports/engineers/{id}` is what holds when somebody types the URL.
+
+**The workload rows changed where they point, and that is a reversal.** Since M7 they
+went to `?assignee_id=…`. Clicking a row in a table *about people* and landing on a list
+of *tickets* answers a question you did not ask — and from the person's page the ticket
+list is one click further on.
+
+**The seed grew because the taxonomy did.** `migrate` is idempotent and seeds categories;
+nothing backfills history. A database migrated after §6.2 shows eight groups in every
+dropdown and tickets in five of them, so every chart the new page draws would have had an
+empty third. Three numbers moved together — 300→420 tickets, 6→10 engineers, and the new
+groups at 9/7/5% rather than a token 2–5% that put Deliveries & Moves at about six tickets
+in three months.
+
+### 3. How the pieces connect
+
+An admin opens the dashboard, sees Priya Raman at 90% capacity, and clicks her row:
+
+1. `EngineerWorkloadTable.tsx` renders the name as a `RouterLink` to `engineerPath(user_id)`.
+2. React Router matches `paths.engineerDetail` in `App.tsx`, inside
+   `RequireRole roles={['ENGINEER','FACILITY_ADMIN']}` — no level, because this is staff,
+   not lead.
+3. `EngineerDetailPage` mounts and fires **three** queries, on purpose:
+   - `useEngineer(userId)` → `GET /engineers/{id}` — who they are, for the header and
+     `EngineerBasics`.
+   - `useEngineerDetailReport(userId, periodParams)` → `GET /reports/engineers/{id}` —
+     the period half.
+   - `useIncidents({ assignee_id, status: [OPEN, IN_PROGRESS, BLOCKED], sort: '-priority' })`
+     → `GET /incidents` — the live half, **unscoped by the period**, because what
+     somebody is holding is a question about today (the same split as [D9](DECISION-LOG.md#d9)).
+4. The report request lands on `routers/reports.py`, clears `STAFF_ONLY` in
+   `security/dependencies.py`, and reaches `services/reporting.py:engineer_detail()`.
+5. That calls two repository functions. `engineer_detail()` returns three counts in one
+   row — `count(*)`, plus two `FILTER (WHERE …)` aggregates over the same scan.
+   `engineer_resolved_by_group()` joins `incidents → categories → categories (aliased
+   parent)` and groups by the parent.
+6. The service computes `reopen_rate_pct` in Python via `_share()`, because the zero
+   denominator is a meaning decision, not an arithmetic one.
+7. TanStack Query caches under `['reports','engineer-detail',userId,params]`. Changing the
+   date range changes `params`, so it is a new key and a new fetch; the old data stays on
+   screen dimmed by `isStale` rather than flashing a spinner.
+
+### 4. Where the rules live
+
+| Rule | File |
+| --- | --- |
+| Who may see an engineer's figures | `app/routers/reports.py` — `STAFF_ONLY` on the route |
+| What "resolved in the period" means | `app/repositories/reports.py:engineer_detail()` — the window applies to `resolved_at`, not `created_at` |
+| What the reopen number counts | same function's docstring — the weaker claim, stated |
+| No rate without a denominator | `app/services/reporting.py:_share()` |
+| Which groups exist | `app/seed/categories.py` — the specialty list *is* the category tree |
+| How big the demo world is | `app/seed/demo.py:DemoSpec` — every count derives from it, including in tests |
+| That the period does not reach the live queue | `EngineerDetailPage.tsx` — the `useIncidents` call takes no window |
+
+### 5. How to change it
+
+**To add a figure to the engineer page:** add the aggregate to
+`repositories/reports.py:engineer_detail()`, a field to `EngineerDetailReport`, a line in
+`services/reporting.py:engineer_detail()`, a `StatTile` on the page. Four files, in that
+order.
+
+**To add a category group:** one entry in `seed/categories.py` with its subcategories.
+Nothing else is required — `CATEGORY_GROUP_WEIGHTS` and `SYMPTOMS` both fall back now —
+but give it a weight and its own phrases if you want it to look like the others, and run
+`bin/reset-demo-database.sh` or the tickets will not exist.
+
+**To rebuild the demo world:** `./bin/reset-demo-database.sh`. There is no top-up path;
+`seed_demo` refuses when demo buildings already exist, deliberately, so a second invoke
+cannot double a dataset.
+
+### 6. Gotchas
+
+**`migrate` adds categories but not tickets.** This is the trap the phase was built
+around. An existing database picks up new groups silently and correctly, and every chart
+that breaks down by group then shows a taxonomy with holes in it. The data is only as new
+as the last rebuild.
+
+**One lookup table tolerant of a new key and its neighbour not.**
+`CATEGORY_GROUP_WEIGHTS` has always had `.get(name, 0.1)`; `SYMPTOMS` was a plain
+subscript. The first `seed_demo` after the three groups landed died on
+`KeyError: 'Deliveries & Moves'` and took nineteen tests with it. Both are tolerant now.
+
+**An empty MUI multi-select renders "None" over its own label.** MUI floats the label when
+it thinks the field is non-empty, and an empty array is not. `slotProps={{ inputLabel: {
+shrink: true } }}` pins it up. The ticket filters already did this; the specialty field
+did not.
+
+**Four seed tests were secretly assertions about the seed's size.** They had literal
+counts in them, so changing `DemoSpec.incidents` failed tests that never mentioned it.
+They derive from `DemoSpec` now.
+
+**A docstring can end up above the wrong function.** Two new API helpers were inserted
+between an existing docstring and the function it described, which type-checks, lints and
+tests clean while documenting the wrong thing. Caught by reading the diff, not by any
+tool.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **`FILTER (WHERE …)`** | A SQL aggregate qualifier — `count(*) FILTER (WHERE status = 'CLOSED')`. Three counts over one scan instead of three queries. |
+| **Aliased self-join** | `aliased(Category)` lets one table appear twice in a query. Incidents are filed against a subcategory; the group is its parent row in the same table. |
+| **Zero denominator** | A rate with nothing to divide. Returned as `None` and rendered as a dash, never as 0%, which would read as a perfect record. |
+| **Top-up** | Seeding more data into an already-seeded database. Not supported: `seed_demo` refuses, so a dataset cannot be silently doubled. |
