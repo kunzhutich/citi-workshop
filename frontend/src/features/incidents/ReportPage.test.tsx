@@ -155,8 +155,16 @@ describe('progressive reveal', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '← Change' }));
 
-    expect(screen.queryByText('Which one?')).not.toBeInTheDocument();
-    expect(screen.queryByText('Where?')).not.toBeInTheDocument();
+    // Awaited, because the sections now close rather than vanish. R5 wrapped
+    // each one in a `Collapse` with `unmountOnExit`, so the content leaves the
+    // DOM when the exit transition ends and not on the click that started it.
+    // Still an assertion about removal, not about visibility — `unmountOnExit`
+    // is what keeps a closed question out of the accessibility tree instead of
+    // merely out of sight.
+    await waitFor(() => {
+      expect(screen.queryByText('Which one?')).not.toBeInTheDocument();
+      expect(screen.queryByText('Where?')).not.toBeInTheDocument();
+    });
   });
 
   it('holds the submit button back until every question is answered', async () => {

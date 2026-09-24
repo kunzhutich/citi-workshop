@@ -13,6 +13,7 @@ import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 import { BarChart } from '@mui/x-charts/BarChart';
+import { PieChart } from '@mui/x-charts/PieChart';
 import { useState, type ReactNode } from 'react';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
 
@@ -51,10 +52,30 @@ export interface BreakdownChartProps {
   isStale?: boolean;
   /** Clicking a bar drills down instead of navigating. */
   onDrillDown?: (datum: BreakdownDatum) => void;
+  /**
+   * Bars, or a pie.
+   *
+   * **Not a free choice per card.** A pie answers "what is this made of" and
+   * nothing else: it is legible for a handful of slices that are parts of one
+   * whole, and it is worse than a bar at every comparison. Status and category
+   * stay bars because a reader looks at those to compare one count with
+   * another and, for categories, because there are five of them and a pie of
+   * five slices where two are small is a puzzle. Priority and building are
+   * pies because each really is a composition — of all the tickets, this
+   * share was urgent; of all the tickets, this share came from that building
+   * — and both have few enough slices to read at a glance.
+   */
+  shape?: 'bars' | 'pie';
 }
 
 /** Height of one bar's band, including its gap. Drives the chart's height. */
 const BAND_HEIGHT = 34;
+
+/** How tall a pie card's plot is. Matches a four-bar chart, so a row of cards lines up. */
+const PIE_HEIGHT = 220;
+
+/** The hole in the middle. A ring reads as a composition; a full circle reads as a clock. */
+const PIE_INNER_RADIUS = 46;
 
 /** Room under the plot for the value axis and its labels. */
 const AXIS_BAND = 34;
@@ -100,6 +121,7 @@ export function BreakdownChart({
   headerAction,
   isStale = false,
   onDrillDown,
+  shape = 'bars',
 }: BreakdownChartProps) {
   const [view, setView] = useState<'chart' | 'table'>('chart');
   const navigate = useNavigate();
@@ -178,7 +200,52 @@ export function BreakdownChart({
            * twelve categories read aloud as a `aria-label` is worse than
            * silence, and the table has the links as well as the numbers.
            */
-          <Box role="img" aria-label={summarise(title, data)}>
+          <Box role="img" aria-label={summarise(title, data, shape)}>
+            {shape === 'pie' ? (
+              <PieChart
+                height={PIE_HEIGHT}
+                series={[
+                  {
+                    data: data.map((datum) => ({
+                      id: datum.key,
+                      // The count rides in the legend rather than on the arc.
+                      // Painted on the slice it has to contrast with whatever
+                      // colour that slice is, and two of the priority steps are
+                      // light enough that white sat at 2.2:1 on them — a number
+                      // nobody could read, on exactly the slices a reader most
+                      // wants a number for. In the legend it is text on the
+                      // card, at the card's own contrast, whatever the slice
+                      // behind it is doing. It also means the small slices get
+                      // their value too, which an arc label cannot fit.
+                      label: `${datum.label} · ${datum.value}`,
+                      value: datum.value,
+                      // Colour follows the row's own identity, never its
+                      // position, so filtering one out cannot repaint the rest.
+                      color: datum.color ?? SERIES_PRIMARY,
+                    })),
+                    innerRadius: PIE_INNER_RADIUS,
+                    highlightScope: { highlight: 'item', fade: 'global' },
+                  },
+                ]}
+                onItemClick={(_event, item) => activate(data[item.dataIndex])}
+                sx={(theme) => ({
+                  '& .MuiPieArc-root': {
+                    cursor: 'pointer',
+                    // A surface-coloured edge between fills, so adjacent
+                    // slices read as two marks rather than one shape with a
+                    // seam in it.
+                    stroke: theme.palette.background.paper,
+                    strokeWidth: 2,
+                  },
+                  // Legend text wears a text token, never a series colour. The
+                  // coloured dot beside it is what carries identity.
+                  '& .MuiChartsLegend-series text': {
+                    fill: `${theme.palette.text.secondary} !important`,
+                    fontSize: 13,
+                  },
+                })}
+              />
+            ) : (
             <BarChart
               layout="horizontal"
               height={data.length * BAND_HEIGHT + AXIS_BAND}
@@ -240,6 +307,7 @@ export function BreakdownChart({
                 '& .MuiBarChart-label': { fill: theme.palette.text.secondary, fontSize: 12 },
               })}
             />
+            )}
           </Box>
         )}
       </CardContent>
@@ -255,7 +323,7 @@ export function BreakdownChart({
  * shape of a good `alt` text for a chart: enough to decide whether to go and
  * read the numbers, not the numbers themselves.
  */
-function summarise(title: string, data: BreakdownDatum[]): string {
+function summarise(title: string, data: BreakdownDatum[], shape: 'bars' | 'pie'): string {
   const total = data.reduce((sum, datum) => sum + datum.value, 0);
   const sorted = [...data].sort((a, b) => b.value - a.value);
   const largest = sorted[0];
@@ -267,7 +335,8 @@ function summarise(title: string, data: BreakdownDatum[]): string {
       : ` ${largest.label}: ${largest.value}.`;
 
   return (
-    `Bar chart: ${title}. ${data.length} ${data.length === 1 ? 'row' : 'rows'}, ` +
+    `${shape === 'pie' ? 'Pie chart' : 'Bar chart'}: ${title}. ${data.length} ` +
+    `${data.length === 1 ? 'row' : 'rows'}, ` +
     `${total} in total.${extremes} Use "Show as a table" for every value.`
   );
 }

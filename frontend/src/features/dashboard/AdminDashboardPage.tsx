@@ -17,7 +17,7 @@ import { useFacilityTree } from '../facilities/hooks';
 import { useIncidents } from '../incidents/hooks';
 import { BlockedByReasonPanel } from './BlockedByReasonPanel';
 import { BreakdownChart, type BreakdownDatum } from './BreakdownChart';
-import { PRIORITY_RAMP } from './chartPalette';
+import { CATEGORICAL_SLICES, PRIORITY_SLICES } from './chartPalette';
 import { CommunicationPanel } from './CommunicationPanel';
 import { DashboardFilterBar } from './DashboardFilterBar';
 import { EngineerWorkloadTable } from './EngineerWorkloadTable';
@@ -233,7 +233,8 @@ export function AdminDashboardPage() {
         >
           <BreakdownChart
             title="By priority"
-            caption="Most urgent first; darker is more urgent"
+            caption="What this period's tickets were made of"
+            shape="pie"
             isStale={summary.isFetching}
             emptyMessage="Nothing was reported in this period"
             data={INCIDENT_PRIORITIES.map((priority) => ({
@@ -242,9 +243,11 @@ export function AdminDashboardPage() {
               value:
                 summary.data?.by_priority.find((row) => row.priority === priority)?.count ?? 0,
               href: periodListLink(scope, { priorities: [priority] }),
-              // A genuinely ordered scale, so a single-hue ramp is information
-              // rather than decoration. See chartPalette.ts.
-              color: PRIORITY_RAMP[priority],
+              // The priority chips' hues at slice steps, not the chips
+              // themselves — the chip orange and the chip red are ΔE 1.9 apart
+              // under deuteranopia and would be one slice. chartPalette.ts has
+              // the numbers and why the chips are right to be what they are.
+              color: PRIORITY_SLICES[priority],
             })).filter((datum) => datum.value > 0)}
           />
         </QueryState>
@@ -270,14 +273,20 @@ export function AdminDashboardPage() {
         >
           <BreakdownChart
             title="By building"
-            caption="Where this period's tickets were reported"
+            caption="Where this period's tickets came from"
+            shape="pie"
             isStale={locations.isFetching}
             emptyMessage="Nothing was reported in this period"
-            data={(locations.data?.buildings ?? []).map((building) => ({
+            data={(locations.data?.buildings ?? []).map((building, index) => ({
               key: building.building_id,
               label: building.building_code,
               value: building.count,
               href: periodListLink(scope, { buildingId: building.building_id }),
+              // By position in a sorted list, which is the one case where that
+              // is honest: buildings have no inherent order and no identity a
+              // colour could follow, so the alternative is a hash of a UUID.
+              // Capped at three by the palette — see CATEGORICAL_SLICES.
+              color: CATEGORICAL_SLICES[index % CATEGORICAL_SLICES.length],
             }))}
           />
         </QueryState>

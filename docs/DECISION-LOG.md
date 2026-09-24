@@ -2925,3 +2925,124 @@ nothing — the page now scrolls it into view. `prefers-reduced-motion` is
 honoured by hand there: `theme.ts` sets `scroll-behavior: auto` for that case,
 but `behavior: 'smooth'` passed to `scrollIntoView` overrides the stylesheet
 rather than obeying it.
+
+## D55 — A whole card that opens a ticket, with buttons that still do their own job
+
+**The owner:** on the engineer screens, clicking anywhere on a ticket should
+open it — except on the buttons, which should keep acting.
+
+Those two were genuinely incompatible, and `HomeTicketRow`'s own docstring
+said so: a `<button>` inside an `<a>` is invalid HTML and browsers resolve it
+by folding the button into the link, so a `CardActionArea` around everything
+would have made "Pick up" navigate instead of picking up. That note is why the
+home rows had only their title clickable, and it was correct about the
+constraint and wrong that the constraint was binding.
+
+**Chosen: a stretched link** (`components/stretchedLink.ts`). One real anchor —
+the title — grown over the card by an absolutely positioned `::after`, with
+the buttons lifted above it on the z axis. The markup stays valid, there is one
+link and one tab stop, and a screen reader hears the title as the link's name
+rather than the card's entire text read out as one.
+
+Three pieces, and all three are load-bearing: `position: relative` on the card
+(or the overlay escapes to the nearest positioned ancestor), the overlay on the
+link, and `zIndex: 1` on the actions. Miss the last and the buttons stop
+working, which is the exact failure the arrangement exists to prevent — so it
+is asserted rather than commented.
+
+**The reference stops being a link.** The card is the link now; a second anchor
+to the same ticket is a second tab stop and a second thing to read out for one
+destination.
+
+**What it costs:** text inside the card can no longer be selected by dragging,
+because the overlay is what the pointer meets. The accepted trade of this
+pattern everywhere it is used, and a ticket card is something you click rather
+than something you quote.
+
+**§5.7 arrived early as a consequence.** The team page had its own card with
+its own typography and its own link treatment. Rather than teach a second card
+the overlay, it now renders `HomeTicketRow` with Assign in place of Pick up,
+which is what the brief asks for anyway. Three copies of one decision became
+one.
+
+## D56 — The first click that did nothing, twice
+
+**Reported by the owner:** on the facilities page the first floor click does
+not scroll to the table; every click after it does, on any floor of any
+building.
+
+**A defect in [D54](#d54--section-4-the-phone-loses-a-navigation-bar-and-gains-its-screen-back), shipped the same day.** The scroll ran from an
+effect on `selectedFloorId`. That fires when the id changes, which is *before*
+the `Collapse` holding the panel has grown — so the first time, it scrolled to
+a box that was still zero pixels tall and already on screen, and nothing
+appeared to happen. Every later click worked because the panel already had
+height. A first-click-only fault: the kind a developer never sees, because by
+the second attempt it is gone.
+
+**The fix is to notice there are two moments, not one.** The panel *opening*
+has a transition to wait for (`onEntered`); the floor changing while the panel
+is already open has no transition at all, so there is nothing to wait for and
+the effect is right. A `paneOpen` ref tells them apart. Measured after: 982px
+on the first click and 982px on the second.
+
+**Generalised rather than patched.** The report questionnaire got the same
+treatment in the same pass — every question is a `Collapse` now, and on a phone
+the one that just opened is scrolled to from `onEntered` for exactly this
+reason. The reduced-motion handling both share is `display/revealScroll.ts`:
+`theme.ts` sets `scroll-behavior: auto` under `prefers-reduced-motion`, which
+covers scrolling the stylesheet causes and not an explicit
+`behavior: 'smooth'` passed from JavaScript, which overrides it.
+
+## D57 — Two pies, and why they are not painted in the chip colours
+
+**The owner asked** for By priority and By building as pies, with the priority
+slices in the colours of the priority chips.
+
+The shapes are theirs to choose and both are defensible: each is a composition
+— of all the tickets, this share was urgent; this share came from that building
+— with few enough slices to read at a glance. By status and By category stay
+bars, because those are read to compare one count against another, and five
+categories where two are small is a puzzle as a pie.
+
+**The chip colours do not survive the check, and not marginally.** The HIGH
+chip `#a94e08` against the CRITICAL chip `#c72a2a`:
+
+```
+worst all-pairs  #c72a2a ↔ #a94e08  ΔE 1.9 (deutan) · 8.5 (normal vision)
+floors                              ΔE 8.0 (CVD)    · 15.0 (normal)
+```
+
+The two slices a reader most needs to tell apart would be the same colour to a
+deuteranope and very nearly the same to everyone else.
+
+**That is not a flaw in the chips — it is caused by them being right.** A chip
+carries its own word half a centimetre away, so its colour never has to carry
+identity alone; and the chips are *dark* precisely because their labels must
+clear 4.5:1 on the cream page ([D48](#d48--the-new-palette-and-the-three-colours-that-had-to-be-re-derived-to-get-it)),
+which is what pushes HIGH's orange down into CRITICAL's red. A pie slice has no
+text on it and needs only 3:1 against the white card, so it can be lighter and
+far more chromatic — which is exactly the room those two hues needed.
+
+**Chosen: the chip hues at slice steps.** Grey stays grey, blue stays blue,
+CRITICAL is the error chip unchanged, and HIGH moves furthest — to a true amber
+— because it was the one colliding. Three of the four are recognisably their
+chip. Validator: CVD ΔE 14.0 (protan), normal-vision 16.6.
+
+Two flags are accepted deliberately. The grey trips the chroma floor, which
+exists to stop a hue that is *trying* to be a colour from reading as grey — LOW
+is meant to be neutral, mirroring its chip, and a neutral slice beside three
+coloured ones is distinguishable *because* it is neutral. And the grey and the
+amber sit under 3:1 against white, which is a relief case: legal only with
+visible labels or a table view.
+
+**The counts moved to the legend to meet that**, and it is a better answer than
+the arc labels it replaced. Painted on the slice, a number has to contrast with
+whatever colour that slice is, and white sat at 2.2:1 on the amber and 2.75:1
+on the grey — unreadable figures on exactly the slices a reader wants a figure
+for. In the legend it is text on the card at the card's own contrast, and the
+small slices get their value too, which an arc label cannot fit.
+
+**Buildings are capped at three colours.** The validated categorical order
+clears the all-pairs gates for its first three slots and not beyond, and a pie
+is an all-pairs chart because every slice touches two neighbours and the
+legend. A fourth building folds into "Other", or the chart goes back to bars.

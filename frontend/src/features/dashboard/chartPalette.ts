@@ -102,3 +102,65 @@ export const CATEGORY_GAP_RATIO = 0.45;
 
 /** Corner radius on the data end of a bar, in pixels. */
 export const BAR_RADIUS = 4;
+
+/**
+ * The four priority slices, for the pie on the admin dashboard.
+ *
+ * **Not the chip colours, and the gap between those two facts is the point.**
+ * The owner asked for the chip colours here — sensibly, so the chart speaks
+ * the language the rest of the application does. Run through the validator
+ * they fail, and not marginally: the HIGH chip `#a94e08` against the CRITICAL
+ * chip `#c72a2a` measures ΔE **8.5 under normal vision** and **1.9 under
+ * deuteranopia**, against floors of 15 and 8. The two slices a reader most
+ * needs to tell apart would be the same colour to a deuteranope and very
+ * nearly the same to everybody else.
+ *
+ * That is not a flaw in the chips. A chip carries its own word half a
+ * centimetre away, so its colour never has to carry identity alone — and the
+ * chips are *dark* precisely because their labels must clear 4.5:1 on the
+ * cream page, which is what pushes HIGH's orange down into CRITICAL's red.
+ * A pie slice has no text on it and only needs 3:1 against the white card, so
+ * it can be lighter and far more chromatic, which is exactly the room the two
+ * hues needed.
+ *
+ * So these are the chip *hues* at slice steps: grey stays grey, blue stays
+ * blue, red is the CRITICAL chip unchanged, and HIGH moves furthest — to a
+ * true amber — because it is the one that was colliding.
+ *
+ *   LOW      #9e9c93  grey, like the `default` chip
+ *   MEDIUM   #2a78d6  the `info` blue, lightened
+ *   HIGH     #eda100  amber, where the chip is a dark orange
+ *   CRITICAL #c72a2a  the `error` chip, unchanged
+ *
+ * Validator: CVD ΔE 14.0 (protan), normal-vision 16.6, both clear.
+ *
+ * **Two flags are accepted deliberately.** The grey trips the chroma floor,
+ * which exists to stop a hue that is *trying* to be a colour from reading as
+ * grey — LOW is meant to be neutral, mirroring its chip, and a neutral slice
+ * beside three coloured ones is distinguishable *because* it is neutral. And
+ * the grey and the amber sit under 3:1 against white, which the validator
+ * calls a relief case: legal only with visible labels or a table view. Both
+ * are present — every slice is labelled on the arc, and the card's table
+ * toggle is one button away.
+ */
+export const PRIORITY_SLICES: Record<IncidentPriority, string> = {
+  LOW: '#9e9c93',
+  MEDIUM: '#2a78d6',
+  HIGH: '#eda100',
+  CRITICAL: '#c72a2a',
+};
+
+/**
+ * Categorical slices for a pie with no inherent order — buildings.
+ *
+ * The first three slots of the validated categorical order, used in that
+ * order and never cycled. Three is the cap here, not a coincidence: the
+ * reference order clears the all-pairs gates for its first three slots and not
+ * beyond, and a pie is an all-pairs chart because every slice touches the
+ * legend and two of its neighbours. A fourth building folds into "Other" or
+ * the chart goes back to being bars.
+ *
+ * Validator: CVD ΔE 9.2 (deutan), normal-vision 24.0. The aqua is 2.82:1
+ * against white — the same relief case as above, met the same way.
+ */
+export const CATEGORICAL_SLICES: readonly string[] = ['#2a78d6', '#eb6834', '#1baf7a'];

@@ -21,7 +21,7 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { describeError } from '../../api/errors';
 import type { Building, BuildingNode, Floor, FloorNode, Seat } from '../../api/types';
@@ -30,6 +30,7 @@ import { EmptyState, QueryState } from '../../components/QueryState';
 import { useSnackbar } from '../../components/SnackbarContext';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { seatTypeLabel } from '../../display/labels';
+import { revealScroll } from '../../display/revealScroll';
 import { BuildingDialog, BulkSeatsDialog, FloorDialog, SeatDialog } from './FacilityDialogs';
 import {
   useBulkCreateSeats,
@@ -84,22 +85,37 @@ export function FacilitiesPage() {
    * a tap on "Level 3" filled a panel a screenful below the fold and looked
    * like it had done nothing at all. §4.7 of the redesign brief.
    *
-   * Honouring `prefers-reduced-motion` by hand: `theme.ts` sets
-   * `scroll-behavior: auto` for that case, but this is a scroll asked for in
-   * JavaScript, and `behavior: 'smooth'` here overrides the stylesheet rather
-   * than obeying it. `matchMedia` is guarded because jsdom does not always
-   * provide it.
+   * **Why this is not one effect on `selectedFloorId`.** It was, and it was
+   * wrong on exactly one click: the first. The panel arrives inside a
+   * `Collapse`, so at the moment the id changes it is still zero pixels tall
+   * — the effect scrolled to an empty box that was already on screen, and
+   * nothing appeared to happen. Every click after that worked, because by
+   * then the panel had height. A first-click-only fault, which is the kind a
+   * developer never sees and a user only ever sees.
+   *
+   * So there are two moments, and they are genuinely different: the panel
+   * *opening* (the transition has to finish first — `onEntered`), and the
+   * floor changing while it is already open (no transition runs at all, so
+   * there is nothing to wait for). `paneOpen` tells them apart.
+   *
+   * The reduced-motion handling lives in `display/revealScroll.ts`, which the
+   * report questionnaire shares.
    */
-  useEffect(() => {
-    if (!isMobile || selectedFloorId === null || seatPaneRef.current === null) {
-      return;
+  const paneOpen = useRef(false);
+
+  const scrollToSeats = useCallback(() => {
+    if (isMobile) {
+      revealScroll(seatPaneRef.current);
     }
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    seatPaneRef.current.scrollIntoView({
-      behavior: reduced ? 'auto' : 'smooth',
-      block: 'start',
-    });
-  }, [isMobile, selectedFloorId]);
+  }, [isMobile]);
+
+  useEffect(() => {
+    // Only the already-open case. The opening case is `onEntered` below,
+    // because a panel that has not finished growing has nowhere to scroll to.
+    if (selectedFloorId !== null && paneOpen.current) {
+      scrollToSeats();
+    }
+  }, [selectedFloorId, scrollToSeats]);
   const [dialog, setDialog] = useState<Dialog>({ kind: 'none' });
 
   const tree = useFacilityTree(includeInactive);
@@ -226,7 +242,17 @@ export function FacilitiesPage() {
               a tap appeared to do nothing.
             */}
             <Box ref={seatPaneRef}>
-              <Collapse in={selectedFloor !== undefined} unmountOnExit>
+              <Collapse
+                in={selectedFloor !== undefined}
+                unmountOnExit
+                onEntered={() => {
+                  paneOpen.current = true;
+                  scrollToSeats();
+                }}
+                onExited={() => {
+                  paneOpen.current = false;
+                }}
+              >
                 {selectedFloor ? (
                   <SeatPane
                   floor={selectedFloor}
