@@ -22,6 +22,14 @@ export interface DashboardFilterBarProps {
    * anywhere else — the engineer profile page reuses these controls and has no
    * blocked-or-escalated section for the sentence to be about. A caption that
    * describes a screen the reader is not looking at is worse than none.
+   *
+   * **`false` means no caption at all**, which `null` and `undefined` cannot:
+   * both fall through to the default, and that is the right behaviour for a
+   * caller that simply did not pass one. The engineer page says the same thing
+   * structurally — a scope label over each half, sitting on the thing it is
+   * about — so a third statement of it would be the line nobody reads. It has
+   * to render *nothing* rather than an empty `Typography`, or the block's own
+   * margin leaves eight pixels of unexplained gap under the controls.
    */
   note?: ReactNode;
 }
@@ -128,6 +136,7 @@ export function DashboardFilterBar({ controls, note }: DashboardFilterBarProps) 
         </TextField>
       </Box>
 
+      {note === false ? null : (
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
         {note ?? (
           <>
@@ -137,6 +146,7 @@ export function DashboardFilterBar({ controls, note }: DashboardFilterBarProps) 
           </>
         )}
       </Typography>
+      )}
     </Box>
   );
 }

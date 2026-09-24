@@ -3883,3 +3883,140 @@ light warm grey rather than white. That is the asset, not the rendering, and a
 logotype is exempt from the contrast rules that govern text — but it is dimmer
 than the bell and the menu button beside it, and if the owner wants it louder
 the answer is a different source file, not a CSS filter.
+
+## D66 — The engineer page rearranged, and a pie that had no colours
+
+**§D of the phase brief**, which is a layout rebuild rather than four edits, so
+it went to one worker whole.
+
+### The split, and what replaced the sentence that was carrying it
+
+The page was one stacked column: header, settings, filter bar, "What they got
+through", then the live queue at the bottom. It is now two halves side by side
+above the divider — settings on the left, the capacity bar and the live queue
+on the right — with the period controls moved down beside the heading they
+actually scope.
+
+That move is what created the problem worth recording. **The date range applies
+to the figures and never to what the engineer is holding right now** — D9's
+rule, and both halves of this page depend on it. The only thing making that
+boundary visible was the caption under the filter bar reading "Counted over
+24 Aug – 23 Sep 2026", and putting the control an inch from the heading makes
+that sentence a second statement of what the control already says.
+
+**Replaced with the dashboard's own pattern from D14**: a short scope label
+over each half — **"Right now"** above the capacity bar and the live queue,
+**"Over the selected period"** above the tiles and the chart. Same two tenses,
+same two icons, three words instead of a sentence, and each one sits *on* the
+thing it is about rather than in a line above everything.
+
+`ScopeLabel` deliberately **names no dates**. D14 and D24 are firm that a
+period may only be stated from the response's own `window`, and this component
+has none. "Over the selected period" claims only that whatever the control says
+was applied, which is true by construction.
+
+**The admin dashboard is protected by the default, not by care.**
+`datesShownElsewhere` is false unless asked, because the dashboard has nothing
+else on it that names the window — its filter bar says "Last 30 days", which is
+a control and not a claim — and removing that sentence there would undo D9 and
+D14 on the screen they were raised about. Two tests hold it: one on
+`ScopeHeading` directly and one through `AdminDashboardPage` against a real
+response. A test on only the engineer page would have passed with the caption
+deleted for everybody, which was verified by deleting it.
+
+**What this costs, and it is a real cost:** the engineer page no longer states
+the server's echoed window anywhere. The only statement of the period is the
+picker, which is a control. Nothing lies — `ScopeLabel` is dateless on purpose
+— but it is a step back from the D14 discipline, and flipping one flag restores
+the sentence if the owner disagrees.
+
+### The ticket table is `IncidentsPage`, with one prop
+
+`embedded`, defaulting to false, and it changes exactly one thing: the screen
+renders an `h2` and its description instead of `PageHeader`. Everything else —
+the filter bar, the table/card switch, the paging, the empty state — is
+untouched, which is the entire reason to reuse the component rather than build
+a second ticket table.
+
+A boolean rather than a heading level, because `PageHeader` renders an `h1` **by
+construction** — that is its stated job — so an embedded list must not use it
+at all; and because every page here nests sections exactly one deep.
+
+**Two `h1`s would not have been caught by the accessibility suite.**
+`e2e/accessibility.spec.ts` filters to `wcag2a`/`wcag2aa`, and the only rule
+that speaks to this, `page-has-heading-one`, is `best-practice` and fires on
+*none* rather than on two — and that spec does not visit `/engineers/:userId`
+at all. Worth writing down: this is the fourth time in this project that a
+passing axe run has said nothing about a real defect.
+
+What the section looks like as a result is a second complete filter apparatus
+on a page that already has one. That is the trade the brief chose, and the
+Building select now appears twice on one screen driving the same `building_id`
+— which is coherent (D62 put both hooks on that one parameter deliberately) and
+is still two controls for one value.
+
+### The pie had no colours, and that is what looking at the screen found
+
+`BreakdownChart` takes a `shape` prop, so "make it a pie" is one word. The
+result was **eight identically-coloured wedges beside a legend of eight
+identically-coloured dots** — a ring that carried nothing the legend did not
+already say, and in which "which slice is Plumbing" had no answer.
+
+It was not a mistake in the call. D57 caps a categorical pie at **three**
+validated slice colours, `chartPalette.ts` names "category group" as a
+one-colour-many-categories case, and the worker correctly refused both wrong
+ways out: cycling the three would repaint two categories the same colour, which
+is the one thing a pie must never do, and quietly swapping in bars would have
+been a substitution rather than a report. Passing no colour is what the palette
+permits, and `BreakdownChart` then paints every slice `SERIES_PRIMARY` —
+correct for a bar, where the *length* carries the magnitude, and useless for a
+pie.
+
+**Chosen: the remedy D57 already named**, made into a function.
+`foldToCategoricalSlices` keeps the top three in the validated order and folds
+everything past them into one neutral — the same validated grey D57 reasons
+about, where a neutral beside three coloured slices is distinguishable
+*because* it is neutral. This is not re-litigating the shape: the entry
+anticipated exactly this case and wrote down what to do about a fourth
+category. Bars were the alternative it also offers, and the brief asked for a
+pie.
+
+Three consequences worth stating:
+
+- **The fold reaches the chart and stops there.** The table twin one button
+  away still lists all eight with their links, which is where a reader goes for
+  values and is the relief case the neutral's contrast leans on. Folding both
+  would lose five links to save three colours. Both halves are asserted, because
+  the first on its own would pass against a chart that had silently dropped
+  five categories.
+- **Colour follows rank here, not identity**, which is a departure from the rule
+  the bars follow. It is unavoidable once a cap exists — which categories are
+  *inside* the cap is itself a fact about the data — and it is worth knowing
+  before comparing two screenshots of this chart.
+- **A folded slice has no link.** No list is "these five groups"; `GET
+  /incidents` filters one group at a time. D14 §3 settled that a wrong link is
+  worse than none, so `BreakdownDatum.href` is optional and the slice does not
+  navigate.
+
+**A latent defect this turned up.** The admin dashboard's building pie was
+handing out `CATEGORICAL_SLICES[index % 3]` under a comment saying it was
+capped at three, which the `%` made untrue: a fourth building would have been
+painted the same blue as the first. The demo world has exactly three, so
+nothing would ever have shown it. That call site now passes no colours and
+folds like any other categorical pie, which makes its comment true.
+
+### Smaller calls, recorded because they were not asked for
+
+- **`StatTileGrid` gained `stack`.** Confirmed rather than assumed that it could
+  not already: it is `repeat(auto-fit, minmax(190px, 1fr))` and a 440px column
+  fits two. `minWidth` cannot express "never more than one" — it is a floor, and
+  any value large enough to force one column also claims a tile may never be
+  narrower, which is false on a phone.
+- **`DashboardFilterBar`'s `note` accepts `false`**, which `null` and
+  `undefined` cannot: both fall through to the default, and that is right for a
+  caller that simply did not pass one. It renders nothing rather than an empty
+  `Typography`, whose margin left eight pixels of unexplained gap.
+- **"See all N assigned" became a sentence**, because that link now sends a
+  reader off-page to reach a table 400px below them.
+- **The availability word moved** out of the page header and into the "Right
+  now" column beside the capacity bar, it being a right-now fact.

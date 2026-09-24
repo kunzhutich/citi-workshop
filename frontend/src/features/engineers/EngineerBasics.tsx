@@ -80,7 +80,7 @@ export function EngineerBasics({ engineer }: EngineerBasicsProps) {
   };
 
   return (
-    <Card sx={{ mb: 3 }}>
+    <Card>
       <CardContent>
         <Typography variant="h3" component="h2" gutterBottom>
           Details
