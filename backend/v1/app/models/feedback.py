@@ -20,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.incident import Incident
     from app.models.user import User
 
 
@@ -136,6 +137,13 @@ class IncidentFeedback(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     #: Two relationships point at ``users`` from this table, so each names its
-    #: foreign key explicitly — the same reason ``Incident`` names three.
+    #: foreign key explicitly — the same reason ``Incident`` names four.
     author: Mapped["User"] = relationship(foreign_keys=[author_id])
     rated_user: Mapped["User"] = relationship(foreign_keys=[rated_user_id])
+    #: The ticket this rates. **Bidirectional, like ``incident_notes`` and
+    #: unlike ``incident_watchers``**, whose one-way shape this table copied
+    #: first and had to give up: an engineer's reviews are read *from the
+    #: rating end* — "everything anybody said about this person" — and every
+    #: row on that screen names the ticket it is about, which is the whole
+    #: reason it is a page rather than a column of scores.
+    incident: Mapped["Incident"] = relationship(back_populates="feedback")

@@ -93,11 +93,7 @@ def apply_feedback_visibility(statement: Select[Any], user: User) -> Select[Any]
     engineer averages 4.2" is a number about somebody's work that any engineer
     may see; the sentences behind it are not. See `services/reporting.py`.
     """
-    if user.role == UserRole.FACILITY_ADMIN:
-        return statement
-
-    profile = user.engineer_profile
-    if profile is not None and profile.level == EngineerLevel.LEAD:
+    if sees_every_rating(user):
         return statement
 
     return statement.where(
@@ -106,3 +102,22 @@ def apply_feedback_visibility(statement: Select[Any], user: User) -> Select[Any]
             IncidentFeedback.rated_user_id == user.id,
         )
     )
+
+
+def sees_every_rating(user: User) -> bool:
+    """Return whether this user may read any rating, whoever it is about.
+
+    Admins and LEAD engineers, which is the owner's rule for who evaluates
+    the team. Split out of the filter above rather than inlined, because the
+    same question is asked in a second place — `can_read_reviews` on an
+    engineer's report, which decides whether the link to their reviews is
+    drawn at all — and two copies of "admin or lead" is one copy too many.
+
+    It is deliberately *not* `user.is_staff`: that is what separates the two
+    note visibilities, and reusing it here would hand every engineer every
+    colleague's reviews.
+    """
+    if user.role == UserRole.FACILITY_ADMIN:
+        return True
+    profile = user.engineer_profile
+    return profile is not None and profile.level == EngineerLevel.LEAD

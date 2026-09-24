@@ -245,10 +245,14 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     # Every rating left on this ticket — one per repair, so usually nought or
-    # one and more only where a fix did not hold. One-way like `watchers`, and
-    # eager-loaded by the same tuple, which is what lets
+    # one and more only where a fix did not hold. Eager-loaded by
+    # `_detail_loaders`, which is what lets
     # `services/feedback.can_give_feedback` ask "have they already rated this
     # repair?" as an attribute read rather than a query.
+    #
+    # Bidirectional, unlike `watchers`: an engineer's reviews page reads from
+    # the rating end and names the ticket on every row, so the walk back is
+    # needed. See `IncidentFeedback.incident`.
     #
     # **Unfiltered, deliberately.** This is the whole collection, not the part
     # the current reader may see; narrowing lives in
@@ -258,6 +262,7 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # rated, on the day somebody gives reporters a narrower view than they
     # have today.
     feedback: Mapped[list["IncidentFeedback"]] = relationship(
+        back_populates="incident",
         cascade="all, delete-orphan",
         order_by="IncidentFeedback.created_at",
     )

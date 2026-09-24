@@ -40,6 +40,8 @@ from app.models.enums import (
     SeatType,
     UserRole,
 )
+from app.schemas.feedback import MAX_RATING, MIN_RATING
+from app.schemas.incident import UserSummary
 
 #: How far back a report looks when the caller names no period.
 DEFAULT_WINDOW_DAYS = 30
@@ -278,6 +280,41 @@ class EngineerGroupCount(BaseModel):
     count: int
 
 
+class EngineerRatingCount(BaseModel):
+    """How many times one score was given."""
+
+    rating: int = Field(ge=MIN_RATING, le=MAX_RATING)
+    count: int
+
+
+class EngineerReview(BaseModel):
+    """One rating, with enough of its ticket to be worth reading.
+
+    The ticket is the point. A column of scores and sentences with no idea
+    which repair each was about is a wall nobody can act on — so every row
+    carries the reference, the title and the category, and the screen links
+    the reference to the ticket itself.
+    """
+
+    feedback_id: uuid.UUID
+    rating: int
+    comment: str
+    created_at: datetime = Field(description="When the reporter left it.")
+    edited_at: datetime | None = Field(
+        default=None,
+        description="Set only when they corrected it inside the edit window.",
+    )
+    author: UserSummary = Field(description="Who wrote it: the ticket's reporter.")
+
+    incident_id: uuid.UUID
+    reference: str
+    title: str
+    category: str = Field(description="Group and subcategory, as one readable path.")
+    resolved_at: datetime | None = Field(
+        description="When the repair being rated was made. What the period filters on.",
+    )
+
+
 class EngineerDetailReport(BaseModel):
     """`/reports/engineers/{user_id}` — one engineer's output over a period.
 
@@ -309,6 +346,40 @@ class EngineerDetailReport(BaseModel):
     )
     resolved_by_group: list[EngineerGroupCount] = Field(
         description="What kind of problem they fix, for reading beside their specialties.",
+    )
+
+    # --- How the work was rated ----------------------------------------------
+    #
+    # Windowed on the ticket's `resolved_at` like everything above it, so
+    # `rated_in_period` and `resolved_in_period` are a ratio between two counts
+    # of the same set. See `repositories/reports.engineer_satisfaction`.
+    rated_in_period: int = Field(
+        description="Of the repairs they made in the window, how many the reporter rated.",
+    )
+    average_rating: float | None = Field(
+        description=(
+            "Mean score over `rated_in_period`, to one decimal. Null when nothing "
+            "was rated — not 0, which would read as the worst possible record."
+        ),
+    )
+    response_rate_pct: float | None = Field(
+        description=(
+            "`rated_in_period` over `resolved_in_period`. The number that says "
+            "whether the average above is worth reading."
+        ),
+    )
+    rating_distribution: list[EngineerRatingCount] = Field(
+        description=(
+            "One entry per score from 1 to 5, including the scores nobody gave. "
+            "Always five long, so a chart drawn from it keeps its shape."
+        ),
+    )
+    can_read_reviews: bool = Field(
+        description=(
+            "Whether the caller may read the individual reviews behind these "
+            "figures: an admin, a lead, or this engineer themselves. The scores "
+            "are visible to any member of staff; the sentences are not."
+        ),
     )
 
 

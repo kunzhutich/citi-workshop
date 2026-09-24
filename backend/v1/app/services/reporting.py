@@ -23,19 +23,24 @@ it. For the current-state reports it is `scope.as_of`.
 """
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Row
+from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
 from app.clock import utc_now
 from app.errors import ValidationError
 from app.models.enums import IncidentPriority, IncidentStatus, UserRole
+from app.models.feedback import IncidentFeedback
 from app.models.incident import Incident, format_reference
 from app.models.user import User
 from app.repositories import reports as repository
+from app.schemas.common import PageParams
+from app.schemas.feedback import MAX_RATING, MIN_RATING
+from app.schemas.incident import LOCATION_SEPARATOR, UserSummary
 from app.schemas.report import (
     DEFAULT_WINDOW_DAYS,
     AssigneeCount,
@@ -48,6 +53,8 @@ from app.schemas.report import (
     DayCount,
     EngineerDetailReport,
     EngineerGroupCount,
+    EngineerRatingCount,
+    EngineerReview,
     EngineerWorkload,
     EngineerWorkloadReport,
     EscalatedTicket,
@@ -65,6 +72,7 @@ from app.schemas.report import (
     SubcategoryCount,
     SummaryReport,
 )
+from app.services.visibility import apply_feedback_visibility, sees_every_rating
 
 # --- The reporting period ----------------------------------------------------
 
@@ -334,9 +342,15 @@ def _share(part: int, whole: int) -> float | None:
 
 
 def engineer_detail(
-    session: Session, user_id: uuid.UUID, window: ReportWindow
+    session: Session, user_id: uuid.UUID, window: ReportWindow, viewer: User
 ) -> EngineerDetailReport:
     """Build `/reports/engineers/{user_id}`.
+
+    `viewer` is taken for one field — `can_read_reviews`, which decides
+    whether the link to this engineer's individual reviews is drawn. The
+    figures themselves do not depend on who is asking: any member of staff
+    may read the scores, and only an admin, a lead or the engineer themselves
+    may read the sentences behind them.
 
     The reopen rate is computed here rather than in SQL for the same reason
     every other percentage in this module is: the zero denominator is a
@@ -347,6 +361,11 @@ def engineer_detail(
     totals = repository.engineer_detail(session, user_id, window)
     resolved = totals.resolved_in_period if totals is not None else 0
     reopened = totals.reopened_in_period if totals is not None else 0
+
+    scores = {
+        row.rating: row.count for row in repository.engineer_satisfaction(session, user_id, window)
+    }
+    rated = sum(scores.values())
 
     return EngineerDetailReport(
         window=window,
@@ -363,6 +382,92 @@ def engineer_detail(
             )
             for row in repository.engineer_resolved_by_group(session, user_id, window)
         ],
+        rated_in_period=rated,
+        average_rating=_mean_score(scores),
+        response_rate_pct=_share(rated, resolved),
+        # Every score, including the ones nobody gave. Iterating the scale
+        # rather than the rows is what `summary` does for unused statuses and
+        # for the same reason: a distribution that omits its empty bars is a
+        # chart whose shape changes with the data.
+        rating_distribution=[
+            EngineerRatingCount(rating=score, count=scores.get(score, 0))
+            for score in range(MIN_RATING, MAX_RATING + 1)
+        ],
+        can_read_reviews=sees_every_rating(viewer) or viewer.id == user_id,
+    )
+
+
+def _mean_score(scores: Mapping[int, int]) -> float | None:
+    """Return the mean of a score-to-count mapping, or None when nothing was rated.
+
+    `None` and not 0.0, for the reason every other figure in this module gives
+    at a zero denominator: an engineer nobody has rated has no average, and
+    0.0 is not a neutral placeholder on a scale that starts at 1 — it is worse
+    than the worst score anybody can give.
+
+    Computed here rather than with SQL's `avg` because the same read has to
+    produce the distribution as well, and two queries for one set of rows
+    could disagree about which rows they were.
+    """
+    total = sum(scores.values())
+    if total == 0:
+        return None
+    return round(sum(score * count for score, count in scores.items()) / total, 1)
+
+
+def engineer_reviews(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    viewer: User,
+    window: ReportWindow,
+    rating: int | None,
+    paging: PageParams,
+) -> tuple[list[EngineerReview], int]:
+    """Return one page of the reviews this engineer earned in the window.
+
+    **The filter is the one in `services/visibility.py`**, not a check written
+    here, so this list and the ticket timeline can never disagree about who
+    may read a rating. A colleague at the same level therefore gets an *empty
+    page* rather than a 403 — the same answer `GET /incidents/{id}/feedback`
+    gives, and for the same reason: whether a stranger's work was rated badly
+    is not something a status code should confirm.
+
+    `can_read_reviews` on the engineer's report is what stops the link being
+    drawn for them in the first place. This is the enforcement behind it.
+    """
+    visible = apply_feedback_visibility(select(IncidentFeedback), viewer)
+    rows, total = repository.engineer_reviews(
+        session,
+        visible,
+        user_id=user_id,
+        window=window,
+        rating=rating,
+        limit=paging.page_size,
+        offset=paging.offset,
+    )
+    return [_to_review(row) for row in rows], total
+
+
+def _to_review(feedback: IncidentFeedback) -> EngineerReview:
+    """Render one rating together with the ticket it is about."""
+    incident = feedback.incident
+    category = incident.category
+    group = category.parent
+    path = f"{group.name}{LOCATION_SEPARATOR}{category.name}" if group else category.name
+
+    return EngineerReview(
+        feedback_id=feedback.id,
+        rating=feedback.rating,
+        comment=feedback.comment,
+        created_at=feedback.created_at,
+        edited_at=feedback.edited_at,
+        author=UserSummary.model_validate(feedback.author),
+        incident_id=incident.id,
+        reference=incident.reference,
+        title=incident.title,
+        category=path,
+        resolved_at=incident.resolved_at,
     )
 
 

@@ -38,11 +38,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
+from app.schemas.common import Page, Paging, build_page
+from app.schemas.feedback import MAX_RATING, MIN_RATING
 from app.schemas.report import (
     BlockedEscalatedReport,
     CategoriesReport,
     CommunicationReport,
     EngineerDetailReport,
+    EngineerReview,
     EngineerWorkloadReport,
     LocationsReport,
     MyReport,
@@ -51,10 +54,17 @@ from app.schemas.report import (
     ResponseTimesReport,
     SummaryReport,
 )
-from app.security.dependencies import ADMIN_ONLY, STAFF_ONLY, CurrentUser, DbSession
+from app.security.dependencies import ADMIN_ONLY, CurrentUser, DbSession, StaffUser
 from app.services import reporting as service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+#: One score to narrow an engineer's reviews to. Bounded by the scale rather
+#: than validated in the handler, so a 7 is a 422 before any query runs.
+RatingFilter = Annotated[
+    int | None,
+    Query(ge=MIN_RATING, le=MAX_RATING, description="Show only reviews with this score."),
+]
 
 FromQuery = Annotated[
     datetime | None,
@@ -155,23 +165,67 @@ def get_engineer_workload(session: DbSession, window: ReportPeriod) -> EngineerW
 @router.get(
     "/engineers/{user_id}",
     response_model=EngineerDetailReport,
-    dependencies=[STAFF_ONLY],
-    summary="One engineer's output over a period, and how much of it came back",
+    summary="One engineer's output over a period, how it was rated, and what came back",
 )
 def get_engineer_detail(
-    user_id: uuid.UUID, session: DbSession, window: ReportPeriod
+    user_id: uuid.UUID, session: DbSession, user: StaffUser, window: ReportPeriod
 ) -> EngineerDetailReport:
-    """Return what this engineer resolved in the window, and the reopen signal.
+    """Return what this engineer resolved in the window, how it was rated, and the reopen signal.
 
     **Staff, not admin only**, and that is the one thing about this route worth
-    reading twice. Seven of the other reports are `ADMIN_ONLY`; this one backs
+    reading twice. `StaffUser` is the guard as well as the caller: it is
+    `require_roles(ENGINEER, FACILITY_ADMIN)`, so the route needs no separate
+    `dependencies=[STAFF_ONLY]` beside it — that pair would be one check
+    written twice. Seven of the other reports are `ADMIN_ONLY`; this one backs
     the engineer profile page, which a LEAD opens to decide who to hand work
     to and which an engineer can open on themselves. An employee cannot —
     §5.5 of the redesign brief is explicit that an employee must not reach an
     engineer's profile, and this dependency is what enforces it rather than the
     absence of a link on a screen.
+
+    The caller is taken for one field. Every figure here is the same for any
+    member of staff, including the satisfaction average and its distribution —
+    the owner's rule is that engineers may see each other's *scores*. Only
+    `can_read_reviews` depends on who is asking, and it gates the sentences.
     """
-    return service.engineer_detail(session, user_id, window)
+    return service.engineer_detail(session, user_id, window, user)
+
+
+@router.get(
+    "/engineers/{user_id}/reviews",
+    response_model=Page[EngineerReview],
+    summary="The individual reviews behind one engineer's rating",
+)
+def get_engineer_reviews(
+    user_id: uuid.UUID,
+    session: DbSession,
+    user: StaffUser,
+    window: ReportPeriod,
+    paging: Paging,
+    rating: RatingFilter = None,
+) -> Page[EngineerReview]:
+    """Return one page of this engineer's reviews, newest first.
+
+    Gated by `services/visibility.apply_feedback_visibility` rather than by a
+    check here, so this list can never disagree with the ticket timeline about
+    who may read a rating. A colleague at the same level gets an **empty page
+    rather than a 403** — the same answer `GET /incidents/{id}/feedback`
+    gives, for the reason it gives: a status code that distinguished "there
+    are none" from "there are some and they are not yours" would leak the
+    second.
+
+    Windowed on the ticket's `resolved_at`, exactly like the figures on the
+    report above, so the list a reader arrives at by clicking "18 of 26
+    resolved rated" contains those eighteen and nothing else.
+
+    `rating` narrows to one score. It is what makes this screen answer the
+    question people actually arrive with — "show me the unhappy ones" — and
+    the distribution on the report above is the control that sets it.
+    """
+    items, total = service.engineer_reviews(
+        session, user_id=user_id, viewer=user, window=window, rating=rating, paging=paging
+    )
+    return build_page(items, total=total, params=paging)
 
 
 @router.get(
