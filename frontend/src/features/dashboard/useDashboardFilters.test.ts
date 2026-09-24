@@ -81,6 +81,22 @@ describe('a custom range', () => {
     expect(new Date(period.to ?? '').getDate()).toBe(7);
   });
 
+  it('leaves an end out rather than inventing one when the URL is nonsense', () => {
+    // `from` and `to` come out of the address bar, so they can be anything a
+    // hand-edit or a truncated paste leaves there. This used to throw
+    // `RangeError: Invalid time value` out of `toISOString`, which took the
+    // whole dashboard to the error boundary — a screen lost to a bad link.
+    // Widening to an unfiltered end is also the safe direction: the reader
+    // sees more than they asked for rather than silently less.
+    const period = resolvePeriod(
+      filters({ rangeId: CUSTOM_RANGE_ID, from: 'nonsense', to: '2026-13-45' }),
+      NOW,
+    );
+
+    expect(period.from).toBeUndefined();
+    expect(period.to).toBeUndefined();
+  });
+
   it('leaves an end out rather than inventing one', () => {
     const period = resolvePeriod(filters({ rangeId: CUSTOM_RANGE_ID, from: '2026-09-01' }), NOW);
 

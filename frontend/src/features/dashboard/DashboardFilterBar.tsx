@@ -1,9 +1,11 @@
 import Box from '@mui/material/Box';
+import Collapse from '@mui/material/Collapse';
 import MenuItem from '@mui/material/MenuItem';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
 
+import { DateRangeFields } from '../../components/DateRangeFields';
 import { useFacilityTree } from '../facilities/hooks';
 import {
   CUSTOM_RANGE_ID,
@@ -42,7 +44,21 @@ export interface DashboardFilterBarProps {
  *
  * The range is a list of named periods rather than a calendar. Nobody wants to
  * fight a date grid to say "last 30 days", and a preset link still means the
- * last thirty days when it is opened next week.
+ * last thirty days when it is opened next week. The calendar is what the last
+ * entry in that list reveals, for the period no preset covers.
+ *
+ * **The two ends open rather than appear.** They used to be a bare conditional,
+ * so picking "Custom range…" made two controls exist between one frame and the
+ * next and shoved the building filter along the row with them. `Collapse` gives
+ * that a direction, which is the difference between "two more fields are here"
+ * and "the bar changed" — the same reasoning as `ReportSection`.
+ *
+ * `unmountOnExit` with it, and not for the reason it usually earns: `Collapse`
+ * hides a closed child with `visibility: hidden`, so a screen reader and the
+ * tab order lose the fields either way. What unmounting adds is that a closed
+ * range keeps no half-typed date of its own — `DateRangeFields` holds one while
+ * a reader is mid-edit, and a pair that merely went invisible would still be
+ * holding it the next time the range is opened.
  */
 export function DashboardFilterBar({ controls, note }: DashboardFilterBarProps) {
   const { filters, setFilters } = controls;
@@ -75,28 +91,20 @@ export function DashboardFilterBar({ controls, note }: DashboardFilterBarProps) 
           <MenuItem value={CUSTOM_RANGE_ID}>Custom range…</MenuItem>
         </TextField>
 
-        {isCustom ? (
-          <>
-            <TextField
-              type="date"
-              label="From"
-              size="small"
-              value={filters.from}
-              onChange={(event) => setFilters({ from: event.target.value })}
-              slotProps={{ inputLabel: { shrink: true } }}
-              sx={{ minWidth: 160, flex: '0 1 170px' }}
+        <Collapse in={isCustom} unmountOnExit>
+          {/* The pair reflows as a unit. `DateRangeFields` renders a fragment
+              so that a grid caller gets two columns, which means the flex row
+              the two fields need is this caller's to supply — and it has to be
+              inside the collapse, whose own box is the one being grown. */}
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+            <DateRangeFields
+              from={filters.from}
+              to={filters.to}
+              onChange={setFilters}
+              fieldSx={{ minWidth: 160, flex: '0 1 170px' }}
             />
-            <TextField
-              type="date"
-              label="To"
-              size="small"
-              value={filters.to}
-              onChange={(event) => setFilters({ to: event.target.value })}
-              slotProps={{ inputLabel: { shrink: true } }}
-              sx={{ minWidth: 160, flex: '0 1 170px' }}
-            />
-          </>
-        ) : null}
+          </Box>
+        </Collapse>
 
         <TextField
           select

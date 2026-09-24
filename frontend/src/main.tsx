@@ -1,5 +1,7 @@
 import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -39,20 +41,26 @@ if (!container) {
 // There is nothing to navigate with at that point, so it offers a reload.
 // The per-route boundary in `AppShell` handles the ordinary case, where the
 // navigation is still standing and "try again" is a real option.
+// LocalizationProvider is here and nowhere else: every date picker in the
+// application should parse and print dates the same way, and a provider per
+// screen is how two screens quietly end up on different adapters. It sits
+// inside ThemeProvider so a picker's popper is themed like everything else.
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <ErrorBoundary label="application" recovery="reload">
-          <BrowserRouter>
-            <AuthProvider>
-              <SnackbarProvider>
-                <App />
-              </SnackbarProvider>
-            </AuthProvider>
-          </BrowserRouter>
-        </ErrorBoundary>
+        <LocalizationProvider dateAdapter={AdapterDayjs}>
+          <ErrorBoundary label="application" recovery="reload">
+            <BrowserRouter>
+              <AuthProvider>
+                <SnackbarProvider>
+                  <App />
+                </SnackbarProvider>
+              </AuthProvider>
+            </BrowserRouter>
+          </ErrorBoundary>
+        </LocalizationProvider>
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,

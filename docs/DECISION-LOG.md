@@ -3338,6 +3338,135 @@ server still holds a pool against.
 It is local only. Aurora is `publicly_accessible = false` and unreachable from
 here, which is the intended blast radius.
 
+## D60 — Date pickers, the library that came with them, and what they cost
+
+**§A of the phase brief.** `DashboardFilterBar.tsx` was the only file in the
+application with `type="date"` inputs. It is used by the admin dashboard *and*
+the engineer page, and §C adds the ticket lists, so it was treated as a shared
+component from the start rather than as the dashboard's.
+
+### dayjs, and one `LocalizationProvider`
+
+`@mui/x-date-pickers` needs a date library. **dayjs**, on three grounds and
+none of them taste: it is the smaller of the two serious candidates, it is what
+`BUILD-PLAN.md` §1 named for this project before anything was written, and it
+is the adapter MUI's own examples use, so the next person to read this file
+finds the documentation matching it.
+
+**One provider, at the root in `main.tsx`**, and mirrored in
+`test/renderWithProviders.tsx`. Not one per screen: every picker in the
+application should parse and print dates the same way, and a provider per
+screen is how two screens quietly end up on different adapters. The mirror is
+not optional either — without it a picker *throws* rather than rendering
+wrongly, so any test of a screen with one would fail on the provider instead of
+on the screen.
+
+### `components/DateRangeFields.tsx`, and where the conversion lives
+
+The shared thing is **not the markup, it is the value contract**: two
+`YYYY-MM-DD` strings in, two out, `''` for unset, and nothing written while a
+date is still being typed. No `Dayjs` crosses the boundary in either
+direction — the moment one does, every caller has to reason about timezones and
+about which date library this project uses.
+
+That matters because the two consumers store ranges differently. The dashboard
+keeps calendar days in the URL, deliberately, so a link means the same period
+in another timezone; the ticket list keeps **full ISO instants**, because the
+same parameter carries a dashboard window computed to the second. Each converts
+at its own edge (§C put the day↔instant helpers in `display/time.ts`, beside
+`parseCalendarDay`, whose rule they depend on) rather than this component
+growing a flag.
+
+It renders a **fragment, not a wrapper**, so its two fields are two items of
+whatever layout the caller is running — a flex row on the dashboard, a grid
+column each inside `FilterRow`. A wrapper would make the pair one grid item.
+
+### Two things found by building it
+
+**The theme does not reach a picker, and the reason is not the obvious one.**
+`theme.ts` sets `MuiTextField` `defaultProps: { fullWidth: true, size:
+'medium' }`, and the expectation is that a picker's field inherits it. It does
+not: that slot renders `MuiPickersTextField`, a *different* component, so
+nothing keyed on `MuiTextField` reaches it at all. The visible outcome is the
+same — medium is also the picker's own default, so the field stood a size step
+taller than the small selects beside it — which is exactly what makes it worth
+writing down, because the fix a reader would reach for first is editing the
+theme, and that would do nothing. Both `size` and `fullWidth` are stated at the
+component.
+
+**Guarding on the picker's validity alone silently broke keyboard entry.**
+Typing a year fills the last section four times, so the field reports 12 March
+in years 2, 20, 202 and 2026 — and the first three are perfectly good dates
+that would each have gone into the address bar and taken eight report requests
+with them. Refusing them is right; refusing them *against a field driven
+straight off the stored string* is not, because Material UI resets the sections
+when a change is refused, so the month and day already entered were wiped and
+the date could never be finished. Fixed with a draft value held inside the
+component and resynchronised **during render**, the same pattern as
+`IncidentFilterBar`'s search box. Measured: four writes became one.
+
+### The field format is stated, not inherited
+
+dayjs's default locale renders `09/01/2026`, which is the first of September to
+some readers and the ninth of January to others — sitting an inch from a
+heading reading "Counted over Sep 1, 2026 – Sep 20, 2026", the same value
+printed two ways, one of them unreadable. The fields use `DD MMM YYYY`.
+
+Not `formatDate`'s exact output, which follows the reader's own locale and
+cannot here: **a picker's format is also its input grammar**, and a field whose
+section order changed with the browser would be a different control in
+different hands. Unambiguous everywhere beats familiar somewhere. The cost is
+paid once and is that sections fill day-first; digits still type.
+
+### `Collapse`, and the transition budget that already existed
+
+The two pickers are revealed by "Custom range…" through MUI `Collapse` rather
+than appearing and disappearing abruptly. `test/renderWithProviders.tsx`
+already zeroes every transition duration for jsdom — it exists because a
+`Collapse` added in R5 made three tests flaky in a parallel run — so this
+needed no new timeout and none was raised.
+
+`unmountOnExit` is kept, and **not** for the reason it looks like: measured,
+the accessibility tree is empty either way, because `Collapse` hides a closed
+child with `visibility: hidden`. What it actually buys is that a half-typed
+draft is discarded when the range closes.
+
+### What it cost, measured rather than estimated
+
+Built at `b45e7b6` in a throwaway worktree and again on this branch:
+
+```
+                        raw          gzipped
+before   index-*.js   1,318.21 kB    407.81 kB
+after    index-*.js   1,482.30 kB    457.14 kB
+delta                  +164.09 kB     +49.33 kB
+```
+
+That is `@mui/x-date-pickers` plus dayjs, and it is the whole of the phase's
+JavaScript growth to that point. The >500 kB chunk warning was already there
+and still is.
+
+**A correction while measuring:** `CLAUDE.md` records "994 kB raw against 309 kB
+gzipped" beside the CloudFront compression note. That figure is from D37 and
+predates R5 and R6; the baseline before this phase is 1,318 kB / 408 kB. The
+compression decision it supports is unaffected — the ratio is the same — but
+the numbers in that sentence are stale by about a third, and **only the owner
+should edit `CLAUDE.md`**, so it is recorded here instead.
+
+### Not done, and flagged rather than hidden
+
+**jsdom renders the *mobile* picker, always.** `test/viewport.ts`'s
+`matchMedia` stub understands `min-width` and `max-width` and nothing else, so
+`@media (pointer: fine)` is false and `DatePicker` resolves to
+`MobileDatePicker` — a modal, where a desktop browser gets an inline popper.
+The value contract is shared, so the unit tests are testing the right rule, but
+no test covers the desktop popper's appearance or placement. Closed by eye
+instead, in Chromium at 1440px and 375px: the popper anchors under its field,
+picks up the theme's brown for the selected day, and does not collide with the
+filter row. Fixing the stub is a real improvement and a change to a file every
+test in the suite depends on, which is not a thing to do in the tail of a UI
+phase.
+
 ## D62 — Two filter hooks in one address bar, and who owns which parameter
 
 **Found by building §D4**, which puts a ticket list inside the engineer page.

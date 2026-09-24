@@ -192,8 +192,8 @@ export function resolvePeriod(
 ): { from: string | undefined; to: string | undefined } {
   if (filters.rangeId === CUSTOM_RANGE_ID) {
     return {
-      from: filters.from ? startOfDay(filters.from) : undefined,
-      to: filters.to ? endOfDay(filters.to) : undefined,
+      from: startOfDay(filters.from),
+      to: endOfDay(filters.to),
     };
   }
 
@@ -219,10 +219,41 @@ export function rangeLabel(filters: DashboardFilters): string {
   return preset?.label ?? 'Last 30 days';
 }
 
-function startOfDay(date: string): string {
-  return new Date(`${date}T00:00:00`).toISOString();
+/**
+ * One end of a custom range as the instant its local day begins, or nothing.
+ *
+ * **`undefined` for a value that is not a date**, which is not defensive
+ * padding: `from` and `to` come out of the address bar, where a hand-edit, a
+ * truncated paste or a stale link can put anything at all. Until R7 they came
+ * out of a native `type="date"` input that would only ever have written a real
+ * day, and `new Date('nonsenseT00:00:00').toISOString()` throws `RangeError`
+ * — so `?range=custom&from=nonsense` took the whole dashboard to the error
+ * boundary. Found by another worker's deliberate-break tests on the date
+ * picker, not by anything the picker itself does wrong.
+ *
+ * Treating it as *no date* is also the answer that agrees with the screen:
+ * `components/DateRangeFields.tsx` shows an empty field for a string it cannot
+ * parse, so the field and the query now say the same thing. Widening to an
+ * unfiltered end is the safe direction as well — the reader sees more than
+ * they asked for rather than silently less.
+ */
+function startOfDay(date: string): string | undefined {
+  return instantOrNothing(`${date}T00:00:00`);
 }
 
-function endOfDay(date: string): string {
-  return new Date(`${date}T23:59:59.999`).toISOString();
+/**
+ * The other end, at the last millisecond of its local day.
+ *
+ * The milliseconds matter: the API's bound is inclusive on an instant, so a
+ * `to` left at its own midnight would drop every ticket reported during the
+ * day the reader named.
+ */
+function endOfDay(date: string): string | undefined {
+  return instantOrNothing(`${date}T23:59:59.999`);
+}
+
+/** Parse, or say so by being absent. Never throws. */
+function instantOrNothing(value: string): string | undefined {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
