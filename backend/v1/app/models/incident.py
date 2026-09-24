@@ -20,7 +20,13 @@ from sqlalchemy.dialects.postgresql import BIGINT, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, pg_enum
-from app.models.enums import BlockedReasonType, CloseReason, IncidentPriority, IncidentStatus
+from app.models.enums import (
+    BlockedReasonType,
+    CloseReason,
+    IncidentPriority,
+    IncidentStatus,
+    NoteVisibility,
+)
 
 if TYPE_CHECKING:
     from app.models.building import Building
@@ -266,6 +272,34 @@ class Incident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="IncidentFeedback.created_at",
     )
+
+    @property
+    def last_public_note_at(self) -> datetime | None:
+        """When somebody last wrote on this ticket where the reporter could read it.
+
+        `None` when nobody has. Read by `workflow.autoclose_deadline`, which
+        restarts the seven-day quiet clock on a public note: a ticket closing
+        itself in the middle of a conversation is what makes an automatic
+        close feel like a filing error.
+
+        **INTERNAL notes are excluded, and deleted ones are.** The reporter
+        cannot see either, so neither is evidence that anybody is waiting on a
+        reply — and a ticket held open by a conversation its reporter is not
+        party to would be held open invisibly.
+
+        This reads `self.notes`, which is **not** in `_detail_loaders`: the
+        only caller is the auto-close sweep, and
+        `repositories/incidents.list_autoclose_candidates` eager-loads them
+        for the batch it returns. It is a property rather than a column
+        because it has exactly one reader, and a denormalised column with one
+        reader is a second thing to keep correct on every note written.
+        """
+        public = [
+            note.created_at
+            for note in self.notes
+            if note.deleted_at is None and note.visibility == NoteVisibility.PUBLIC
+        ]
+        return max(public) if public else None
 
     @property
     def reference(self) -> str:

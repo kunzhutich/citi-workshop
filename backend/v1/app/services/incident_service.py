@@ -785,6 +785,69 @@ def perform_transition(
     return repository.reload(session, incident)
 
 
+def apply_system_transition(
+    session: Session,
+    *,
+    incident: Incident,
+    transition: Transition,
+    close_reason: CloseReason | None,
+    now: datetime,
+) -> Incident:
+    """Perform a transition the application makes with no user behind it.
+
+    The sibling of `perform_transition`, and the differences are the point.
+
+    **No permission check, because there is no caller to check.** The
+    permission question is answered by which rows name `Actor.SYSTEM` in
+    `app/workflow.py` — one, today — and `resolve_actors` can never return
+    SYSTEM for a `User`, so nothing reachable from an endpoint arrives here.
+
+    **No guard check either**, and that is the one thing worth reading twice.
+    The guard belongs to the caller: `services/autoclose.py` evaluates it per
+    candidate and skips the ones that fail, because a sweep over fifty
+    tickets wants to *pass over* the ones that are not due rather than raise
+    on the first. `perform_transition` raises instead, because a person who
+    pressed a button deserves to be told why it did not work.
+
+    **The same effects, from the same function.** `_apply_transition_effects`
+    is what makes this a real closure — `closed_at`, the close reason, the
+    blocked fields cleared — rather than a second, drifting idea of what
+    CLOSED means.
+
+    The audit row carries `actor_id=None`, which is what the column has always
+    allowed and what `ActivityTimeline` already renders as "System". The
+    caller commits.
+    """
+    previous_status = incident.status
+
+    _apply_transition_effects(
+        incident,
+        transition=transition,
+        payload=TransitionRequest(to_status=transition.to_status),
+        close_reason=close_reason,
+        duplicate_of=None,
+        now=now,
+    )
+
+    repository.add_event(
+        session,
+        incident_id=incident.id,
+        actor_id=None,
+        event_type=transition.event_type,
+        from_value=previous_status.value,
+        to_value=transition.to_status.value,
+        # The same instant `_apply_transition_effects` wrote to `closed_at`.
+        # The default `clock_timestamp()` would be a second later, which is
+        # harmless in production and wrong in the demo seed, where `now` is
+        # the moment the whole world is pinned to.
+        created_at=now,
+    )
+
+    # Nobody is notified. See `services/autoclose.py` on why, and D31 on the
+    # general shape of that decision.
+    return incident
+
+
 def _describe(
     incident: Incident,
     actors: frozenset[workflow.Actor],

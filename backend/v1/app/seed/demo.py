@@ -91,6 +91,7 @@ from app.models.seat import Seat
 from app.models.user import User
 from app.models.watcher import IncidentWatcher
 from app.security.passwords import hash_password
+from app.services import autoclose
 from app.services.feedback import FEEDBACK_WINDOW
 
 #: Every demo account shares this password. It is printed in the return payload
@@ -153,6 +154,11 @@ class DemoSeedResult:
     notes: int = 0
     watchers: int = 0
     feedback: int = 0
+    #: Resolved tickets the sweep closed because nobody came back to them.
+    #: Part of the seed's output because a world that settles under its own
+    #: rules has a different status mix from one that does not, and a reader
+    #: comparing `by_status` against the spec should be able to see why.
+    autoclosed: int = 0
     notifications: int = 0
     by_status: dict[str, int] = field(default_factory=dict)
     by_priority: dict[str, int] = field(default_factory=dict)
@@ -1082,6 +1088,30 @@ def _seed_incidents(
         feedback=feedback,
         now=now,
     )
+    # Let the world settle under its own rules before it is counted.
+    #
+    # The generator walks each ticket's history and stops; it has no notion of
+    # a resolved ticket nobody came back to, so it leaves a pile of them
+    # months old. The application closes those after seven days of silence —
+    # which means the *first page anybody opened* would quietly close eighteen
+    # of them and make every status figure this function is about to report
+    # wrong within a minute of the seed finishing.
+    #
+    # Running the real sweep here rather than teaching `_walk` the rule keeps
+    # one implementation of it, and makes the demo world one the application
+    # could actually have produced. The limit is the whole spec because this
+    # is not a request path.
+    autoclosed = autoclose.close_stale(session, now=now, limit=spec.incidents)
+    session.flush()
+
+    # Each closure writes one audit row, and `result.events` was counted
+    # before the sweep ran. A result that under-reports what is in the
+    # database is a result nobody can check against it —
+    # `test_every_event_is_backdated_and_in_order` compares the two and
+    # caught exactly this.
+    result.autoclosed = len(autoclosed)
+    result.events += len(autoclosed)
+
     _summarise(result, plans, incidents, world.engineers)
 
 

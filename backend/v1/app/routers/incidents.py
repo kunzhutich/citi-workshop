@@ -60,7 +60,7 @@ from app.schemas.incident import (
     WatchStatus,
 )
 from app.security.dependencies import AdminUser, CurrentUser, DbSession, require_roles
-from app.services import assignment, incident_service
+from app.services import assignment, autoclose, incident_service
 from app.services import feedback as feedback_service
 from app.services import notes as note_service
 from app.services import watchers as watcher_service
@@ -167,7 +167,28 @@ def list_incidents(
     paging: Paging,
     query: ListFilters,
 ) -> Page[IncidentListItem]:
-    """Return one page of incidents matching the filters."""
+    """Return one page of incidents matching the filters.
+
+    **This GET writes, and that is deliberate.** Resolved tickets nobody came
+    back to are closed here, by `services/autoclose.py`, because this
+    deployment has no scheduler to close them anywhere else — see that
+    module's docstring for why, and `repositories/login_attempts.purge_expired`
+    for the same decision taken once before.
+
+    It is *this* route and not the service behind it, so that the write is
+    visible to somebody reading the endpoint rather than hidden inside a
+    function named `list_incidents`. And it is this route rather than any
+    other because every persona reaches it: an employee's "My tickets", an
+    engineer's queue, an admin's "All tickets". The sweep is not scoped to
+    the page being listed, so one visit by anybody brings the whole estate
+    current.
+
+    The commit is before the list query on purpose: a closure that has
+    happened should survive a read that fails after it.
+    """
+    autoclose.close_stale(session)
+    session.commit()
+
     rows, total = incident_service.list_incidents(session, user=user, query=query, paging=paging)
     return build_page([_to_list_item(row) for row in rows], total=total, params=paging)
 

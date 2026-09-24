@@ -37,6 +37,7 @@ from app.config import get_settings
 from app.db import get_session_factory
 from app.migrations import upgrade_to_head
 from app.seed.categories import seed_categories
+from app.services import autoclose
 from app.services.health import build_health_report
 
 logger = logging.getLogger(__name__)
@@ -226,12 +227,49 @@ def _seed_demo_overrides(event: dict[str, Any]) -> dict[str, int]:
     return overrides
 
 
+def _op_close_stale(event: dict[str, Any]) -> dict[str, Any]:
+    """Close every resolved ticket that has gone quiet, and say which.
+
+    The same sweep `services/autoclose.py` runs on the request path, exposed
+    so it can be *forced*. Two reasons it earns a place beside `migrate` and
+    `seed_demo` rather than being left implicit:
+
+    * **A demo should not depend on somebody having browsed first.** The sweep
+      is opportunistic by necessity — there is no scheduler in this
+      deployment — so before showing the feature, one invoke makes the estate
+      current.
+    * **It is the only way to see what it did.** On the request path the
+      sweep is silent; here it returns the tickets it closed, which is what
+      you want the first time it runs against real data.
+
+    `limit` may be raised from the default for a first catch-up run. It is
+    still bounded: an unbounded sweep over a long-neglected estate is a Lambda
+    that times out holding a write transaction open.
+    """
+    limit = int(event.get("limit", autoclose.SWEEP_LIMIT))
+    session = get_session_factory()()
+    try:
+        closed = autoclose.close_stale(session, limit=limit)
+        references = [incident.reference for incident in closed]
+        session.commit()
+    finally:
+        session.close()
+
+    return {
+        "closed": len(references),
+        "references": references,
+        "quiet_days": autoclose.WINDOW.days,
+        "limit": limit,
+    }
+
+
 #: Action name -> implementation. The single registry of ops actions.
 ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "health": _op_health,
     "migrate": _op_migrate,
     "seed_admin": _op_seed_admin,
     "seed_demo": _op_seed_demo,
+    "close_stale": _op_close_stale,
 }
 
 

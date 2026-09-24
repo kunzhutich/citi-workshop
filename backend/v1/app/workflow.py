@@ -62,13 +62,33 @@ class Actor(StrEnum):
     REPORTER = "REPORTER"
     ASSIGNEE = "ASSIGNEE"
     FACILITY_ADMIN = "FACILITY_ADMIN"
+    #: Nobody. The capacity the application itself acts in when a resolved
+    #: ticket goes quiet for a week — see ``services/autoclose.py``.
+    #:
+    #: **`resolve_actors` never returns it**, which is the whole point: it
+    #: takes a `User`, and no user is the system. So the row below is legal
+    #: and is offered to nobody, `allowed-transitions` never lists it, and no
+    #: button is ever drawn for it — without a single `if` outside this table
+    #: saying so. A move nobody may make and the application still makes is
+    #: exactly what this enum is for.
+    SYSTEM = "SYSTEM"
 
 
 #: Which row wins when a caller matches several for the same (from, to) pair.
 #: Widest powers first, so being the reporter never costs an admin an option.
 #: The consequence worth knowing: an admin who closes a ticket they reported
 #: themselves records ADMIN_CLOSED rather than CONFIRMED_FIXED.
-ACTOR_PRECEDENCE: tuple[Actor, ...] = (Actor.FACILITY_ADMIN, Actor.ASSIGNEE, Actor.REPORTER)
+#: SYSTEM is last, and its position means nothing: it holds exactly one row
+#: and no human ever holds it, so it can never be the actor a *choice* is
+#: made between. It is in the tuple at all because `_highest_precedence`
+#: walks this list to resolve any actor set, including the sweep's — leaving
+#: it out makes `select_transition` raise on the one caller that uses it.
+ACTOR_PRECEDENCE: tuple[Actor, ...] = (
+    Actor.FACILITY_ADMIN,
+    Actor.ASSIGNEE,
+    Actor.REPORTER,
+    Actor.SYSTEM,
+)
 
 #: How long after closing a ticket may still be reopened. After this, CLOSED is
 #: terminal and the only way forward is a new ticket.
@@ -84,6 +104,60 @@ def _requires_an_assignee(incident: Incident, now: datetime) -> str | None:
     del now
     if incident.assignee_id is None:
         return "Assign this ticket to an engineer before starting work on it."
+    return None
+
+
+#: How long a resolved ticket may sit untouched before it closes itself.
+#:
+#: The same seven days as `REOPEN_WINDOW` and deliberately a separate
+#: constant: they are two different clocks that happen to agree today, and
+#: tying them together would mean changing how long somebody may reopen a
+#: ticket in order to change how long it waits to be closed.
+#:
+#: It is **not** the same clock as `services/feedback.FEEDBACK_WINDOW`
+#: either, and those two must stay independent: feedback stays open for
+#: fourteen days from the repair, so a ticket closing itself on day seven
+#: does not take the reporter's chance to rate it with it. See D71.
+AUTOCLOSE_AFTER = timedelta(days=7)
+
+
+def autoclose_deadline(incident: Incident) -> datetime | None:
+    """Return the moment this ticket becomes eligible to close itself.
+
+    `None` when it is not a candidate at all: a ticket that has never been
+    resolved has no clock to run.
+
+    **The clock restarts on a public note.** Somebody writing to the reporter
+    after the fix — or the reporter writing back — is a conversation still
+    happening, and a ticket closing itself in the middle of one is the thing
+    that makes an auto-close feel like a filing error. `last_public_note_at`
+    is read off the incident rather than queried here, so this stays a pure
+    function of the row and remains testable without a session, exactly like
+    every other guard in this module.
+
+    **INTERNAL notes do not restart it**, which is the half worth stating.
+    The reporter cannot see one, so staff talking among themselves is not
+    evidence that anybody is waiting on a reply — and a ticket kept open by a
+    conversation its reporter is not party to would be held open invisibly.
+    """
+    if incident.resolved_at is None:
+        return None
+    last_word = incident.last_public_note_at
+    if last_word is not None and last_word > incident.resolved_at:
+        return last_word + AUTOCLOSE_AFTER
+    return incident.resolved_at + AUTOCLOSE_AFTER
+
+
+def _past_the_autoclose_deadline(incident: Incident, now: datetime) -> str | None:
+    """Refuse to close a resolved ticket that has not gone quiet for long enough."""
+    deadline = autoclose_deadline(incident)
+    if deadline is None:
+        return "This ticket has not been resolved, so it cannot be closed automatically."
+    if now < deadline:
+        return (
+            f"This ticket has been quiet for less than {AUTOCLOSE_AFTER.days} days "
+            "and is not due to be closed automatically yet."
+        )
     return None
 
 
@@ -216,6 +290,25 @@ TRANSITIONS: tuple[Transition, ...] = (
         action_label="Close ticket",
         close_reasons=frozenset({CloseReason.ADMIN_CLOSED}),
     ),
+    # A resolved ticket that nobody came back to. The reporter never
+    # confirmed the fix and never said it was still broken, and after a week
+    # of silence the ticket is closed rather than left open for ever.
+    #
+    # It is a **row here** rather than a field written by hand in
+    # `services/autoclose.py`, because the alternative is a second place that
+    # knows what entering CLOSED means — and `_apply_transition_effects` is
+    # the first. The guard is the deadline itself, so a ticket that is not yet
+    # due is refused by the same machinery that refuses any other illegal
+    # move.
+    Transition(
+        from_status=IncidentStatus.RESOLVED,
+        to_status=IncidentStatus.CLOSED,
+        allowed_actors=frozenset({Actor.SYSTEM}),
+        required_fields=(),
+        action_label="Close automatically",
+        close_reasons=frozenset({CloseReason.SYSTEM_CLOSED}),
+        guard=_past_the_autoclose_deadline,
+    ),
     Transition(
         from_status=IncidentStatus.RESOLVED,
         to_status=IncidentStatus.IN_PROGRESS,
@@ -335,6 +428,7 @@ def _highest_precedence(candidates: list[Transition], actors: frozenset[Actor]) 
                 return transition
 
     # Unreachable: every candidate was selected because it matched an actor,
-    # and ACTOR_PRECEDENCE lists all three. Raising beats returning something
-    # arbitrary if that ever stops being true.
+    # and ACTOR_PRECEDENCE lists every member of `Actor` — which
+    # `tests/unit/test_workflow.py` asserts, because the day it stops being
+    # true is the day this raises in production instead.
     raise AssertionError("No candidate transition matched the caller's actor roles.")

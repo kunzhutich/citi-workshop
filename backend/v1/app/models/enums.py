@@ -76,6 +76,11 @@ class CloseReason(StrEnum):
     INVALID = "INVALID"
     CANCELLED_BY_REPORTER = "CANCELLED_BY_REPORTER"
     ADMIN_CLOSED = "ADMIN_CLOSED"
+    #: Nobody closed it. A resolved ticket that went quiet for a week is
+    #: closed by ``services/autoclose.py``, and this is what makes that a fact
+    #: in the data rather than something a reader has to infer from an audit
+    #: row with no actor. Added by revision 0008.
+    SYSTEM_CLOSED = "SYSTEM_CLOSED"
 
 
 class NoteVisibility(StrEnum):
