@@ -325,6 +325,45 @@ export const theme = createTheme({
     MuiCard: {
       defaultProps: { variant: 'outlined' },
     },
+    MuiTableCell: {
+      styleOverrides: {
+        /*
+         * Room to breathe in every table at once.
+         *
+         * Material UI's dense cell is `6px 16px`, and every table in this
+         * application is `size="small"` — the ticket list, the engineer
+         * roster, the users page's sections, the facilities floors, and the
+         * dashboard's workload, blocked-by-reason, flow and breakdown tables.
+         * At 6px a row carrying two chips is 24px of chip in a 37px row,
+         * which reads as a wall rather than as a list of things.
+         *
+         * **Here and not in eight `sx` props**, per CLAUDE.md: a default is
+         * the only version of this change that cannot be half-applied. The
+         * cost of that is the other side of the same coin — it lands on five
+         * screens at once, including three nobody asked about — so all of
+         * them were looked at, at 1440px and at 375px, rather than only the
+         * ticket list this started from.
+         *
+         * **Vertical only.** The horizontal padding is what sets a table's
+         * column rhythm, and `IncidentTable`'s fixed column widths are
+         * measured against it (`COLUMN_WIDTHS`); widening it would push
+         * Assignee and Updated off a 1440px screen, which is the exact defect
+         * that comment records having fixed.
+         *
+         * **The same on a phone, deliberately.** More row height is not
+         * automatically better at 375px — it is more scrolling — but the
+         * tables that survive to a phone are the ones whose cells *wrap*: a
+         * roster row is a name over an email over chips, and cramped
+         * horizontal rules between wrapped blocks is where the density read
+         * worst, not best. The ticket list does not appear here at all below
+         * 900px; it is `IncidentCardList` there.
+         */
+        sizeSmall: ({ theme: current }) => ({
+          paddingTop: current.spacing(1.25),
+          paddingBottom: current.spacing(1.25),
+        }),
+      },
+    },
     MuiDrawer: {
       styleOverrides: {
         paper: ({ theme: current }) => ({

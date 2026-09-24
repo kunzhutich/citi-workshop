@@ -3639,6 +3639,59 @@ dashboard pair reading `expected null to be 'OPEN'` and `expected null to be
 
 **Reversible.** Yes, in two lines — one per hook.
 
+## D64 — Table density, set once, and the five screens it reached
+
+**§E of the phase brief:** tables are cramped, the ticket tables worst.
+
+Material UI's dense cell is `6px 16px`, and **every table in this application
+is `size="small"`** — the ticket list, the engineer roster (which the Engineers
+and Team screens share), the users page's sectioned table, the facilities
+floor's places, and the dashboard's workload, blocked-by-reason, flow and
+breakdown tables. At 6px a ticket row carrying two chips is 24px of chip in a
+37px row, which reads as a wall rather than as a list of things.
+
+**One `MuiTableCell` default in `theme.ts`, not eight `sx` props.** CLAUDE.md
+says anything global belongs in the theme, and the reason bites here: a
+per-table `sx` is the version of this change that can be half-applied, and the
+two tables somebody forgets are the two that look broken next to the six that
+do not. `spacing(1.25)`, so it is 10px in the theme's units rather than a
+literal.
+
+The cost is the other side of the same coin — it lands on five screens at once,
+three of which nobody asked about — so all of them were measured and looked at,
+at 1440px and 375px:
+
+| Screen | Table | Row height |
+| --- | --- | --- |
+| Tickets | `IncidentTable` | 37 → **45px** (desktop only; a phone gets `IncidentCardList`) |
+| Engineers, Team | `EngineerRoster` | 55 → **63–73px** |
+| Users | sectioned table | 53 → **61px** data rows |
+| Facilities | places on a floor | 44 → **52px** |
+| Dashboard | workload | 43 → **51px** |
+
+**Vertical padding only.** The horizontal padding sets a table's column rhythm,
+and `IncidentTable`'s fixed `COLUMN_WIDTHS` are measured against it; widening
+it would push Assignee and Updated off a 1440px screen, which is the exact
+defect that file's comment records having fixed once already.
+
+**The same height on a phone, and that was not the obvious answer.** More row
+height at 375px is more scrolling, so the brief was right to flag it. What
+settles it is *which* tables survive to a phone: the ticket list is not one of
+them, and the ones that are — the roster, the users page — are the ones whose
+cells **wrap**. A roster row is a name over an email over a column of
+specialty chips, and cramped horizontal rules between wrapped blocks is where
+the old density read worst rather than best. Looked at: the roster at 375px is
+the screen the change helps most.
+
+**One thing deliberately left alone.** The users page's section header cell
+(`FACILITY ADMINS · 1`) carries its own `py: 1`, so it is now 8px against the
+data rows' 10px where it used to be 8 against 6 — a band that was slightly
+taller than its rows is now slightly tighter. Checked on screen: it reads as a
+tinted band rather than as a row, which is what the background and the
+`overline` type are doing, and the relative heights are not what carries it.
+Adding an override to restore the old order would be styling one table from
+two places to fix something nobody can see.
+
 ## D65 — Section F: the mark replaces the word, and the PNG is not the file we were given
 
 **The owner** attached two versions of the ACME mark — black lettering on
