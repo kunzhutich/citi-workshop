@@ -53,6 +53,7 @@ from app.models.seat import Seat
 from app.models.user import User
 from app.schemas.report import ReportScope, ReportWindow
 from app.seed.categories import seed_categories
+from app.seed.categories import CATEGORY_GROUPS
 from app.seed.demo import (
     BUILDING_SEEDS,
     DEFAULT_SPEC,
@@ -118,10 +119,14 @@ def test_the_default_spec_is_the_one_build_plan_section_15_asks_for() -> None:
     assert (DEFAULT_SPEC.min_desks, DEFAULT_SPEC.max_desks) == (20, 40)
     assert (DEFAULT_SPEC.min_meeting_rooms, DEFAULT_SPEC.max_meeting_rooms) == (2, 3)
     assert DEFAULT_SPEC.employees == 30
-    assert DEFAULT_SPEC.incidents == 300
+    # 420, raised from BUILD-PLAN §15's 300 when §6.2 added three category
+    # groups and the roster grew to ten: the same history spread over eight
+    # groups and ten people left the newest groups with a handful of tickets
+    # each, which is enough for a test and not enough to look at.
+    assert DEFAULT_SPEC.incidents == 420
     assert DEFAULT_SPEC.days == 90
     assert len(BUILDING_SEEDS) >= DEFAULT_SPEC.buildings
-    assert len(ENGINEER_SEEDS) == 6
+    assert len(ENGINEER_SEEDS) == 10
 
 
 def test_it_builds_a_whole_facility_tree(
@@ -155,7 +160,7 @@ def test_it_builds_a_whole_facility_tree(
         assert len({seat.code for seat in on_this_floor}) == len(on_this_floor)
 
 
-def test_it_creates_one_admin_six_engineers_and_the_employees(
+def test_it_creates_one_admin_the_engineers_and_the_employees(
     db_session: Session,
     seeded: tuple[DemoSeedResult, datetime],
     users_before: set[uuid.UUID],
@@ -166,7 +171,7 @@ def test_it_creates_one_admin_six_engineers_and_the_employees(
     by_role = Counter(user.role for user in users)
 
     assert by_role[UserRole.FACILITY_ADMIN] == result.admins == 1
-    assert by_role[UserRole.ENGINEER] == result.engineers == 6
+    assert by_role[UserRole.ENGINEER] == result.engineers == len(ENGINEER_SEEDS)
     assert by_role[UserRole.EMPLOYEE] == result.employees == SMALL.employees
     assert result.users == len(users)
     assert result.demo_password == DEMO_PASSWORD
@@ -208,18 +213,26 @@ def test_exactly_two_employees_have_left(
     assert not any(user.must_change_password for user in users)
 
 
-def test_engineers_are_two_per_level_and_cover_every_category_group(
+def test_engineers_cover_every_level_and_every_category_group(
     db_session: Session, seeded: tuple[DemoSeedResult, datetime]
 ) -> None:
-    """Assignment rights depend on level, and routing depends on specialty."""
+    """Assignment rights depend on level, and routing depends on specialty.
+
+    It used to be two engineers per level, and the counts were written here as
+    literals. The roster is ten now and deliberately uneven — a demo where
+    every level has the same headcount cannot show an admin who is short of
+    leads. What still has to hold is that **every level is represented** and
+    **every category group is somebody's specialty**, because a group nobody
+    covers is a ticket that can never be routed. Both are derived from the
+    seed, so widening the roster again is one edit rather than two.
+    """
     del seeded
     profiles = db_session.scalars(select(EngineerProfile)).all()
-    assert len(profiles) == 6
-    assert Counter(profile.level for profile in profiles) == {
-        EngineerLevel.JUNIOR: 2,
-        EngineerLevel.SENIOR: 2,
-        EngineerLevel.LEAD: 2,
-    }
+    assert len(profiles) == len(ENGINEER_SEEDS)
+    assert Counter(profile.level for profile in profiles) == Counter(
+        level for _, level, _, _ in ENGINEER_SEEDS
+    )
+    assert set(profile.level for profile in profiles) == set(EngineerLevel)
 
     groups = db_session.scalars(select(Category).where(Category.parent_id.is_(None))).all()
     covered = {group_id for profile in profiles for group_id in profile.specialty_group_ids}
@@ -376,15 +389,25 @@ def test_every_status_and_priority_appears_and_no_single_one_dominates(
     result, _ = seeded
     assert set(result.by_status) == {status.value for status in IncidentStatus}
     assert set(result.by_priority) == {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-    assert len(result.by_category_group) == 5
+    # Every group the seed defines, counted from the seed rather than written
+    # down: §6.2 added three and a literal 5 here was one of four tests that
+    # had to be edited to agree with it.
+    assert len(result.by_category_group) == len(CATEGORY_GROUPS)
 
     live = sum(result.by_status[status.value] for status in ACTIVE_INCIDENT_STATUSES)
     assert live > result.incidents * 0.15
 
     # Some engineers busier than others, which is one of the questions the
     # admin dashboard exists to answer.
+    #
+    # Asserted as a *range*, not a count. This said `== 6` when the roster was
+    # six and every one of them was certain to be given something; with ten
+    # engineers and this test's deliberately small spec, the lightest of them
+    # can honestly end up with nothing. "Everybody got a ticket" was never the
+    # property worth holding — "the loads are uneven" is, and it is the one the
+    # dashboard's capacity bars are drawn from.
     loads = sorted(result.by_engineer.values())
-    assert len(loads) == 6
+    assert 2 <= len(loads) <= len(ENGINEER_SEEDS)
     assert loads[-1] > loads[0]
 
 

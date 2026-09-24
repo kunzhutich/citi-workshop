@@ -118,7 +118,11 @@ class DemoSpec:
     min_meeting_rooms: int = 2
     max_meeting_rooms: int = 3
     employees: int = 30
-    incidents: int = 300
+    # Raised from 300 with the wider category list and the bigger roster: ten
+    # engineers over eight groups need enough history for each of them to have
+    # a record worth reading on their own page (§6.1), and 300 spread that
+    # thin left the newest groups with a handful each.
+    incidents: int = 420
     days: int = 90
     hotspots: int = 3
     random_seed: int = 20260923
@@ -204,22 +208,60 @@ MEETING_ROOM_NAMES: tuple[str, ...] = (
     "Heather",
 )
 
-#: Name, level, specialty groups and home building index for the six engineers.
-#: Two per level, and every category group is covered by at least two of them,
-#: so no group's tickets are stranded when one engineer is on leave.
+#: Name, level, specialty groups and home building index for each engineer.
+#: **Between them they cover every category group** —
+#: `test_engineers_covers_every_category_group` asserts it, and the property is
+#: what stops the demo world holding a ticket nobody is a specialist for.
+#:
+#: Ten of them, across three levels, after §6.2 added three category groups and
+#: the owner asked for a wider pool. The variety is the point rather than the
+#: count: the admin dashboard has to answer "who is free", "who is buried" and
+#: "who knows about this", and none of those is interesting when everybody has
+#: one specialty and the same load. So there are generalists with three groups
+#: and specialists with one, two engineers who cover nothing anybody else does,
+#: and two groups covered by three people each.
 ENGINEER_SEEDS: tuple[tuple[str, EngineerLevel, tuple[str, ...], int], ...] = (
-    ("Nina Alvarez", EngineerLevel.SENIOR, ("Building & Facilities",), 0),
+    ("Nina Alvarez", EngineerLevel.SENIOR, ("Building & Facilities", "Cleaning & Waste"), 0),
     ("Omar Haddad", EngineerLevel.SENIOR, ("Network & Access", "Software"), 1),
     ("Grace Lin", EngineerLevel.LEAD, ("Hardware", "Meeting Rooms"), 0),
-    ("Diego Santos", EngineerLevel.LEAD, ("Building & Facilities", "Network & Access"), 2),
-    ("Priya Raman", EngineerLevel.JUNIOR, ("Hardware",), 0),
+    (
+        "Diego Santos",
+        EngineerLevel.LEAD,
+        ("Building & Facilities", "Network & Access", "Safety & Security"),
+        2,
+    ),
+    ("Priya Raman", EngineerLevel.JUNIOR, ("Hardware", "Deliveries & Moves"), 0),
     ("Tom Okafor", EngineerLevel.JUNIOR, ("Meeting Rooms", "Software"), 1),
+    # Added with the wider pool. Each one exists to make a question answerable:
+    # a second Safety specialist so that group is not one person deep, a
+    # generalist who can take almost anything, a Cleaning & Waste pairing so
+    # the newest groups have real cover, and a junior with a single subject.
+    ("Yusuf Demir", EngineerLevel.SENIOR, ("Safety & Security", "Building & Facilities"), 2),
+    (
+        "Mei Tanaka",
+        EngineerLevel.LEAD,
+        ("Hardware", "Software", "Network & Access"),
+        1,
+    ),
+    ("Ana Costa", EngineerLevel.JUNIOR, ("Cleaning & Waste", "Deliveries & Moves"), 0),
+    ("Liam Byrne", EngineerLevel.JUNIOR, ("Meeting Rooms",), 2),
 )
 
 #: Base share of assignments per engineer, in the order above. Deliberately
 #: uneven: "who is overloaded" is one of the questions the admin dashboard has
 #: to answer, and it cannot be answered from six equal bars.
-ENGINEER_LOAD_WEIGHTS: tuple[float, ...] = (0.26, 0.22, 0.16, 0.14, 0.13, 0.09)
+ENGINEER_LOAD_WEIGHTS: tuple[float, ...] = (
+    0.16,
+    0.14,
+    0.12,
+    0.11,
+    0.10,
+    0.09,
+    0.08,
+    0.08,
+    0.07,
+    0.05,
+)
 
 #: How many active tickets each level is expected to carry. Feeds the capacity
 #: percentages on `/reports/engineer-workload`.
@@ -284,11 +326,20 @@ EMPLOYEE_NAMES: tuple[str, ...] = (
 #: problems dominate a facilities platform; meeting-room faults are the rarest
 #: because there are fewer rooms than desks.
 CATEGORY_GROUP_WEIGHTS: dict[str, float] = {
-    "Building & Facilities": 0.34,
-    "Hardware": 0.24,
-    "Network & Access": 0.20,
-    "Software": 0.13,
-    "Meeting Rooms": 0.09,
+    "Building & Facilities": 0.26,
+    "Hardware": 0.19,
+    "Network & Access": 0.15,
+    "Software": 0.11,
+    "Meeting Rooms": 0.08,
+    # The three §6.2 added, at a share that actually shows up. They were 2-5%
+    # at first, which put "Deliveries & Moves" at about six tickets in three
+    # months — enough to satisfy a test that every group appears and not enough
+    # to look at. A fifth of the queue between them is the honest shape for a
+    # facilities team: fewer than the broken-monitor traffic, common enough
+    # that a chart segment is worth clicking.
+    "Cleaning & Waste": 0.09,
+    "Safety & Security": 0.07,
+    "Deliveries & Moves": 0.05,
 }
 
 #: Priority mix. Most workplace problems are an annoyance, a few are urgent.
@@ -416,6 +467,24 @@ SYMPTOMS: dict[str, tuple[str, ...]] = {
         "keeps dropping the camera",
         "will not mirror a laptop",
         "has a dead remote",
+    ),
+    "Cleaning & Waste": (
+        "has not been emptied for days",
+        "was left in a state this morning",
+        "needs restocking again",
+        "has something spilled across it",
+    ),
+    "Safety & Security": (
+        "is beeping every few minutes",
+        "will not latch properly",
+        "has been out since last week",
+        "looks like it needs checking",
+    ),
+    "Deliveries & Moves": (
+        "has been sitting in reception for days",
+        "never turned up",
+        "needs collecting before Friday",
+        "was delivered to the wrong floor",
     ),
 }
 
@@ -1072,6 +1141,27 @@ def _pick_seat(rng: random.Random, seats: list[Seat], *, meeting_room: bool = Fa
 # --- One ticket's life -------------------------------------------------------
 
 
+#: What a ticket says when its group has no phrases of its own.
+#:
+#: `CATEGORY_GROUP_WEIGHTS` has always had a `.get(name, 0.1)` fallback, so a
+#: category group added after this file was written is picked and given a
+#: share — and `SYMPTOMS` had no equivalent, so the seeder raised `KeyError`
+#: on the first ticket it tried to word. Adding three groups in §6.2 broke
+#: `seed_demo` outright, which is the one path the demo database is rebuilt
+#: through. Both halves fall back now, so the next group to be added is a
+#: slightly duller sentence rather than a broken seeder.
+GENERIC_SYMPTOMS: tuple[str, ...] = (
+    "needs looking at",
+    "is not working properly",
+    "has been a problem all week",
+)
+
+
+def _symptoms_for(group_name: str) -> tuple[str, ...]:
+    """Return the phrases for this group, or the generic ones."""
+    return SYMPTOMS.get(group_name, GENERIC_SYMPTOMS)
+
+
 def _plan_incident(
     rng: random.Random,
     spec: DemoSpec,
@@ -1091,7 +1181,7 @@ def _plan_incident(
     path = _weighted_choice(rng, list(PATH_WEIGHTS), list(PATH_WEIGHTS.values()))
     assignee = None if path == "never_assigned" else _draw_assignee(rng, world.engineers, placement)
 
-    symptom = rng.choice(SYMPTOMS[placement.group_name])
+    symptom = rng.choice(_symptoms_for(placement.group_name))
     where = (
         placement.seat.code
         if placement.seat
