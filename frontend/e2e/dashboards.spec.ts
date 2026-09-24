@@ -236,7 +236,17 @@ test.describe('the admin dashboard', () => {
     expect(query.get('created_to')).toBeTruthy();
 
     // And the filter is visible to the reader, not applied behind their back.
-    await expect(adminPage.getByText(/^Reported between /)).toBeVisible();
+    //
+    // **Read off the control, since R7.** This used to look for the
+    // "Reported between …" chip, which existed *because* a date range had no
+    // control on the filter bar. It has one now, for everybody, so the chip
+    // would be the same filter stated twice and was removed — which means the
+    // bar itself is where the claim has to be checked. `toHaveText` on a
+    // picker's field concatenates its sections, so an unfilled one reads
+    // "DDMMMYYYY" and a filled one carries a year.
+    const reportedFrom = adminPage.getByRole('group', { name: 'Reported from' });
+    await expect(reportedFrom).toBeVisible();
+    await expect(reportedFrom).toHaveText(/20\d\d/);
 
     await expect(adminPage.getByRole('heading', { name: 'All tickets' })).toBeVisible();
     expect(await listTotal(adminPage)).toBe(expected);
