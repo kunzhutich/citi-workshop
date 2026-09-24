@@ -125,9 +125,15 @@ export function FeedbackDialog({
           {rating === null ? ' ' : SCORE_WORDING[rating]}
         </Typography>
 
+        {/*
+          "Why this score?" and not "What happened?", which is what the report
+          questionnaire calls its description field. The two never appear on
+          one screen, so nothing breaks — but a reporter meets both in the
+          life of one ticket, and the second one means something different.
+        */}
         <TextField
           required
-          label="What happened?"
+          label="Why this score?"
           value={comment}
           onChange={(event) => setComment(event.target.value)}
           multiline

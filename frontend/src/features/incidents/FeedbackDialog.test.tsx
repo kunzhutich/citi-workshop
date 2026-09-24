@@ -89,7 +89,7 @@ describe('leaving a rating', () => {
   it('cannot be sent with words but no score', async () => {
     render();
 
-    await userEvent.type(screen.getByLabelText(/What happened/), 'It was fine.');
+    await userEvent.type(screen.getByLabelText(/Why this score/), 'It was fine.');
 
     expect(sendButton()).toBeDisabled();
   });
@@ -113,7 +113,7 @@ describe('leaving a rating', () => {
     render();
 
     chooseScore(3);
-    await userEvent.type(screen.getByLabelText(/What happened/), '    ');
+    await userEvent.type(screen.getByLabelText(/Why this score/), '    ');
 
     expect(sendButton()).toBeDisabled();
   });
@@ -122,7 +122,7 @@ describe('leaving a rating', () => {
     const { onSubmit, onClose } = render();
 
     chooseScore(2);
-    await userEvent.type(screen.getByLabelText(/What happened/), '  Came back the next day.  ');
+    await userEvent.type(screen.getByLabelText(/Why this score/), '  Came back the next day.  ');
     await userEvent.click(sendButton());
 
     await waitFor(() =>
@@ -167,7 +167,7 @@ describe('leaving a rating', () => {
     );
 
     chooseScore(1);
-    await userEvent.type(screen.getByLabelText(/What happened/), 'Nothing was done.');
+    await userEvent.type(screen.getByLabelText(/Why this score/), 'Nothing was done.');
     await userEvent.click(sendButton());
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
@@ -190,8 +190,8 @@ describe('correcting a rating', () => {
     const { onSubmit } = render({ initial: { rating: 2, comment: 'Took three days.' } });
 
     chooseScore(4);
-    await userEvent.clear(screen.getByLabelText(/What happened/));
-    await userEvent.type(screen.getByLabelText(/What happened/), 'On reflection that was harsh.');
+    await userEvent.clear(screen.getByLabelText(/Why this score/));
+    await userEvent.type(screen.getByLabelText(/Why this score/), 'On reflection that was harsh.');
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() =>
