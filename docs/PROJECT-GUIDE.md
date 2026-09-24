@@ -46,26 +46,30 @@ that the identifier exists somewhere, but that it is **defined in the file named
 it**, which is the stricter question and the one that catches an imported name posing as
 a local one.*
 
-***Read this with one caveat.** The redesign phases R1–R7 and the stretch item S4 landed
-after this part was last revised, and only the figures below were brought forward.
-Nothing here has been contradicted — the architecture did not move, and every rule
-described below still lives where it says — but **§3's rule-to-file map does not list
-the rules R7 and S4 introduced**, and on a detail those two phases changed, their own
-sections are right and this one is stale. Each carries a rule-to-file map of its own for
-exactly that reason. The older phase sections are the opposite case: where one of them
-disagrees with this part, this part is right, because a phase section is a snapshot of a
-morning and the oldest are eight phases back.*
+***Read this with one caveat.** The redesign phases R1–R7 and the stretch items S4 and
+S7 landed after this part was last revised, and only the figures below were brought
+forward. Nothing here has been contradicted — the architecture did not move, and every
+rule described below still lives where it says — but **§3's rule-to-file map does not
+list the rules R7, S4 and S7 introduced**, and on a detail those phases changed, their
+own sections are right and this one is stale. Each carries a rule-to-file map of its own
+for exactly that reason. S7 is also the one phase that *widened* something §3 describes:
+`services/visibility.py` has three filters now, not two, and the third is the first that
+reads the row rather than only the reader.*
+
+*The older phase sections are the opposite case: where one of them disagrees with this
+part, this part is right, because a phase section is a snapshot of a morning and the
+oldest are eight phases back.*
 
 *The build is finished. **M1**–**M8** are the MVP; **S6** (hardening) and **S1** (in-app
-notifications) are the stretch phases that followed, **R1**–**R7** the redesign, and
-**S4** (similar-ticket suggestions) the last stretch item. The
+notifications) are the stretch phases that followed, **R1**–**R7** the redesign,
+**S4** (similar-ticket suggestions) the last stretch item from the build plan, and
+**S7** (feedback) the first the owner specified from scratch. The
 [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built, and
 [docs/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
 
-**The system in numbers, as it finally stands:** 13 tables over 6 Alembic revisions ·
-48 paths / 69 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
-transitions · 5 notification rules · 1,466 passing tests (897 pytest, 477 vitest,
-92 Playwright, plus 10 deliberate viewport skips).
+**The system in numbers, as it finally stands:** 14 tables over 7 Alembic revisions ·
+50 paths / 72 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
+transitions · 6 notification rules · 3 visibility filters.
 
 ---
 
@@ -9286,3 +9290,169 @@ is told weeks later when it is fixed.**
 | **Backfill** | A migration statement that writes values into rows that already existed. `0006`'s runs once, when the column is created, so it cannot overwrite a decision. |
 | **Capacity** | The role somebody holds *on one ticket* — reporter, assignee, watcher. Not their role in the application. |
 | **Precondition (`applies`)** | A condition on a whole notification rule, checked before any recipient is worked out. What makes `WATCHED_RESOLVED` fire on one status and not on five. |
+
+---
+
+## Phase S7 — Feedback: rating a repair
+
+*The first phase the owner specified from scratch rather than from
+`BUILD-PLAN.md`. Part 1 of two: this is the rating itself. Autoclose, the
+engineer page's ratings and the reviews drawer are part 2.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `alembic/versions/0007_incident_feedback.py` | The table, `incidents.resolved_by_id`, the `FEEDBACK_RECEIVED` enum member, and a backfill that admits it is a guess. |
+| `app/models/feedback.py` | `IncidentFeedback`: one rating of one repair, keyed on `(incident_id, resolution_round)`. |
+| `app/schemas/feedback.py` | `FeedbackCreate` / `FeedbackUpdate` / `FeedbackRead`, and the 1–5 bounds **mirrored** from the check constraint. |
+| `app/repositories/feedback.py` | Statements handed out unexecuted so the visibility filter cannot be skipped, plus the `ON CONFLICT` insert. |
+| `app/services/feedback.py` | **Every rule.** Who may rate, what may be rated, the fourteen-day window, the fifteen-minute edit window. |
+| `app/services/visibility.py` | `apply_feedback_visibility` — the third filter, and the first that reads the row. |
+| `app/routers/feedback.py` | `GET`/`POST /incidents/{id}/feedback`, `PATCH /feedback/{id}`. No `DELETE`, deliberately. |
+| `app/notifications.py` | `Audience.RATED_ENGINEER`, the `FEEDBACK_RECEIVED` rule, and `CapacityLookup` widened to take the context. |
+| `app/seed/demo.py` | `_write_feedback`: 45% of eligible repairs rated, replayed through the real notification rules. |
+| `frontend/src/api/feedback.ts` | Two writes. Reads come through the activity timeline, as notes do. |
+| `frontend/src/features/incidents/FeedbackDialog.tsx` | The form. Will not send without words at any score. |
+| `frontend/src/features/incidents/ActivityTimeline.tsx` | A third `kind`, with its own avatar treatment. |
+| `frontend/src/layout/navigation.ts` | `profilePathFor` — one rule, two account menus. |
+| `frontend/src/theme.ts` | `MuiRating.iconFilled` in the palette's ochre rather than Material UI's amber. |
+
+### 2. Why it is shaped this way
+
+Six decisions, and the full reasoning with the alternatives rejected is
+[D71](DECISION-LOG.md#d71--feedback-a-rating-belongs-to-a-repair-not-to-a-ticket).
+In short:
+
+**A table, not two columns on `incidents`.** A ticket can be fixed more than
+once and the owner asked for each repair to be ratable, so the relationship is
+one-to-many and a pair of columns could only ever hold the last one.
+
+**Keyed on `(incident_id, resolution_round)`.** `(incident_id, rated_user_id)`
+cannot express it — the same engineer may fix the same ticket twice and earn
+two separate ratings.
+
+**`incidents.resolved_by_id`, which nobody asked for.** A RESOLVED ticket can
+be reassigned, so the live `assignee_id` is not reliably the engineer who did
+the work. Without this column a review can drift onto a colleague.
+
+**The rating window is independent of closing.** Tying it to "until you close
+it" lets whoever closes the ticket decide whether the work gets rated — and
+the engineer can close their own.
+
+**A wording change, not a second notification rule.** Two rules on one
+resolution is the bug D68 found.
+
+**`SMALLINT` and not an enum**, alone among this codebase's domain values.
+Every reader of a rating is an aggregate, and PostgreSQL will not average an
+enum.
+
+### 3. How the pieces connect
+
+One rating, end to end:
+
+```
+reporter clicks "Rate the work"          features/incidents/IncidentActions.tsx
+  ← the button exists because             incident.can_give_feedback
+     services/feedback.can_give_feedback said so, via routers/incidents._to_read
+  ↓ setDialog({kind:'feedback'})          features/incidents/IncidentDetailPage.tsx
+  ↓ FeedbackDialog: score + words         features/incidents/FeedbackDialog.tsx
+  ↓ useCreateFeedback → api/feedback.ts   POST /api/v1/incidents/{id}/feedback
+  ↓ Vite proxy, path unchanged            frontend/vite.config.ts
+  ↓ routers/feedback.create_feedback      → incident_service.get_incident (404s early)
+  ↓ services/feedback.submit
+      ├─ _require_can_give_feedback       reporter? resolved? in window? already rated?
+      ├─ repositories/feedback.add        ON CONFLICT DO NOTHING → None means "already"
+      ├─ session.expire(incident,         so the detail response built next is honest
+      │    ["feedback"])
+      └─ notification_service.record(FEEDBACK_RECEIVED, feedback=stored)
+             └─ app/notifications.plan → CAPACITY_HOLDERS[RATED_ENGINEER]
+                    → reads feedback.rated_user_id, never incident.assignee_id
+  ↓ router commits                        one transaction: rating + notification
+  ↓ 201 FeedbackRead
+  ↓ invalidateIncidents                   ['incidents'] and ['reports'] prefixes
+  ↓ /activity re-fetched                  services/incident_service.load_activity
+      └─ feedback_service.list_for_incident → apply_feedback_visibility on the query
+  ↓ ActivityTimeline renders kind==='feedback'
+```
+
+The engineer's bell picks the notification up on its next 30-second poll.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Who may rate | `app/services/feedback.py` | `can_give_feedback`, `_require_can_give_feedback` |
+| What may be rated | `app/services/feedback.py` | `RATEABLE_STATUSES` **plus** the `resolved_at` / `resolved_by_id` checks |
+| How long the window stays open | `app/services/feedback.py` | `FEEDBACK_WINDOW` (14 days from `resolved_at`) |
+| That closing does not shut it | `app/services/feedback.py` | the absence of any `closed_at` test — and `test_closing_the_ticket_does_not_close_the_rating_window` |
+| How long a correction is possible | `app/services/feedback.py` | `EDIT_WINDOW`, `can_modify` — author only, no admin override |
+| Which repair a rating is about | `app/services/feedback.py` | `current_round` (`reopen_count + 1`), frozen on write |
+| One rating per repair | `app/models/feedback.py` + `app/repositories/feedback.py` | the unique constraint; `add`'s `ON CONFLICT DO NOTHING` is the authority |
+| Who a rating is **about** | `app/services/incident_service.py` | `_apply_transition_effects` sets `resolved_by_id`; `feedback.submit` copies it |
+| **Who may read one** | `app/services/visibility.py` | `apply_feedback_visibility` — applied to the query |
+| A rating you may not read is 404 | `app/services/feedback.py` | `get_feedback` — the filter is on the lookup |
+| The score's bounds | `app/models/feedback.py` | `ck_incident_feedback_rating_range`; mirrored by `app/schemas/feedback.py` |
+| That a comment is mandatory | `app/models/feedback.py` | `comment` NOT NULL; mirrored by `FeedbackComment`'s `min_length` and the dialog's disabled button |
+| Who is told | `app/notifications.py` | the `FEEDBACK_RECEIVED` rule; `_the_rated_engineer` |
+| What the reporter is told on a resolution | `app/notifications.py` | `_status_message_for_reporter` — the RESOLVED branch |
+| How many demo repairs are rated | `app/seed/demo.py` | `RATED_SHARE`, `RATING_WEIGHTS`, `FEEDBACK_DELAY_HOURS` |
+| Whether the button is drawn | `frontend/.../IncidentActions.tsx` | `incident.can_give_feedback` and nothing else |
+| What each score means in words | `frontend/.../FeedbackDialog.tsx` | `SCORE_WORDING` — mirrored in `ActivityTimeline.tsx`, pinned by its test |
+| The star's colour | `frontend/src/theme.ts` | `MuiRating.styleOverrides.iconFilled` |
+| Whether an engineer can reach their own page | `frontend/src/layout/navigation.ts` | `profilePathFor` |
+
+### 5. How to change it
+
+**To change the rating window** — one constant, `FEEDBACK_WINDOW` in
+`app/services/feedback.py`. The message in `FEEDBACK_WINDOW_CLOSED` reads
+`.days` off it, so the sentence follows.
+
+**To let an admin delete a rating** — decide the policy first (is a deleted
+review still counted? is the engineer told?), then: a `deleted_at` column, an
+exclusion in `apply_feedback_visibility` beside the note one, a `DELETE` route,
+and a test that a deleted rating leaves the timeline. See D71's last section.
+
+**To add a second question** (courtesy, speed, and so on) — a column on
+`incident_feedback`, a field on all three schemas, one control in
+`FeedbackDialog`, and one line in the timeline entry. The notification does not
+change: it quotes nothing.
+
+**To let watchers rate too** — the table is already keyed on the pair through
+`resolution_round`, but `(incident_id, resolution_round)` would have to become
+`(incident_id, resolution_round, author_id)`, and `can_give_feedback`'s first
+line would widen from "the reporter" to "the reporter or a watcher".
+
+### 6. Gotchas
+
+- **`tsc --noEmit` checks nothing here.** The root `tsconfig.json` is
+  solution-style with `"files": []`, so it type-checks no files and exits 0.
+  Use `npm run typecheck` (`tsc -b`), which is what `npm run build` runs.
+- **`incident.feedback` is stale immediately after an insert.** The collection
+  was loaded before the row existed. `submit` expires it; the `ON CONFLICT`
+  insert is what makes the rule true regardless.
+- **The relationship is unfiltered on purpose.** `Incident.feedback` is every
+  rating, not the ones the reader may see. Narrowing it would make
+  `can_give_feedback` answer yes to a reporter who has already rated.
+- **A rating is not an event.** It writes no `incident_events` row, so it has
+  no `EventType` and does not appear in the audit log — it *is* its own
+  timeline source, the third one.
+- **`chooseScore` must assert.** Clicking Material UI's hidden star span or
+  its `<label>` selects nothing in jsdom; only a `fireEvent` click on the
+  input does. Four tests using the helper assert a *disabled* button, which is
+  true of a dialog nobody touched.
+- **Adding a `NotificationType` member breaks two tests**, `test_it_fills_an_inbox`
+  and `src/api/enumMirrors.test.ts`. Both are the design working.
+- **The demo world's `RATED_SHARE` has an upper bound in a test.** Rating
+  everything would make the response rate read 100% for ever.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Repair** | One pass of a ticket through RESOLVED. A ticket reopened and fixed again has had two, and each may be rated separately. |
+| **`resolution_round`** | Which repair a rating is about: `reopen_count + 1`, frozen when the rating is written because `reopen_count` keeps going up. |
+| **Resolver** (`resolved_by_id`) | Who held the ticket at the moment it was resolved — not who holds it now, which reassignment can change. |
+| **Response rate** | Rated repairs over repairs that could have been rated. The number that says whether an average is worth reading. |
+| **`ON CONFLICT DO NOTHING`** | PostgreSQL's "insert unless the key exists". Here it returns no id, which the service turns into the same 409 the pre-check raises. |
+| **WCAG 1.4.11** | The contrast rule for non-text graphics: 3:1. Why the stars had to leave Material UI's default amber. |

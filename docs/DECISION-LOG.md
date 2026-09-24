@@ -4455,3 +4455,204 @@ under it is not. These screens are a narrow column on an otherwise empty page,
 so the mark can carry the page rather than label it; a centred heading over
 left-aligned inputs reads as two columns that failed to line up.
 
+
+## D71 — Feedback: a rating belongs to a repair, not to a ticket
+
+The owner asked for reporter feedback on resolved work, readable by the
+engineer it is about, by leads and by admins. Five calls were settled with
+them before any code, and the ones recorded here are the ones that came out
+differently from the obvious version, plus four things found by running the
+thing rather than by testing it.
+
+### Three corrections to the brief, before the design
+
+**There is no auto-close.** The owner's "or it will autoclose within 7 days"
+does not describe this application — nothing closes a RESOLVED ticket, ever.
+The seven days is the *reopen* window on `CLOSED → IN_PROGRESS`, and
+"scheduled auto-close of RESOLVED tickets" is listed in the README's natural
+next steps precisely because it is not built. Autoclose is phase 2 of this
+work; see the end of this entry for what it can and cannot be.
+
+**The engineer can close their own resolved ticket.** `RESOLVED → CLOSED` is
+three rows in `app/workflow.py`, not one: REPORTER "Confirm fixed", ASSIGNEE
+"Close ticket", FACILITY_ADMIN "Close ticket". Under the owner's first rule —
+closed means no more rating — an engineer could close their own ticket and
+lock out their own review in one click. That is a perverse incentive sitting
+in the middle of the feature, and it is why the rating window is decoupled
+from closing below rather than why the ASSIGNEE row was removed.
+
+**There is no scheduler available, and this is not a preference.**
+`infra/policy.tftpl` grants no `events:*` and no `scheduler:*`, so no
+EventBridge rule can be created; SQS is granted and its maximum message delay
+is fifteen minutes; Aurora sleeps at `min_capacity = 0`, so even a cron would
+be waking a database on a timer to look for rows nobody is reading. The
+codebase already fought this and wrote it down, in `purge_expired` in
+`app/repositories/login_attempts.py`: *"A background sweeper would be the
+conventional answer and is not available here."* The owner's 24-hour reminder
+was therefore replaced, on their call, by changing the resolution notification
+the reporter already receives.
+
+### The window is decoupled from closing, and that is the load-bearing rule
+
+Fourteen days from `resolved_at`, unaffected by the ticket being closed or by
+who closed it. The intuitive rule — you may rate until you close it — is wrong
+twice: it lets whoever closes the ticket decide whether the work gets rated,
+and once tickets close themselves after a week of silence it would mean that
+doing nothing *destroys* the feedback rather than delaying it.
+
+`test_closing_the_ticket_does_not_close_the_rating_window` exists to stop that
+being simplified back, and narrowing `RATEABLE_STATUSES` to RESOLVED alone
+fails it and nothing else.
+
+### `incidents.resolved_by_id`, which is the part that was not asked for
+
+`services/assignment.can_assign` refuses reassignment only on CLOSED. So an
+admin or a lead may hand a RESOLVED ticket to a different engineer while the
+reporter is still deciding what to say, and a rating that read the live
+`assignee_id` at submission time would land on somebody who never touched the
+problem. The column is set on entering RESOLVED and cleared on reopen, beside
+`resolved_at` and for the same reason, and `services/feedback.py` copies it
+onto every rating so the attribution is frozen at the moment of the fix.
+
+**The existing engineer reports still attribute resolutions by `assignee_id`**
+and carry the same latent misattribution. They are deliberately left alone:
+moving them onto this column would change numbers the owner has already seen,
+which is a separate decision from adding a feature. Recorded here so it is a
+known divergence rather than a discovery.
+
+The migration backfills `resolved_by_id = assignee_id` for already-resolved
+tickets and says in its docstring that this is the best available evidence
+rather than a recovery of the truth. Correcting it properly would mean a
+window function over the whole audit log to fix rows no feature reads.
+
+### One rating per repair, enforced by the schema
+
+`incident_feedback` is keyed on `(incident_id, resolution_round)`.
+`(incident_id, rated_user_id)` could not have been the key: the owner asked
+for a reopened-and-refixed ticket to carry a second rating, and the same
+engineer may fix the same ticket twice.
+
+The insert is `ON CONFLICT DO NOTHING` returning the id, the shape
+`repositories/incidents.add_watcher` already uses, with a None meaning "this
+repair is already rated". That is not belt and braces — **the first version
+500ed**. `incident.feedback` is loaded before the insert and does not know
+about it, so the readable pre-check passed on a second submission and the
+constraint was what stopped the row. The pre-check is now the fast path and
+the insert is the authority, and `session.expire(incident, ["feedback"])`
+keeps a later `can_give_feedback` in the same session honest.
+
+### Who may read one: the third visibility filter, and the first that reads the row
+
+`apply_feedback_visibility` is narrower than INTERNAL notes and narrower in a
+new direction. The other two filters decide from the *reader* alone — your
+role settles whether you see internal notes, whatever note it is — whereas
+being the person a review is about is one of the ways in, so this is the only
+one of the three that compares a column to the caller's id.
+
+The case it exists for is a SENIOR engineer who is the current assignee of a
+ticket rated about somebody else: they can open it, act on it, and read its
+internal notes, and they see no word of the review. Keying the rule on
+`User.is_staff`, which is what separates the two note visibilities and is the
+obvious reuse, hands them the lot — and fails exactly three tests.
+
+"Leads" means **every LEAD engineer**, because there is no reporting line in
+the data model: engineers have specialties and a home building and no manager.
+Confirmed with the owner rather than assumed.
+
+### The notification: a wording change, not a second rule
+
+The reporter already received "Your ticket INC-000123 is now Resolved" on
+every resolution. Adding a FEEDBACK-invitation rule beside STATUS_CHANGED
+would have sent them two notifications for one repair — the bug D68 found when
+a reporter who was also a watcher got both sentences. So
+`_status_message_for_reporter` gained a RESOLVED branch and nothing else did.
+
+**The invitation is stored, and that needed an argument.** This module is
+careful never to write down something a later event could falsify. "Please
+confirm the fix and rate the work" does not become *false* when the ticket is
+reopened; it becomes moot, and a moot instruction in an old inbox entry
+misleads nobody. The claim beside it — that the ticket was resolved — was true
+when it was sent and is still what `test_the_message_is_stored_not_re_rendered`
+pins.
+
+`CapacityLookup` now takes the whole `NotificationContext` rather than an
+`Incident`, because RATED_ENGINEER is the first capacity that is not on the
+ticket. It is on the rating, which is the only row that remembers who did the
+work as opposed to who holds it now. Three of the four lookups ignore
+everything but `context.incident`; the signature is uniform so `plan()` need
+not know which is which. That is the same generalisation D68 made when WATCHER
+turned a single id into a tuple.
+
+The message quotes neither the score nor the words, because a rating is
+editable for fifteen minutes and a stored "rated 2 out of 5" could outlive the
+2 — `models/notification.py`'s pointer-never-a-copy rule, applied again.
+
+### Four things only running it found
+
+**The stars were the wrong colour.** Material UI's `Rating` defaults to
+`#faaf00`, which is not in this palette, was never contrast-checked against
+these surfaces, and looks so obviously right that nobody checks it. This is
+the third un-derived colour in the project after D48 and D50. Now
+`secondary.main` from a theme override: 5.56:1 on paper, 5.05:1 on the panel
+a rating sits in, both clear of the 3:1 WCAG 1.4.11 asks of a graphic.
+
+**The button was filled, and should not be.** The argument for filling it —
+it is the one contextual action that *asks* the reader for something — did not
+survive the screen. A reporter's Actions card already carries two filled
+workflow buttons, so a third made the card a stack of brown bars and left the
+divider between the two groups doing no work at all.
+
+**`tsc --noEmit` checks nothing in this repository.** The root `tsconfig.json`
+is solution-style — `"files": []` plus three project references — so
+`tsc --noEmit` type-checks no files and exits 0. Every drift this feature
+introduced (a missing `Record` member, two stale test factories) was invisible
+to it and caught immediately by `npm run typecheck`, which runs `tsc -b`. The
+working instructions name the wrong command; `npm run typecheck` and
+`npm run build` are the real gates.
+
+**A test helper that silently selected nothing.** `chooseScore` in the
+dialog's vitest file clicked the visually hidden "4 Stars" span, then the
+`<label>`, and neither selected a score in jsdom — while four of the tests
+using it assert "the button is still disabled", which is true of a dialog
+nobody has touched. The assertion *inside* the helper is what caught it, and
+it is kept for that reason. `fireEvent` on the input works; `userEvent` does
+not, because jsdom cannot route a pointer sequence to a 1px hidden input under
+a label. The label click and the arrow keys were verified in a browser.
+
+### Two pre-existing failures found on the way, and not fixed here
+
+**`test_every_status_and_priority_appears_and_no_single_one_dominates` fails
+on unmodified `main`.** Confirmed by stashing this work and re-running: the
+small spec the tests use produces seven of the eight category groups, and the
+test asserts all eight. It has presumably been red since R6 widened the tree.
+Not touched — changing the seed's distribution is the owner's call.
+
+**The notification inbox has an axe `list` violation.**
+`<Divider component="li">` renders `role="separator"`, and axe's `list` rule
+rejects a direct child with that role even though the element is an `<li>`.
+The accessibility suite scans that screen and passes, because the test
+manufactures exactly **one** notification — and the divider is only rendered
+for `index > 0`. A real inbox has 24 of them. That is D24's shape again: a
+test right about a case that never occurs. Reported rather than fixed, because
+widening a cleanup on one's own initiative is how unrelated changes end up in
+a diff (D24 declined the same thing).
+
+### What this deliberately does not do
+
+There is no way to delete a rating and no admin override on the edit window,
+unlike `services/notes.py`, which gives an admin both so that a phone number
+pasted into a ticket can be removed. The same argument applies to a review and
+the same answer may eventually be right, but moderating reviews has its own
+questions — is a deleted review still counted? is the engineer told? — and
+inventing one unasked would put a rule in the codebase nobody decided.
+
+Ratings do not yet reach any report or the engineer's page. That is phase 2,
+with autoclose, and the shape autoclose has to take is already forced: with no
+scheduler it is a bounded sweep on a path that already runs, exactly as
+`login_attempts` cleans itself on the write path, plus a `close_stale` ops
+action so a demo can force it. `incident_events.actor_id` is already nullable,
+so a system-performed close is representable without inventing a System user.
+
+**Reversible.** The migration downgrades cleanly (the enum value stays, as in
+0006); the feature is additive apart from the resolution notification's
+wording, which is one function.

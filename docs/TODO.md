@@ -59,6 +59,46 @@ and the hooks to call it — one row per user, a JSON column. `dashboardLayout.t
 is the only file that touches storage, deliberately, so the frontend side of
 the move is one file. Reasoning: [D58](DECISION-LOG.md#d58--section-5-the-per-persona-screens-and-one-backend-flag).
 
+## 4. Feedback, part 2 — autoclose, and ratings on the engineer's page
+
+**S7 shipped the rating itself** (see
+[D71](DECISION-LOG.md#d71--feedback-a-rating-belongs-to-a-repair-not-to-a-ticket)).
+Three things were deliberately left for a second pass, and one of them has a
+constraint worth knowing before you plan it.
+
+**Autoclose a RESOLVED ticket after seven days of silence**, with the timer
+reset by a public note. There is **no scheduler available**: the IAM boundary
+grants no `events:*` and no `scheduler:*`, SQS's maximum message delay is
+fifteen minutes, and Aurora sleeps at `min_capacity = 0`. So it has to be a
+bounded sweep on a request path that already runs — `WHERE status = 'RESOLVED'
+AND resolved_at < …` behind a partial index, which returns no rows almost
+every time and writes only when there is something to close. That is the
+pattern `app/repositories/login_attempts.py::purge_expired` already uses and
+explains. Add `close_stale` to `app/services/ops.py` as well, so a demo can
+force one.
+
+`incident_events.actor_id` is already nullable, so a system-performed close
+needs no invented "System" user — but `perform_transition` has no path that
+resolves no human actor, and that is the one genuinely new mechanism. A
+`CloseReason.SYSTEM_CLOSED` member would make "closed automatically" a fact in
+the data rather than an inference from a null.
+
+**Ratings on the engineer's page.** The visual shape is already argued: one
+more `StatTile` in the existing grid (it takes `to`, so it can be a link),
+with the response rate as its caption because an average without its `n` is a
+lie; a clickable rating distribution below it built from `BreakdownChart`,
+whose form language it already matches; and the individual reviews behind a
+`?reviews=2` URL parameter opening a `ResponsiveDialog`, so the view is
+linkable and the browser's back button closes it.
+
+**An engineer may already open any other engineer's page** — the route and
+`GET /reports/engineers/{id}` are both staff-wide. The owner's rule is that
+engineers see each other's *scores* but not each other's *reviews*, so the
+aggregate can go on the page as it stands and the reviews drawer needs the
+admin/lead/self gate. `apply_feedback_visibility` already holds that rule for
+the rows; the report that computes the average deliberately does not go
+through it, because a number is not a review.
+
 ---
 
 ## Before you finish a phase: rebuild the demo database
