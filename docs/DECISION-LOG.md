@@ -3046,3 +3046,112 @@ small slices get their value too, which an arc label cannot fit.
 clears the all-pairs gates for its first three slots and not beyond, and a pie
 is an all-pairs chart because every slice touches two neighbours and the
 legend. A fourth building folds into "Other", or the chart goes back to bars.
+
+## D58 — Section 5: the per-persona screens, and one backend flag
+
+Seven items. Six are frontend; one needed the API, and the reason is worth more
+than the change.
+
+### 5.6 — "closed tickets last" is server-side, because a list is paged
+
+There is no status ordering in `_SORT_TERMS`, and the tempting fix — reorder
+the rows the browser was handed — is wrong: a page holds twenty-five tickets,
+so a closed one sinks to the bottom of *page one* and still sits above every
+open ticket on page two.
+
+So `closed_last` is a query flag that **prefixes** the ORDER BY. A prefix and
+not a sort of its own, because it answers a different question: `sort` says how
+to arrange the work, and this says that finished work goes at the end of it
+however it is arranged. `case((status == CLOSED, 1), else_=0).asc()` ahead of
+whatever terms the sort produces, relevance ranking included.
+
+The test asserts it against `-priority`, deliberately: the interesting claim is
+that a CRITICAL closed ticket sinks anyway, and that the tickets above it keep
+the order the sort asked for.
+
+### 5.2 — hide and reorder, in `localStorage`, with the table written down
+
+The owner's call, taken after a correction: the worry was that `localStorage`
+would need redoing weekly, and it does not — it never expires, and is lost only
+when site data is cleared or another browser is used. The real difference is
+cross-device, and a table is the fix for that. It is in the README's known
+limitations as the next step rather than pretended away.
+
+`dashboardLayout.ts` is the only file that touches storage, so making that move
+later changes one file.
+
+Four decisions inside it:
+
+- **Reordering cannot cross the period/current line.** That boundary is what
+  the whole dashboard is arranged around ([D9](#d5--what-do-from-and-to-actually-filter-on), D10): a
+  "Blocked · 21" tile under a "last 30 days" heading is the failure the two
+  scope headings exist to prevent. A section can be hidden, and can move among
+  its own kind.
+- **The two headline tile rows are not in the list at all.** A dashboard where
+  everything can be turned off can be turned into a blank page, and the admin
+  who does that by accident has nothing left on screen to tell them what went
+  missing.
+- **Arrows, not drag-and-drop.** Dragging is the expected gesture and needs a
+  pointer, a library and a keyboard story that usually never arrives. Each
+  arrow names its section, so a screen reader hears "Move Engineer workload up"
+  rather than seven identical "Move up".
+- **Storage is validated, not trusted.** It survives upgrades and can be edited
+  from the console; unknown ids are dropped, a malformed value falls back to
+  the default whole rather than half-applying, and every access is wrapped
+  because `localStorage` throws in a private window. A section added by a later
+  release is appended in catalogue order rather than vanishing because
+  somebody's saved layout predates it.
+
+### 5.5 — the table gets a click handler, not the cards' overlay
+
+`HomeTicketRow` and the card lists use the stretched link from
+[D55](#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job).
+The desktop table does not, for two reasons: an overlay inside a `<td>` has to
+escape the cell to cover the row and a `<tr>` is not a reliable positioning
+context to hang one off, and — more importantly — it would block selecting the
+text of a table, which is a thing people do to tables and do not do to cards.
+
+So the row carries an `onClick` and **the reference stays a real link**. That
+link is what keeps the row reachable by keyboard and announced as a link; a
+`<tr onClick>` is neither, and a row clickable only with a mouse would be a
+regression dressed as a feature. The handler ignores clicks that land on
+anything else interactive, and ignores a click that ends a text selection —
+navigating out from under a drag would make the table impossible to read from.
+
+### 5.4 — a default written into the URL, applied once
+
+An employee lands on their own building, and the filter goes into the address
+bar rather than into the query quietly. That is what makes it a *default*
+rather than a hidden rule: the filter bar shows it, it can be removed, the view
+stays bookmarkable, and a link somebody sends means what it says.
+
+Applied once per mount via a ref. The obvious condition — "no building chosen"
+— is also true the instant the employee clears the filter, and the page would
+put it straight back.
+
+### 5.3 — the assign dialog says what somebody knows, not whether they match
+
+Line one is who they are and whether they are free; line two is what they know.
+Those are the two questions an assigner holds at once, and separating them is
+the point: when the specialist is busy, somebody has to be picked anyway.
+
+The single "Specialty" badge is replaced by **every** specialty chip, with the
+ticket's own category group filled green. A badge says *whether* somebody
+matches; the chips say *what they cover*, so "no green, but they do Networks
+and this is network-adjacent" becomes a judgement the assigner can make rather
+than one the dialog made for them. Green is not the only channel — the matching
+chip is filled where the others are outlined, and carries a title in words.
+
+### 5.1 — grouping needs a join the users endpoint cannot do
+
+`GET /users` returns a role and no level; an engineer's level is on
+`engineer_profiles`, behind a different endpoint. The page reads both and joins
+them in `groupUsers`, which takes the levels as an argument so the ordering is
+testable without a server. Adding `level` to the users response would be the
+tidier API and a wider change than this screen justifies.
+
+Empty sections are dropped rather than shown empty — a heading over nothing
+reads as something that failed to load, and on a filtered list most sections
+are empty most of the time. An engineer whose level has not arrived yet (the
+roster is a second request) is grouped as JUNIOR rather than vanishing: briefly
+in the wrong section is recoverable, in no section at all is a missing account.

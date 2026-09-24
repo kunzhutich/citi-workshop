@@ -25,11 +25,11 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.category import Category
-from app.models.enums import EventType
+from app.models.enums import EventType, IncidentStatus
 from app.models.event import IncidentEvent
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -211,12 +211,28 @@ def _order_by(filters: IncidentFilters) -> tuple[Any, ...]:
     A text search with no explicit `sort` is ordered by relevance, then newest
     first. An explicit `sort` always wins: a caller who asked for "most urgent
     first" gets that, searching or not.
+
+    `closed_last` prepends one term to whichever of those applies. It is a
+    *prefix* rather than a sort of its own because it answers a different
+    question: the sort says how to arrange the work, and this says that
+    finished work goes at the end of it however it is arranged.
+
+    It has to be done here rather than in the browser. A list is paged, so a
+    client that reorders the twenty-five rows it was given moves a closed
+    ticket to the bottom of *page one* and leaves it above every open ticket
+    on page two.
     """
+    terms: tuple[Any, ...] = ()
+    if filters.closed_last:
+        # `case` yields 1 for closed and 0 for everything else, ascending — so
+        # closed sorts after, and the rest keep whatever order follows.
+        terms += (case((Incident.status == IncidentStatus.CLOSED, 1), else_=0).asc(),)
+
     if filters.sort is None and filters.q and parse_ticket_number(filters.q) is None:
         rank = func.ts_rank(Incident.search_vector, _tsquery(filters.q))
-        return (rank.desc(), Incident.created_at.desc())
+        return terms + (rank.desc(), Incident.created_at.desc())
 
-    return _SORT_TERMS[filters.sort or IncidentSort.CREATED_AT_DESC]
+    return terms + _SORT_TERMS[filters.sort or IncidentSort.CREATED_AT_DESC]
 
 
 #: `sort` value -> ORDER BY terms. Priority sorts on the PostgreSQL enum, whose

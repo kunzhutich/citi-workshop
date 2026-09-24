@@ -9,7 +9,8 @@ import TableRow from '@mui/material/TableRow';
 import TableSortLabel from '@mui/material/TableSortLabel';
 import Typography from '@mui/material/Typography';
 import Paper from '@mui/material/Paper';
-import { Link as RouterLink } from 'react-router-dom';
+import type { MouseEvent } from 'react';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 
 import type { IncidentListItem } from '../../api/types';
 import { EscalatedFlag } from '../../components/EscalatedFlag';
@@ -85,6 +86,40 @@ export interface IncidentTableProps {
 
 export function IncidentTable({ incidents, sort, onSortChange }: IncidentTableProps) {
   const ticketLinkState = useTicketLinkState();
+  const navigate = useNavigate();
+
+  /*
+   * The whole row opens the ticket — §5.5.
+   *
+   * A click handler rather than the stretched link the cards use. An overlay
+   * inside a `<td>` would have to escape the cell to cover the row, and a
+   * `<tr>` is not a reliable positioning context to hang one off; worse, it
+   * would block selecting the text of a table, which is a thing people do to
+   * tables and do not do to cards.
+   *
+   * So the row is a convenience and the **reference stays a real link**. That
+   * is what keeps this reachable by keyboard and announced as a link by a
+   * screen reader — a `<tr onClick>` is neither, and a row that is only
+   * clickable with a mouse would be a regression dressed as a feature.
+   *
+   * Clicks that land on something else interactive are left alone: the
+   * reference link navigates by itself, and a future button in a cell must
+   * not be swallowed by the row underneath it.
+   */
+  const openRow = (event: MouseEvent<HTMLElement>, incidentId: string) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+    if (event.target instanceof Element && event.target.closest('a, button, input, [role="button"]')) {
+      return;
+    }
+    // A drag to select text ends in a click; navigating out from under it
+    // would make a table impossible to read from.
+    if ((window.getSelection()?.toString().length ?? 0) > 0) {
+      return;
+    }
+    void navigate(incidentPath(incidentId), { state: ticketLinkState });
+  };
   const descending = sort.startsWith('-');
   const sortedBy = descending ? sort.slice(1) : sort;
 
@@ -138,7 +173,12 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
         </TableHead>
         <TableBody>
           {incidents.map((incident) => (
-            <TableRow key={incident.id} hover>
+            <TableRow
+              key={incident.id}
+              hover
+              onClick={(event) => openRow(event, incident.id)}
+              sx={{ cursor: 'pointer' }}
+            >
               <TableCell>
                 <Link
                   component={RouterLink}

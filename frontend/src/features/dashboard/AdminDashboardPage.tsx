@@ -34,7 +34,13 @@ import {
 import { ACTIVE_STATUSES, currentListLink, periodListLink } from './listLinks';
 import { NeedsAttentionPanel, UNASSIGNED_HOURS } from './NeedsAttentionPanel';
 import { CurrentScopeHeading, PeriodScopeHeading } from './ScopeHeading';
+import { Fragment, useState, type ReactNode } from 'react';
+
+import TuneIcon from '@mui/icons-material/Tune';
+
 import { StatTile, StatTileGrid } from './StatTile';
+import { DashboardLayoutDialog } from './DashboardLayoutDialog';
+import { useDashboardLayout } from './useDashboardLayout';
 import { useDashboardFilters } from './useDashboardFilters';
 
 /** How many unowned tickets to fetch when looking for the stale ones. */
@@ -72,6 +78,13 @@ const UNASSIGNED_PAGE_SIZE = 50;
 export function AdminDashboardPage() {
   const controls = useDashboardFilters();
   const { filters, periodParams, scopeParams } = controls;
+
+  // Which sections this admin keeps, and in what order. §5.2. `isVisible` is
+  // the only thing the markup below asks — the storage, the ordering and the
+  // refusal to move a section across the period/current line all live in
+  // `dashboardLayout.ts`.
+  const layout = useDashboardLayout();
+  const [customising, setCustomising] = useState(false);
 
   const summary = useSummaryReport(periodParams);
   const categories = useCategoriesReport(periodParams);
@@ -120,74 +133,17 @@ export function AdminDashboardPage() {
     live.data?.scope.as_of,
   );
 
-  return (
-    <Box>
-      <PageHeader
-        title="Dashboard"
-        description="How the queue is doing, and what needs somebody today."
-      />
-
-      <DashboardFilterBar controls={controls} />
-
-      {/* --- Period ---------------------------------------------------- */}
-
-      <PeriodScopeHeading
-        title="Reported in this period"
-        from={reportWindow?.from}
-        to={reportWindow?.to}
-        buildingName={buildingName}
-      />
-
-      <QueryState
-        isPending={summary.isPending}
-        error={summary.error}
-        errorFallback="Could not load the backlog summary."
-      >
-        <StatTileGrid>
-          <StatTile
-            label="Reported"
-            value={summary.data?.total ?? 0}
-            caption="Tickets raised in this period"
-            to={periodListLink(scope)}
-            isStale={summary.isFetching}
-          />
-          <StatTile
-            label="Still open"
-            value={statusCount('OPEN')}
-            caption="Of those, nobody has started"
-            to={periodListLink(scope, { statuses: ['OPEN'] })}
-            isStale={summary.isFetching}
-          />
-          <StatTile
-            label="Unassigned"
-            value={summary.data?.unassigned_total ?? 0}
-            caption="Of those, still live with no owner"
-            to={periodListLink(scope, {
-              statuses: ACTIVE_STATUSES,
-              assigneeId: 'unassigned',
-            })}
-            isStale={summary.isFetching}
-          />
-          <StatTile
-            label="Escalated"
-            value={summary.data?.escalated_total ?? 0}
-            caption="Of those, escalated at any point"
-            to={periodListLink(scope, { escalatedOnly: true })}
-            isStale={summary.isFetching}
-          />
-          <StatTile
-            label="Resolved in the period"
-            value={resolvedInPeriod}
-            // No link: this counts by the day a ticket was *resolved*, and
-            // `GET /incidents` can only filter on the day it was reported, so
-            // any list behind it would be a different set. A missing link is
-            // better than one that opens the wrong tickets.
-            caption="Resolved by an engineer in this period, whenever reported"
-            isStale={workload.isFetching}
-          />
-        </StatTileGrid>
-      </QueryState>
-
+  /*
+   * Each optional section as a node, looked up by the id `dashboardLayout.ts`
+   * knows it by.
+   *
+   * A map rather than JSX in a fixed order, because the order is the admin's
+   * now. The two headline tile rows and the two scope headings are *not* in
+   * here: they render unconditionally, above whatever this is arranged into,
+   * for the reason that file gives.
+   */
+  const periodSections: Record<string, ReactNode> = {
+    'flow': (
       <Box sx={{ mt: 3 }}>
         <QueryState
           isPending={summary.isPending}
@@ -197,7 +153,8 @@ export function AdminDashboardPage() {
           <FlowChart perDay={summary.data?.per_day ?? []} isStale={summary.isFetching} />
         </QueryState>
       </Box>
-
+    ),
+    'breakdowns': (
       <Box
         sx={{
           display: 'grid',
@@ -291,7 +248,8 @@ export function AdminDashboardPage() {
           />
         </QueryState>
       </Box>
-
+    ),
+    'response-times': (
       <Box sx={{ mt: 3 }}>
         <Typography variant="h3" component="h3" gutterBottom>
           How fast the team reacted
@@ -329,14 +287,16 @@ export function AdminDashboardPage() {
           </StatTileGrid>
         </QueryState>
       </Box>
-
-      {/*
-        The brief's seventh business question, which had a report and no
-        screen until S1 gave it something to measure. It sits inside the
-        period block because every number on it is about activity in the
-        window — including the read rate, which counts notifications *sent*
-        in the period rather than tickets raised in it (D29).
-      */}
+    ),
+    /*
+     * The brief's seventh business question, which had a report and no screen
+     * until S1 gave it something to measure. It sits inside the period block
+     * because every number on it is about activity in the window — including
+     * the read rate, which counts notifications *sent* in the period rather
+     * than tickets raised in it (D29). That is why it is in this map and not
+     * the "right now" one: a reader can hide it, not move it across.
+     */
+    'communication': (
       <QueryState
         isPending={communication.isPending}
         error={communication.error}
@@ -344,7 +304,8 @@ export function AdminDashboardPage() {
       >
         <CommunicationPanel report={communication.data} isStale={communication.isFetching} />
       </QueryState>
-
+    ),
+    'workload': (
       <Box sx={{ mt: 3 }}>
         <QueryState
           isPending={workload.isPending}
@@ -360,6 +321,127 @@ export function AdminDashboardPage() {
           />
         </QueryState>
       </Box>
+    ),
+  };
+
+  const currentSections: Record<string, ReactNode> = {
+    'needs-attention': (
+      <NeedsAttentionPanel
+        escalated={live.data?.escalated ?? []}
+        escalatedTotal={live.data?.escalated_total ?? 0}
+        unassigned={unassigned.data?.items ?? []}
+        isPending={unassigned.isPending}
+        error={unassigned.error}
+        asOf={live.data?.scope.as_of}
+        buildingId={filters.buildingId}
+      />
+    ),
+    'blocked-reasons': (
+      <BlockedByReasonPanel
+        groups={live.data?.blocked ?? []}
+        total={live.data?.blocked_total ?? 0}
+        buildingId={filters.buildingId}
+      />
+    ),
+  };
+
+  const currentCount = layout.sections.filter(
+    (section) => section.scope === 'current' && section.visible,
+  ).length;
+
+  /** The sections of one scope, in the admin's order, minus the hidden ones. */
+  const arranged = (scope: 'period' | 'current', nodes: Record<string, ReactNode>) =>
+    layout.sections
+      .filter((section) => section.scope === scope && section.visible)
+      .map((section) => <Fragment key={section.id}>{nodes[section.id]}</Fragment>);
+
+  return (
+    <Box>
+      <PageHeader
+        title="Dashboard"
+        description="How the queue is doing, and what needs somebody today."
+      />
+
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <DashboardFilterBar controls={controls} />
+        </Box>
+        <Button
+          size="small"
+          startIcon={<TuneIcon />}
+          onClick={() => setCustomising(true)}
+          sx={{ flexShrink: 0, mt: 1 }}
+        >
+          Customise
+        </Button>
+      </Box>
+
+      <DashboardLayoutDialog
+        open={customising}
+        onClose={() => setCustomising(false)}
+        controls={layout}
+      />
+
+      {/* --- Period ---------------------------------------------------- */}
+
+      <PeriodScopeHeading
+        title="Reported in this period"
+        from={reportWindow?.from}
+        to={reportWindow?.to}
+        buildingName={buildingName}
+      />
+
+      <QueryState
+        isPending={summary.isPending}
+        error={summary.error}
+        errorFallback="Could not load the backlog summary."
+      >
+        <StatTileGrid>
+          <StatTile
+            label="Reported"
+            value={summary.data?.total ?? 0}
+            caption="Tickets raised in this period"
+            to={periodListLink(scope)}
+            isStale={summary.isFetching}
+          />
+          <StatTile
+            label="Still open"
+            value={statusCount('OPEN')}
+            caption="Of those, nobody has started"
+            to={periodListLink(scope, { statuses: ['OPEN'] })}
+            isStale={summary.isFetching}
+          />
+          <StatTile
+            label="Unassigned"
+            value={summary.data?.unassigned_total ?? 0}
+            caption="Of those, still live with no owner"
+            to={periodListLink(scope, {
+              statuses: ACTIVE_STATUSES,
+              assigneeId: 'unassigned',
+            })}
+            isStale={summary.isFetching}
+          />
+          <StatTile
+            label="Escalated"
+            value={summary.data?.escalated_total ?? 0}
+            caption="Of those, escalated at any point"
+            to={periodListLink(scope, { escalatedOnly: true })}
+            isStale={summary.isFetching}
+          />
+          <StatTile
+            label="Resolved in the period"
+            value={resolvedInPeriod}
+            // No link: this counts by the day a ticket was *resolved*, and
+            // `GET /incidents` can only filter on the day it was reported, so
+            // any list behind it would be a different set. A missing link is
+            // better than one that opens the wrong tickets.
+            caption="Resolved by an engineer in this period, whenever reported"
+            isStale={workload.isFetching}
+          />
+        </StatTileGrid>
+      </QueryState>
+
+      {arranged('period', periodSections)}
 
       {/* --- Right now --------------------------------------------------- */}
 
@@ -413,25 +495,18 @@ export function AdminDashboardPage() {
           sx={{
             display: 'grid',
             gap: 2,
-            gridTemplateColumns: { xs: '1fr', lg: '2fr 1fr' },
+            // Two columns while both panels are shown, one when the admin has
+            // turned one off — a lone panel in a 2fr column with empty space
+            // beside it looks like something failed to load.
+            gridTemplateColumns: {
+              xs: '1fr',
+              lg: currentCount === 2 ? '2fr 1fr' : '1fr',
+            },
             mt: 2,
             alignItems: 'start',
           }}
         >
-          <NeedsAttentionPanel
-            escalated={live.data?.escalated ?? []}
-            escalatedTotal={live.data?.escalated_total ?? 0}
-            unassigned={unassigned.data?.items ?? []}
-            isPending={unassigned.isPending}
-            error={unassigned.error}
-            asOf={live.data?.scope.as_of}
-            buildingId={filters.buildingId}
-          />
-          <BlockedByReasonPanel
-            groups={live.data?.blocked ?? []}
-            total={live.data?.blocked_total ?? 0}
-            buildingId={filters.buildingId}
-          />
+          {arranged('current', currentSections)}
         </Box>
       </QueryState>
     </Box>

@@ -8,13 +8,14 @@ import List from '@mui/material/List';
 import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import Typography from '@mui/material/Typography';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { describeError } from '../../api/errors';
 import type { AssignResult, Engineer } from '../../api/types';
 import { QueryState } from '../../components/QueryState';
 import { ResponsiveDialog } from '../../components/ResponsiveDialog';
 import { LevelChip } from '../../components/LevelChip';
+import { useCategoryTree } from '../categories/hooks';
 import { availabilityLabel } from '../../display/labels';
 import { CapacityBar } from '../engineers/CapacityBar';
 import { sortForAssignment, useEngineers } from '../engineers/hooks';
@@ -80,6 +81,20 @@ export function AssignDialog({
 
   const ordered = sortForAssignment(engineers.data?.items ?? [], groupId);
 
+  /*
+   * Specialty ids to names, for the chips on each row.
+   *
+   * An engineer carries `specialty_group_ids`; the names live on the category
+   * tree, which every screen already has cached. The dialog reads it rather
+   * than the API growing a denormalised name, which would be a second copy of
+   * a thing that changes when an admin renames a group.
+   */
+  const categories = useCategoryTree();
+  const groupNames = useMemo(
+    () => new Map((categories.data?.groups ?? []).map((group) => [group.id, group.name] as const)),
+    [categories.data],
+  );
+
   return (
     <ResponsiveDialog open={open} onClose={close} title="Assign this ticket" maxWidth="sm">
       <DialogContent dividers>
@@ -110,9 +125,8 @@ export function AssignDialog({
               <EngineerRow
                 key={engineer.user_id}
                 engineer={engineer}
-                isSpecialtyMatch={Boolean(
-                  groupId && engineer.specialty_group_ids.includes(groupId),
-                )}
+                ticketGroupId={groupId}
+                groupNames={groupNames}
                 isCurrent={engineer.user_id === currentAssigneeId}
                 disabled={isSubmitting}
                 onSelect={() => void assign(engineer.user_id)}
@@ -143,15 +157,35 @@ export function AssignDialog({
 
 interface EngineerRowProps {
   engineer: Engineer;
-  isSpecialtyMatch: boolean;
+  /** The ticket's category group — the one a specialty chip turns green for. */
+  ticketGroupId: string | null;
+  groupNames: Map<string, string>;
   isCurrent: boolean;
   disabled: boolean;
   onSelect: () => void;
 }
 
+/**
+ * One engineer, as §5.3 asks for them.
+ *
+ * **Line one is who they are and whether they are free; line two is what they
+ * know.** Those are the two questions an assigner is holding at once, and the
+ * point of separating them is the compromise: when the specialist is busy,
+ * somebody has to be picked anyway, and the row that makes qualification and
+ * availability equally visible is the row that makes that choice an informed
+ * one rather than a guess.
+ *
+ * The specialty chips are all present, and the ones matching the ticket's
+ * category group are green. That is a deliberate change from the single
+ * "Specialty" badge this used to carry: a badge says *whether* somebody
+ * matches, and the chips say *what they know* — so "no green chips, but they
+ * do networks and this is a network-adjacent problem" is a judgement the
+ * assigner can now make.
+ */
 function EngineerRow({
   engineer,
-  isSpecialtyMatch,
+  ticketGroupId,
+  groupNames,
   isCurrent,
   disabled,
   onSelect,
@@ -167,15 +201,45 @@ function EngineerRow({
         sx={{ borderRadius: 1, mb: 0.5, alignItems: 'flex-start', gap: 2 }}
       >
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          {/* Line 1: name · level · — · availability. */}
           <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
             <Typography variant="subtitle2">{engineer.full_name}</Typography>
             <LevelChip level={engineer.level} />
-            {isSpecialtyMatch ? <Chip size="small" color="success" label="Specialty" /> : null}
+            <Typography component="span" variant="caption" color="text.secondary">
+              —
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {availabilityLabel(engineer.availability)}
+            </Typography>
             {isCurrent ? <Chip size="small" color="primary" label="Assigned" /> : null}
           </Box>
-          <Typography variant="caption" color="text.secondary">
-            {availabilityLabel(engineer.availability)}
-          </Typography>
+
+          {/* Line 2: everything they cover, with this ticket's group green. */}
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.75 }}>
+            {engineer.specialty_group_ids.length === 0 ? (
+              <Typography variant="caption" color="text.secondary">
+                No specialties set — can take anything
+              </Typography>
+            ) : (
+              engineer.specialty_group_ids.map((id) => {
+                const matches = id === ticketGroupId;
+                return (
+                  <Chip
+                    key={id}
+                    size="small"
+                    variant={matches ? 'filled' : 'outlined'}
+                    color={matches ? 'success' : 'default'}
+                    label={groupNames.get(id) ?? 'Unknown group'}
+                    // Colour alone would leave a green chip meaning nothing to
+                    // a red-green reader, and this is the one thing on the row
+                    // they are looking for. The filled/outlined difference is
+                    // a second channel, and the title says it in words.
+                    title={matches ? "This ticket's category" : undefined}
+                  />
+                );
+              })
+            )}
+          </Box>
         </Box>
         <CapacityBar active={engineer.active_ticket_count} max={engineer.max_active_tickets} />
       </ListItemButton>

@@ -8590,3 +8590,139 @@ and repositions the dot.
 | **`Collapse`** | Material UI's height transition. `unmountOnExit` takes the content out of the DOM when closed, which is what keeps a collapsed panel out of the accessibility tree rather than merely invisible. |
 | **Landmark** | An element a screen reader can jump between — `<header>`, `<nav>`, `<main>`. Two of the same kind on one page need distinct accessible names to be choosable, which is why the phone once had "Main" and "Quick links". |
 | **`auto-fit` vs a breakpoint** | `auto-fit` divides the width the element actually has; a breakpoint asks how wide the window is. Inside an application shell those are different numbers, and D44 is the bug that difference caused. |
+
+---
+
+## Phase R5 — The redesign brief, section 5: the per-persona screens
+
+*Seven items, one per screen, and the only section of the brief that needed the API to
+change. It is also where two of the owner's own observations landed mid-phase — a card
+that should be clickable and a scroll that fired too early — so the section is larger than
+its list.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `features/dashboard/dashboardLayout.ts` | **New.** The section catalogue, the stored arrangement, and the rules for reading it back. The only file that touches storage. |
+| `features/dashboard/useDashboardLayout.ts` | **New.** The arrangement as state, written through on every change. |
+| `features/dashboard/DashboardLayoutDialog.tsx` | **New.** Switches and arrows, grouped by scope. |
+| `features/dashboard/AdminDashboardPage.tsx` | Sections become a map of nodes rendered in the admin's order; a Customise button opens the dialog. |
+| `features/dashboard/BreakdownChart.tsx` | A `shape` prop: bars or a pie, sharing the header, the table twin and the summary. |
+| `features/dashboard/chartPalette.ts` | `PRIORITY_SLICES` and `CATEGORICAL_SLICES`. |
+| `features/users/groupUsers.ts` + test | **New.** Admins, engineers LEAD→SENIOR→JUNIOR, employees. |
+| `features/users/UsersPage.tsx` | One `<tbody>` per section, each with a heading row. |
+| `features/incidents/AssignDialog.tsx` | Name · level · availability on line one; every specialty chip on line two, the ticket's group filled green. |
+| `features/incidents/IncidentsPage.tsx` | `defaultToOwnBuilding`, applied once, into the URL. |
+| `features/incidents/IncidentTable.tsx` | Rows open their ticket; the reference stays a real link. |
+| `components/stretchedLink.ts` | **New.** A whole card that is a link, with buttons that still work. |
+| `app/schemas/incident.py`, `app/repositories/incidents.py`, `app/routers/incidents.py`, `app/services/incident_service.py` | `closed_last`, the one backend change. |
+
+Decisions: [D55](DECISION-LOG.md#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job),
+[D56](DECISION-LOG.md#d56--the-first-click-that-did-nothing-twice),
+[D57](DECISION-LOG.md#d57--two-pies-and-why-they-are-not-painted-in-the-chip-colours),
+[D58](DECISION-LOG.md#d58--section-5-the-per-persona-screens-and-one-backend-flag).
+
+### 2. Why it is shaped this way
+
+**The one backend change is where it is because a list is paged.** "Closed tickets last"
+looks like a frontend sort until you notice the browser only holds twenty-five rows: a
+closed ticket would sink to the bottom of page one and still sit above every open ticket
+on page two. `closed_last` prefixes the ORDER BY rather than being a sort of its own,
+because the sort says how to arrange the work and this says that finished work goes at
+the end of it however it is arranged.
+
+**The dashboard arrangement is in `localStorage`, and the README says so.** It does not
+expire — the worry it was weighed against — but it is per-browser. `dashboardLayout.ts`
+is the only file that touches storage precisely so that a `user_preferences` table later
+is a one-file change.
+
+**Reordering cannot cross the period/current line**, which is the same rule the rest of
+the dashboard is built on. A stored arrangement is sorted by scope before it is applied,
+so even a hand-edited one in `localStorage` cannot put a live figure under the period
+heading.
+
+**Two clickable-row mechanisms, deliberately.** Cards use a stretched link — one real
+anchor grown over the card, buttons lifted above it — because a `CardActionArea` around a
+button produces invalid markup and swallows the button. Tables use a click handler,
+because an overlay inside a `<td>` has to escape the cell and, more importantly, would
+block selecting text. In both, **the link is what carries the keyboard and the screen
+reader**; the row or card is a convenience on top.
+
+### 3. How the pieces connect
+
+The dashboard, after this phase:
+
+```
+AdminDashboardPage
+ ├─ useDashboardLayout()                 ← reads localStorage once, on mount
+ │    └─ dashboardLayout.resolveSections()
+ │         ├─ unknown ids dropped, new sections appended in catalogue order
+ │         └─ sorted by scope, so a saved order cannot cross the line
+ ├─ PeriodScopeHeading + the period tiles     ← always, never in the catalogue
+ ├─ arranged('period', periodSections)        ← the admin's order, hidden ones gone
+ ├─ CurrentScopeHeading + the live tiles      ← always
+ └─ arranged('current', currentSections)
+```
+
+And a click on a ticket card:
+
+```
+HomeTicketRow (Card, position: relative)
+ ├─ TicketTitle → <Link sx={stretchedLink}>   ::after covers the card
+ └─ RowActions  sx={aboveStretchedLink}       zIndex 1 — the buttons survive
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Which dashboard sections exist | `features/dashboard/dashboardLayout.ts` | `DASHBOARD_SECTIONS` |
+| What a saved arrangement may say | `features/dashboard/dashboardLayout.ts` | `readLayout`, `resolveSections`, `moveSection` |
+| Which charts are pies | `features/dashboard/AdminDashboardPage.tsx` | the `shape` prop on two cards |
+| What colour a pie slice is | `features/dashboard/chartPalette.ts` | `PRIORITY_SLICES`, `CATEGORICAL_SLICES` |
+| The order accounts are listed in | `features/users/groupUsers.ts` | `USER_GROUPS`, `groupUsers` |
+| Which specialty chip is green | `features/incidents/AssignDialog.tsx` | `EngineerRow` — `id === ticketGroupId` |
+| Where an employee's ticket list starts | `features/incidents/IncidentsPage.tsx` | `defaultToOwnBuilding` |
+| That finished work sorts last | `app/repositories/incidents.py` | `_order_by` — the `closed_last` prefix |
+| How a card is clickable without breaking its buttons | `components/stretchedLink.ts` | the three exported `sx` fragments |
+
+### 5. How to change it
+
+**To add a dashboard section:** add a row to `DASHBOARD_SECTIONS` and a node to the
+matching map in `AdminDashboardPage`. Arrangements saved before it exists will show it —
+`resolveSections` appends unknown-to-them sections in catalogue order rather than
+dropping them.
+
+**To move the arrangement to the API:** `dashboardLayout.ts`'s `readLayout` and
+`writeLayout`, and nothing else. `useDashboardLayout` would gain a query and a mutation;
+the dialog and the page are already talking to `resolveSections`.
+
+**To make another card clickable:** the three fragments in `stretchedLink.ts`, all three.
+Missing `aboveStretchedLink` silently disables the buttons, which is why the e2e suite
+asserts a button still acts rather than trusting the comment.
+
+### 6. Gotchas
+
+**`localStorage` throws, and not only when it is full.** A private window, blocked site
+data or a locked-down browser makes even reading it raise. Every access in
+`dashboardLayout.ts` is wrapped; a dashboard must not fail to render for want of a
+preference.
+
+**Changing a chip changes a test that never mentioned it.** §5.3 replaced the "Specialty"
+badge with named chips, and `e2e/assignment.spec.ts` was asserting the badge from three
+phases ago. It now asserts the thing the brief actually asked for — the chip named after
+the ticket's group, filled green, checked as paint rather than as a class name.
+
+**A full backend run against a database somebody is also browsing will error.** Two runs
+produced one teardown error each, on a *different* test each time; a third with nothing
+else touching the database passed 828 clean. Contention, not a defect — but worth knowing
+before chasing one.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Stretched link** | One real `<a>` in a card, grown to the card's size by an absolutely positioned `::after`. Keeps the markup valid and the accessible name the title's, where wrapping everything in an anchor would do neither. |
+| **Transient/order prefix** | An ORDER BY term placed *before* the requested sort, so it takes precedence without replacing it. `closed_last` is one. |
+| **`<tbody>` per section** | A table may have several bodies. It is what lets one table carry section headings while keeping every column aligned down the page, which five stacked tables would not. |

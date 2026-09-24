@@ -918,6 +918,51 @@ def test_sorting_by_priority_puts_critical_first(
     ]
 
 
+def test_closed_last_pushes_finished_tickets_below_the_rest(
+    client: TestClient,
+    db_session: Session,
+    employee: User,
+    employee_headers: dict[str, str],
+    subcategory: Category,
+    building: Building,
+    floor: Floor,
+    reported_tickets: list[object],
+) -> None:
+    """The engineer queue's ordering: finished work goes to the end.
+
+    Asserted against `-priority`, deliberately. `closed_last` is a *prefix* to
+    whatever sort is in force rather than a sort of its own, so the interesting
+    claim is that the closed ticket sinks even though its priority would
+    otherwise put it first — and that the tickets above it keep the order the
+    sort asked for.
+    """
+    make_incident(
+        db_session,
+        reporter=employee,
+        category=subcategory,
+        building=building,
+        floor=floor,
+        status=IncidentStatus.CLOSED,
+        title="Finished long ago",
+        description="This one is done and should not sit at the top of a queue.",
+        priority=IncidentPriority.CRITICAL,
+    )
+
+    without = client.get("/api/v1/incidents?sort=-priority", headers=employee_headers).json()
+    assert titles(without)[0] == "Finished long ago"
+
+    body = client.get(
+        "/api/v1/incidents?sort=-priority&closed_last=true", headers=employee_headers
+    ).json()
+
+    assert titles(body) == [
+        "Air conditioning far too cold",
+        "Broken chair by the window",
+        "Ceiling light flickering badly",
+        "Finished long ago",
+    ]
+
+
 def test_the_default_sort_is_newest_first(
     client: TestClient,
     employee_headers: dict[str, str],

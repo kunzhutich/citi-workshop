@@ -773,6 +773,14 @@ Scope decisions, all deliberate:
   visibility hook that would scope them exists and is unused.
 - **Response times are wall-clock**, not business hours. A ticket raised on Friday evening
   and fixed Monday morning reports ~60 hours.
+- **The admin's dashboard arrangement is stored in the browser, not the database.** Hiding
+  and reordering sections is kept in `localStorage`, keyed on the user id, so it survives
+  reloads and restarts indefinitely — but it belongs to one browser on one machine. An
+  admin who arranges the dashboard on a laptop sees the default on a desktop. **A
+  `user_preferences` table and an endpoint are the next step here**, deliberately deferred:
+  the schema is one row per user and the work is a migration, a model, a schema, a
+  repository, a service, a router and the hooks to call it. `dashboardLayout.ts` is the
+  only file that touches storage, so moving to the API changes that file and nothing else.
 - **A Kanban board and SLA targets are unbuilt** (stretch S2, S3). In-app notifications
   (S1) are built.
 - **Notifications are not retrospective.** The table starts empty on an existing database.

@@ -63,7 +63,18 @@ test.describe('work that is given rather than taken', () => {
     await expect(assignDialog).toBeVisible();
     // Ordered by specialty match then lowest load, so both engineers created
     // for this run are present and labelled.
-    await expect(assignDialog.getByText('Specialty').first()).toBeVisible();
+    //
+    // R5 replaced the single "Specialty" badge this used to look for with the
+    // engineer's whole specialty list, the ticket's own group filled green
+    // (§5.3). The assertion follows: the chip is named after the group — both
+    // fixture engineers specialise in Hardware and this is a Hardware ticket —
+    // and `filled` is asserted as *paint* rather than as a class name, because
+    // "which of these people knows this subject" is the question the colour is
+    // answering and a class could be present and overridden.
+    const specialty = assignDialog.getByText('Hardware', { exact: true }).first();
+    await expect(specialty).toBeVisible();
+    const chip = specialty.locator('xpath=ancestor-or-self::*[contains(@class,"MuiChip-root")]');
+    await expect(chip).toHaveCSS('background-color', 'rgb(44, 119, 48)');
     await assignDialog.getByRole('button', { name: new RegExp(accounts.junior.fullName) }).click();
     await expect(assignDialog).toBeHidden();
 

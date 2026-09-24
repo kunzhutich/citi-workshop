@@ -87,6 +87,14 @@ export interface IncidentQuery {
   mine?: 'reported' | 'assigned';
   specialty?: boolean;
   sort?: string;
+  /**
+   * Put closed tickets after the rest, whatever `sort` says.
+   *
+   * Server-side on purpose. A list is paged, so reordering the twenty-five
+   * rows the browser was handed moves a closed ticket to the bottom of page
+   * one and leaves it above every open ticket on page two.
+   */
+  closed_last?: boolean;
   page?: number;
   page_size?: number;
 }

@@ -87,6 +87,11 @@ export default function App() {
                 emptyTitle="No tickets yet"
                 emptyDescription="Nothing has been reported in this workspace."
                 offerReport
+                // §5.4: an employee arrives on their own building, because
+                // "is this already reported" is a question about where they
+                // are. Staff do not — an admin or an engineer opening "all
+                // tickets" means all of them.
+                defaultToOwnBuilding
               />
             }
           />
@@ -101,8 +106,12 @@ export default function App() {
               element={
                 <IncidentsPage
                   title="My queue"
-                  description="The tickets assigned to you."
-                  preset={{ mine: 'assigned' }}
+                  description="The tickets assigned to you, with finished work last."
+                  // §5.6. `closed_last` is a prefix to whatever sort the
+                  // engineer picks rather than a sort of its own: the sort
+                  // says how to arrange the work, this says that finished
+                  // work goes at the end of it however it is arranged.
+                  preset={{ mine: 'assigned', closed_last: true }}
                   emptyTitle="Nothing is assigned to you"
                   emptyDescription="Work assigned to you by a lead or an admin appears here."
                 />
