@@ -159,7 +159,17 @@ test.describe('notifications', () => {
     await expect(bell(employeePage)).toHaveAccessibleName('Notifications, 3 unread');
 
     await openInbox(employeePage);
-    await expect(employeePage.getByText(`Your ticket ${reference} is now Resolved.`)).toBeVisible();
+    // The resolution is the one move that asks the reader for something back,
+    // so it names whoever did it and says so. Every other status change keeps
+    // the plain "Your ticket … is now …" wording — see the BLOCKED assertion
+    // in `app/notifications.py`'s own tests. One rule, not two: a second rule
+    // here would send the reporter two notifications for one repair (D68).
+    await expect(
+      employeePage.getByText(
+        `${accounts.senior.fullName} resolved your ticket ${reference}. `
+        + 'Please confirm the fix and rate the work.',
+      ),
+    ).toBeVisible();
     await expect(
       employeePage.getByText(
         `Your ticket ${reference} was assigned to ${accounts.senior.fullName}.`,

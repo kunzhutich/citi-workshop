@@ -32,13 +32,19 @@ const COMMENT = 'Back working within the hour, and they explained what had faile
 /**
  * Choose a score by clicking its star, the way a person does.
  *
- * Material UI hides the real `<input type="radio">` under a `<label>`, so the
- * label is the control. In a browser this works; in jsdom it does not, which
- * is why `FeedbackDialog.test.tsx` has to reach for `fireEvent` instead.
+ * **The `<label>` is the control, not the text inside it.** Material UI puts
+ * the accessible name in a `visuallyHidden` span and the real
+ * `<input type="radio">` underneath, and the label sits over both — so
+ * `getByText('5 Stars').click()` resolves to the span and then times out for
+ * ninety seconds with *"the label intercepts pointer events"*. That is how
+ * the first version of this helper failed.
+ *
+ * In jsdom none of this works at all, which is why
+ * `FeedbackDialog.test.tsx` reaches for `fireEvent` on the input instead.
  */
 async function chooseScore(dialog: Locator, score: number): Promise<void> {
-  const label = score === 1 ? '1 Star' : `${score} Stars`;
-  await dialog.getByText(label, { exact: true }).click();
+  const name = score === 1 ? '1 Star' : `${score} Stars`;
+  await dialog.locator('label').filter({ hasText: name }).click();
 }
 
 test.describe('feedback on a repair', () => {
