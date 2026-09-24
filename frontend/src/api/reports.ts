@@ -353,6 +353,42 @@ export async function fetchResponseTimes(
   return data;
 }
 
+/** One category group and how much of it an engineer resolved. */
+export interface EngineerGroupCount {
+  group_id: string;
+  group_name: string;
+  count: number;
+}
+
+/**
+ * `/reports/engineers/{id}` — one engineer's output over a period.
+ *
+ * Separate from `EngineerWorkloadReport`, which answers "who is free" across
+ * the roster. This answers "how is this person doing", and carries the one
+ * number nothing else does: how many of the tickets they resolved came back.
+ */
+export interface EngineerDetailReport {
+  window: ReportWindow;
+  user_id: string;
+  resolved_in_period: number;
+  closed_in_period: number;
+  reopened_in_period: number;
+  /** Null when nothing was resolved — no rate, rather than a flawless 0%. */
+  reopen_rate_pct: number | null;
+  resolved_by_group: EngineerGroupCount[];
+}
+
+/** One engineer's output over the period, for their profile page. */
+export async function fetchEngineerDetail(
+  userId: string,
+  params: ReportPeriodParams,
+): Promise<EngineerDetailReport> {
+  const { data } = await apiClient.get<EngineerDetailReport>(`/reports/engineers/${userId}`, {
+    params,
+  });
+  return data;
+}
+
 /** Every engineer's live load, and what they resolved during the period. */
 export async function fetchEngineerWorkload(
   params: ReportPeriodParams,

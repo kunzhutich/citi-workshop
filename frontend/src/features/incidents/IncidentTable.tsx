@@ -18,7 +18,8 @@ import { PriorityChip } from '../../components/PriorityChip';
 import { StatusChip } from '../../components/StatusChip';
 import { relativeTime } from '../../display/time';
 import { TicketTitle } from '../../components/TicketTitle';
-import { incidentPath } from '../../routes';
+import { useAuth } from '../../auth/AuthContext';
+import { engineerPath, incidentPath } from '../../routes';
 import { useTicketLinkState } from './backTarget';
 
 /**
@@ -86,6 +87,8 @@ export interface IncidentTableProps {
 
 export function IncidentTable({ incidents, sort, onSortChange }: IncidentTableProps) {
   const ticketLinkState = useTicketLinkState();
+  const { user } = useAuth();
+  const isStaff = user?.role === 'ENGINEER' || user?.role === 'FACILITY_ADMIN';
   const navigate = useNavigate();
 
   /*
@@ -219,14 +222,35 @@ export function IncidentTable({ incidents, sort, onSortChange }: IncidentTablePr
                 </Typography>
               </TableCell>
               <TableCell>
-                <Typography
-                  variant="body2"
-                  noWrap
-                  title={incident.assignee?.full_name ?? 'Unassigned'}
-                  color={incident.assignee ? undefined : 'text.secondary'}
-                >
-                  {incident.assignee?.full_name ?? 'Unassigned'}
-                </Typography>
+                {/*
+                  Staff get a link to whoever holds the ticket; an employee
+                  gets the name as text. §5.5 is explicit that an employee must
+                  not reach an engineer's profile, and this is the *courtesy*
+                  half of that — `GET /reports/engineers/{id}` is `STAFF_ONLY`
+                  and is what actually refuses them.
+                */}
+                {incident.assignee && isStaff ? (
+                  <Link
+                    component={RouterLink}
+                    to={engineerPath(incident.assignee.id)}
+                    underline="hover"
+                    variant="body2"
+                    noWrap
+                    title={incident.assignee.full_name}
+                    sx={{ display: 'block' }}
+                  >
+                    {incident.assignee.full_name}
+                  </Link>
+                ) : (
+                  <Typography
+                    variant="body2"
+                    noWrap
+                    title={incident.assignee?.full_name ?? 'Unassigned'}
+                    color={incident.assignee ? undefined : 'text.secondary'}
+                  >
+                    {incident.assignee?.full_name ?? 'Unassigned'}
+                  </Typography>
+                )}
               </TableCell>
               <TableCell>
                 <Typography variant="body2" noWrap>

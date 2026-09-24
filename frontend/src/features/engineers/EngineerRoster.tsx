@@ -11,7 +11,11 @@ import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
 
 import type { CategoryTree, Engineer } from '../../api/types';
+import Link from '@mui/material/Link';
+import { Link as RouterLink } from 'react-router-dom';
+
 import { LevelChip } from '../../components/LevelChip';
+import { engineerPath } from '../../routes';
 import { availabilityLabel } from '../../display/labels';
 import { CapacityBar } from './CapacityBar';
 
@@ -54,9 +58,18 @@ export function EngineerRoster({ engineers, categories, renderActions }: Enginee
           {engineers.map((engineer) => (
             <TableRow key={engineer.user_id} hover>
               <TableCell>
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {/* The name opens their page — §6.1. The roster is where
+                    somebody goes looking for a person, so it would be an odd
+                    place for the one link to them not to be. */}
+                <Link
+                  component={RouterLink}
+                  to={engineerPath(engineer.user_id)}
+                  variant="body2"
+                  underline="hover"
+                  sx={{ fontWeight: 600, display: 'block' }}
+                >
                   {engineer.full_name}
-                </Typography>
+                </Link>
                 <Typography variant="caption" color="text.secondary">
                   {engineer.email}
                 </Typography>

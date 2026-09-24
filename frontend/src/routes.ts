@@ -29,6 +29,14 @@ export const paths = {
   team: '/team',
 
   engineers: '/engineers',
+  /**
+   * One engineer's page — §6.1.
+   *
+   * Keyed on the *user* id rather than a profile id, because
+   * `engineer_profiles` is keyed that way too: the profile is an extension of
+   * a user and has no identity of its own.
+   */
+  engineerDetail: '/engineers/:userId',
   facilities: '/facilities',
   categories: '/categories',
   users: '/users',
@@ -39,4 +47,9 @@ export type AppPath = (typeof paths)[keyof typeof paths];
 /** The URL of one ticket's detail page. */
 export function incidentPath(incidentId: string): string {
   return `/tickets/${incidentId}`;
+}
+
+/** The URL of one engineer's page. */
+export function engineerPath(userId: string): string {
+  return `/engineers/${userId}`;
 }

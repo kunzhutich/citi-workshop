@@ -6,6 +6,7 @@ import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
 import { RegisterPage } from './features/auth/RegisterPage';
 import { CategoriesPage } from './features/categories/CategoriesPage';
+import { EngineerDetailPage } from './features/engineers/EngineerDetailPage';
 import { EngineersPage } from './features/engineers/EngineersPage';
 import { TeamPage } from './features/engineers/TeamPage';
 import { FacilitiesPage } from './features/facilities/FacilitiesPage';
@@ -140,6 +141,19 @@ export default function App() {
 
           <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} levels={['LEAD']} />}>
             <Route path={paths.team} element={<TeamPage />} />
+          </Route>
+
+          {/*
+            An engineer's page is **staff**, not admin and not LEAD. A lead
+            opens it to decide who to hand work to, an admin to see how
+            somebody is doing, and an engineer on themselves — so the guard is
+            every staff role at any level, matching `STAFF_ONLY` on
+            `GET /reports/engineers/{id}`. An employee cannot reach it, which
+            §5.5 asks for and which the API enforces rather than this route
+            relying on nobody drawing a link to it.
+          */}
+          <Route element={<RequireRole roles={['ENGINEER', 'FACILITY_ADMIN']} />}>
+            <Route path={paths.engineerDetail} element={<EngineerDetailPage />} />
           </Route>
 
           <Route element={<RequireRole roles={['FACILITY_ADMIN']} />}>

@@ -42,6 +42,7 @@ export const queryKeys = {
   engineers: {
     all: ['engineers'] as const,
     list: (query: EngineerQuery) => ['engineers', 'list', query] as const,
+    detail: (userId: string) => ['engineers', 'detail', userId] as const,
   },
 
   users: {
@@ -79,6 +80,8 @@ export const queryKeys = {
     responseTimes: (params: ReportPeriodParams) => ['reports', 'response-times', params] as const,
     engineerWorkload: (params: ReportPeriodParams) =>
       ['reports', 'engineer-workload', params] as const,
+    engineerDetail: (userId: string, params: ReportPeriodParams) =>
+      ['reports', 'engineer-detail', userId, params] as const,
     communication: (params: ReportPeriodParams) => ['reports', 'communication', params] as const,
     blockedEscalated: (params: ReportScopeParams) =>
       ['reports', 'blocked-escalated', params] as const,
