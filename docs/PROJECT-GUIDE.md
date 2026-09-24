@@ -8809,7 +8809,7 @@ An admin opens the dashboard, sees Priya Raman at 90% capacity, and clicks her r
      the period half.
    - `useIncidents({ assignee_id, status: [OPEN, IN_PROGRESS, BLOCKED], sort: '-priority' })`
      → `GET /incidents` — the live half, **unscoped by the period**, because what
-     somebody is holding is a question about today (the same split as [D9](DECISION-LOG.md#d9)).
+     somebody is holding is a question about today (the same split as [D9](DECISION-LOG.md#d9--two-reports-were-answering-a-present-tense-question-with-a-period)).
 4. The report request lands on `routers/reports.py`, clears `STAFF_ONLY` in
    `security/dependencies.py`, and reaches `services/reporting.py:engineer_detail()`.
 5. That calls two repository functions. `engineer_detail()` returns three counts in one

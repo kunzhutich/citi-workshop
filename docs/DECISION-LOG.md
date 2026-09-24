@@ -2400,7 +2400,7 @@ whose destination is not an in-app absolute path — a protocol-relative
 `//elsewhere.example` is a link off the site, and this link is not allowed to
 be one.
 
-**The lesson, again.** [D24](#d24--a-test-that-waited-for-a-heading-and-read-a-number-that-was-not-there-yet),
+**The lesson, again.** [D24](#d24--a-heading-is-not-a-signal-that-the-data-arrived),
 [D25](#d25--a-test-that-reported-a-permission-was-enforced-without-checking-it)
 and [D38](#d38--correcting-d36-the-login-loop-was-a-redirect-not-a-cache) all say
 prove the fix removes the symptom. This is the other half of the same rule:
@@ -3086,7 +3086,7 @@ later changes one file.
 Four decisions inside it:
 
 - **Reordering cannot cross the period/current line.** That boundary is what
-  the whole dashboard is arranged around ([D9](#d5--what-do-from-and-to-actually-filter-on), D10): a
+  the whole dashboard is arranged around ([D9](#d9--two-reports-were-answering-a-present-tense-question-with-a-period), D10): a
   "Blocked · 21" tile under a "last 30 days" heading is the failure the two
   scope headings exist to prevent. A section can be hidden, and can move among
   its own kind.
