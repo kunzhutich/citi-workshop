@@ -4326,3 +4326,132 @@ is now covered by the twelve mirror comparisons rather than by anybody
 remembering. **Adding a member to a backend enum now fails the frontend
 suite**, which is the property that was missing.
 
+## D70 — The owner's review: what was overruled, and the two fixes that needed a browser
+
+Seven items from the owner's review of R7 and S4. The crash is
+[D69](#d69--the-inbox-crashed-and-the-type-system-was-satisfied); the rest are
+here, and three of them are worth more than the change they describe.
+
+### The date format: D60 overruled, and what that costs
+
+D60 set the pickers to `DD MMM YYYY` so that a field beside a heading reading
+"Sep 1, 2026" would not print the same value as `09/01/2026`, which is the 1st
+of September to some readers and the 9th of January to others. **The owner has
+seen both and chosen the adapter's default.** It is out.
+
+What made it visible is worth recording, because it was not the format itself:
+**Material UI derives a placeholder from the format rather than printing the
+format back**, and what it derives from a three-letter month is the four-letter
+one. So every empty field read `DD MMMM YYYY` — a format nothing in the
+application ever used and nobody chose. The override was reported through a
+symptom it only half caused.
+
+What is lost, stated plainly so the trade is on the record:
+
+- **The field is ambiguous again**, and it sits inches from a heading printing
+  the same date unambiguously.
+- **The application now prints dates two ways.** Everything else — `formatDate`,
+  the chips, the tables, and the picker's *own* "Choose date, selected date is
+  Sep 15, 2026" button label, which comes from the adapter's `fullDate` and is
+  untouched — uses a short month name. Only the two field values use slashes,
+  so a picker announces a date in a different grammar from the one it displays.
+- **It is locale-blind, not locale-aware.** The adapter's default is dayjs's
+  `en`, which is `MM/DD/YYYY` for every reader regardless of browser locale.
+  This is the US format for everyone, not the reader's own.
+
+What is gained: the placeholder is the format again, the fields are narrower,
+and there is now nothing in the application overriding the adapter — one rule
+in one place for all three filter bars, which cannot drift into three grammars.
+
+### The brown box on a picker section, and why the D46 remedy was wrong twice
+
+A picker field is three `contenteditable` spans, one per section, each its own
+focus target — so `body :focus-visible` drew a 3px brown rectangle around
+whichever two characters the reader had clicked. That is
+[D46](#d46--one-focus-ring-on-the-app-bars-search-box-drawn-around-the-box)'s
+app-bar search box exactly, one level smaller.
+
+D46's remedy is to move the ring out to the control. **Tried here twice, wrong
+on screen both times.** On the bordered field root, the ring drew a line
+straight through the word "From" — the floating label sits *on* the top border
+(`translate(14px, -9px)`) and an outline paints last. Moved inside, to the box
+holding the sections, it became a hard rectangle inside a rounded one, which is
+the precise shape D46 was written to remove.
+
+**Neither was visible to a test.** jsdom has no layout; both versions passed a
+test asserting the ring landed on the right element. Both were found by
+screenshotting a focused field and looking at it.
+
+**The third answer is that there was nothing to replace.** Measured on the
+running app: a focused picker field goes from a `1px rgba(0,0,0,0.23)` notch to
+a **`2px primary.main`** one — and a focused ordinary text field in this
+application does exactly the same and wears **no outline ring at all**. The
+picker was already showing focus the way the whole application does; the global
+rule was adding a second, worse indicator on top of a correct one. So the
+section's ring is suppressed and nothing is put back.
+
+That is a suppression with no replacement, which is the thing S6 was raised to
+stop, so it is **asserted rather than left as an absence**: `theme.test.ts`
+pins that the picker's only rule is the suppression, and
+`DateRangeFields.test.tsx` pins that a focused field carries `Mui-focused`, the
+class the notch is drawn from. If Material UI ever stops thickening it, that
+test fails rather than a keyboard user losing the field.
+
+### Filter order: a trade, not a guarantee
+
+The escalated flag moves ahead of the date range so the two pickers sit
+together. **It is not a guarantee and should not be read as one.** `FilterRow`
+is `auto-fit` on the bar's *own* width (D44), and the number of controls
+differs per screen because `fixedByPreset` omits the ones a screen already
+decides — nine on an admin's All tickets, eight on My queue and the engineer
+page's embedded table, seven on Unassigned. Whether the pair shares a row is
+then arithmetic, and the move buys the pairing at 1440px on the eight-control
+screens while losing it on Unassigned at that width and on the nine-control
+list around 1000–1150px.
+
+Making the pair genuinely unsplittable would need a wrapper spanning two grid
+columns, which contradicts `DateRangeFields`' fragment contract (D60) — the
+thing that lets the same component sit in a flex row on one screen and a grid
+on another. Not done.
+
+### The engineer page's filters were stacking for a reason worth naming
+
+`ScopeHeading`'s `actions` slot was `minWidth: 0` with no explicit width, so it
+sized to exactly its own max-content: 416px for two 200px selects and the gap
+between them. **A filter bar asked to arrange itself inside its max-content
+width has nothing to arrange** — there is no slack, so the flex row came down
+one select per line with several hundred pixels of empty heading beside it.
+The slot now has a width the pair can divide, and `min(100%, 416px)` keeps the
+protection the bare `0` was written for: on a phone the percentage is the
+smaller half, so the box is never wider than the line it sits on and the
+document cannot scroll sideways (D44 again).
+
+### The logo, and a halo that only a screenshot finds
+
+Both marks are regenerated from the brand files with their strokes expanded
+morphologically — a per-channel minimum on the dark-on-white source, a maximum
+on the light-on-brown one, which thickens the letters and the red roof together
+without redrawing either. The two are deliberately **not the same weight**: the
+app bar draws its mark at 40px and the login card at 84px, and a mark needs
+relatively more weight when it is small.
+
+The first attempt had a fault worth recording. Quantising to 64 colours left
+the keyed-out background at **alpha 1/255 rather than 0**, which on the brown
+app bar read as a faint panel behind the mark. An alpha black-point *after*
+quantisation fixes it; before, the quantiser puts it back. Nothing but looking
+at the rendered bar would have found that.
+
+### Two smaller calls
+
+**The Team page's unowned queue is three columns on a desktop**, one on a
+phone. It is a queue to triage rather than a list to read, and twenty-five
+full-width rows spent most of a 1440px screen on one ticket at a time.
+`auto-fit` against a 300px floor rather than a breakpoint, because that grid
+sits inside the shell's content box — the drawer and the padding narrower than
+the window.
+
+**The login mark is centred and about twice its old height**, and the heading
+under it is not. These screens are a narrow column on an otherwise empty page,
+so the mark can carry the page rather than label it; a centred heading over
+left-aligned inputs reads as two columns that failed to line up.
+

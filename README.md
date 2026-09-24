@@ -45,7 +45,7 @@ individually with what was seen, in
 | --- | --- |
 | **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 12 tables, 45 paths / 65 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
-| **Tests** | **1,430 passing** — 897 backend (pytest) · 441 frontend (Vitest) · 92 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
+| **Tests** | **1,466 passing** — 897 backend (pytest) · 477 frontend (Vitest) · 92 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
 | **Docs** | [Review guide](./docs/REVIEW-GUIDE.md) · [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
 
 **Contents** — [What it does](#what-it-does) · [Architecture](#architecture) ·

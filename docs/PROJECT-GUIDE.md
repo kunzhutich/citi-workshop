@@ -64,7 +64,7 @@ notifications) are the stretch phases that followed, **R1**–**R7** the redesig
 
 **The system in numbers, as it finally stands:** 13 tables over 6 Alembic revisions ·
 48 paths / 69 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
-transitions · 5 notification rules · 1,430 passing tests (897 pytest, 441 vitest,
+transitions · 5 notification rules · 1,466 passing tests (897 pytest, 477 vitest,
 92 Playwright, plus 10 deliberate viewport skips).
 
 ---
@@ -8925,7 +8925,7 @@ since the scaffold.*
 | `features/dashboard/NeedsAttentionPanel.tsx` | Rows take the D55 stretched link; Assign is larger and centred on desktop only. |
 | `features/dashboard/EngineerWorkloadTable.tsx`, `features/engineers/EngineerRoster.tsx` | Whole rows open the engineer's page. The roster's Edit button is gone. |
 | `features/engineers/EngineerDialog.tsx` | Creation only. Removing Edit made its whole edit half unreachable. |
-| `features/engineers/EngineerDetailPage.tsx` | Rebuilt: two halves above the divider, the period controls beside the heading they scope, tiles-and-pie below, then the ticket table. |
+| `features/engineers/EngineerDetailPage.tsx` | Rebuilt: a 30/70 split above the divider with the live queue in two columns, the period controls beside the heading they scope, tiles-and-pie below, then the ticket table. |
 | `features/incidents/IncidentsPage.tsx` | `embedded`, which swaps the `h1` for an `h2`. Passes its `preset` to the filter bar. |
 | `theme.ts` | `MuiTableCell.sizeSmall` vertical padding, which is every table in the application. |
 | `layout/AppShell.tsx`, `features/auth/AuthCard.tsx`, `assets/*.png` | The ACME mark, light on the app bar and dark on the signed-out screens. |
@@ -8972,7 +8972,9 @@ tell "the reader cleared this" from "this is not mine".
 reports into present-tense and period-scoped, and D14 made the admin dashboard say which
 is which in two headings with two sentences. The engineer page's halves sit side by side,
 where neither has room for a sentence — so `ScopeLabel` is the same two tenses and the
-same two icons in three words. It names no dates, deliberately: D14 and D24 are firm that
+same two icons in three words. (The owner's review then reproportioned those halves to
+30/70 and put the live queue in two columns; `ScopeLabel` did not move, and the reasoning
+below is unchanged by it. D70.) It names no dates, deliberately: D14 and D24 are firm that
 a period may only be stated from the response's own `window`, and a label has none.
 
 **A pie whose slices have no inherent identity gets its colours from the chart; one whose
@@ -9035,7 +9037,7 @@ workload, then narrows that engineer's period to the last 7 days.**
 | Which query parameters a filter hook may rewrite | `features/dashboard/useDashboardFilters.ts`, `features/incidents/useIncidentFilters.ts` | `OWNED_PARAMS` in each |
 | A calendar day is local midnight, not UTC midnight | `display/time.ts` | `parseCalendarDay`, and the three helpers built on it |
 | What a date picker may write, and when | `components/DateRangeFields.tsx` | `serialise` — nothing until the picker says it is a date |
-| How a date range is printed in a field | `components/DateRangeFields.tsx` | `FIELD_FORMAT` |
+| How a date range is printed and typed in a field | `components/DateRangeFields.tsx` | nothing — the adapter decides, and no caller may override it (D70) |
 | Which clicks a clickable table row declines | `components/rowNavigation.ts` | `useRowNavigation` |
 | Which surface gets which click mechanism | `components/rowNavigation.ts`, `components/stretchedLink.ts` | tables the first, cards the second (D55, D58 §5.5) |
 | Who may filter by engineer | `features/incidents/IncidentFilterBar.tsx` | `mayFilterByEngineer`; the API enforces `GET /engineers`, not the filter |
@@ -9070,6 +9072,11 @@ workload, then narrows that engineer's period to the last 7 days.**
 
 ### 6. Gotchas
 
+- **The owner's review changed four things here; read D70 beside this section.** The
+  30/70 split and the two ticket columns, the date pickers' format override removed, the
+  per-section focus ring removed with nothing put back, and the escalated flag moved
+  ahead of the date range. The reasoning in each case is in the log, and two of them were
+  only findable in a browser.
 - **`frontend/src/assets/` was not tracked by git.** The upstream Python `.gitignore`'s
   "Flask stuff" block carries a bare `assets`, which matches a directory of that name at
   any depth. `git add` was the only thing that would ever have said so. Un-ignored
