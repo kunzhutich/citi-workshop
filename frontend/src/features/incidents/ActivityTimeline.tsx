@@ -4,10 +4,13 @@ import FlagIcon from '@mui/icons-material/Flag';
 import LockIcon from '@mui/icons-material/Lock';
 import PersonIcon from '@mui/icons-material/Person';
 import ReplayIcon from '@mui/icons-material/Replay';
+import StarBorderOutlinedIcon from '@mui/icons-material/StarBorderOutlined';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import Avatar from '@mui/material/Avatar';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
+import Rating from '@mui/material/Rating';
 import Typography from '@mui/material/Typography';
 import type { ReactElement } from 'react';
 
@@ -45,11 +48,34 @@ const EVENT_ICONS: Record<EventType, ReactElement> = {
   REOPENED: <ReplayIcon fontSize="small" />,
 };
 
+/**
+ * What each score means, in words.
+ *
+ * The same five sentences `FeedbackDialog` offers when the rating is given,
+ * so what the reporter chose is what the engineer reads back. Duplicated
+ * rather than shared because the two are in different features and the string
+ * is presentation in both — but they are meant to stay equal, and
+ * `ActivityTimeline.test.tsx` pins them against each other.
+ */
+const SCORE_WORDING: Record<number, string> = {
+  1: 'Not fixed',
+  2: 'Fixed poorly',
+  3: 'Fixed',
+  4: 'Fixed well',
+  5: 'Could not have been better',
+};
+
 export interface ActivityTimelineProps {
   entries: ActivityEntry[];
+  /**
+   * Open the correction dialog for a rating. Absent where there is nowhere to
+   * open one — the edit affordance is then simply not drawn, and `can_edit`
+   * on the entry still decides whether it would have been.
+   */
+  onEditFeedback?: (entry: ActivityEntry) => void;
 }
 
-export function ActivityTimeline({ entries }: ActivityTimelineProps) {
+export function ActivityTimeline({ entries, onEditFeedback }: ActivityTimelineProps) {
   if (entries.length === 0) {
     return (
       <Typography variant="body2" color="text.secondary">
@@ -82,19 +108,24 @@ export function ActivityTimeline({ entries }: ActivityTimelineProps) {
             />
           ) : null}
 
+          {/*
+            Three treatments for three kinds, because the eye should be able to
+            skim the left rail and tell a machine record from a person's words
+            from a judgement. Each pairing is a palette slot Material UI has
+            filled `contrastText` for, rather than two colours picked here —
+            see `theme.ts` on the slot that rendered grey when it was not.
+          */}
           <Avatar
             sx={{
               width: 40,
               height: 40,
               flexShrink: 0,
-              bgcolor: entry.kind === 'note' ? 'secondary.main' : 'action.selected',
-              color: entry.kind === 'note' ? 'secondary.contrastText' : 'text.secondary',
+              bgcolor: avatarColour(entry).bgcolor,
+              color: avatarColour(entry).color,
               fontSize: '0.8rem',
             }}
           >
-            {entry.kind === 'note'
-              ? initialsOf(entry.actor?.full_name ?? '?')
-              : (entry.event_type && EVENT_ICONS[entry.event_type]) ?? null}
+            {avatarContent(entry)}
           </Avatar>
 
           <Box sx={{ minWidth: 0, flexGrow: 1 }}>
@@ -121,7 +152,62 @@ export function ActivityTimeline({ entries }: ActivityTimelineProps) {
               ) : null}
             </Box>
 
-            {entry.kind === 'note' ? (
+            {entry.kind === 'feedback' ? (
+              <Box
+                sx={{
+                  mt: 0.5,
+                  p: 1.5,
+                  borderRadius: 1,
+                  bgcolor: 'action.hover',
+                  border: '1px solid',
+                  borderColor: 'primary.light',
+                }}
+              >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
+                  {/*
+                    Read-only stars, with the score in words beside them. Five
+                    glyphs are not something a screen reader can total, and
+                    MUI's own label for a read-only Rating is a bare "4 Stars"
+                    — which says how many are lit and not what four means here.
+                  */}
+                  <Rating value={entry.rating} readOnly size="small" aria-hidden />
+                  <Typography variant="subtitle2" component="span">
+                    {entry.rating}/5 — {entry.rating === null ? '' : SCORE_WORDING[entry.rating]}
+                  </Typography>
+                </Box>
+
+                {entry.rated_user ? (
+                  <Typography variant="caption" color="text.secondary" component="p">
+                    About {entry.rated_user.full_name}
+                    {/* Which repair, but only once there has been more than
+                        one — "repair 1" on a ticket fixed once is noise. */}
+                    {entry.resolution_round && entry.resolution_round > 1
+                      ? ` · repair ${entry.resolution_round}`
+                      : ''}
+                  </Typography>
+                ) : null}
+
+                <Typography
+                  variant="body2"
+                  sx={{ mt: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+                >
+                  {entry.comment}
+                </Typography>
+
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+                  {entry.edited_at ? (
+                    <Typography variant="caption" color="text.secondary">
+                      edited {relativeTime(entry.edited_at)}
+                    </Typography>
+                  ) : null}
+                  {entry.can_edit && onEditFeedback ? (
+                    <Button size="small" onClick={() => onEditFeedback(entry)} sx={{ ml: -1 }}>
+                      Change this
+                    </Button>
+                  ) : null}
+                </Box>
+              </Box>
+            ) : entry.kind === 'note' ? (
               <Box
                 sx={{
                   mt: 0.5,
@@ -162,6 +248,28 @@ export function ActivityTimeline({ entries }: ActivityTimelineProps) {
       ))}
     </Box>
   );
+}
+
+/** The avatar's two colours for one kind of entry. */
+function avatarColour(entry: ActivityEntry): { bgcolor: string; color: string } {
+  if (entry.kind === 'feedback') {
+    return { bgcolor: 'primary.main', color: 'primary.contrastText' };
+  }
+  if (entry.kind === 'note') {
+    return { bgcolor: 'secondary.main', color: 'secondary.contrastText' };
+  }
+  return { bgcolor: 'action.selected', color: 'text.secondary' };
+}
+
+/** What sits inside the avatar: initials for words, an icon for the rest. */
+function avatarContent(entry: ActivityEntry): ReactElement | string | null {
+  if (entry.kind === 'feedback') {
+    return <StarBorderOutlinedIcon fontSize="small" />;
+  }
+  if (entry.kind === 'note') {
+    return initialsOf(entry.actor?.full_name ?? '?');
+  }
+  return (entry.event_type && EVENT_ICONS[entry.event_type]) ?? null;
 }
 
 /**

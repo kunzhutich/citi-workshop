@@ -25,6 +25,7 @@ function renderActions(overrides: Partial<IncidentActionsProps> = {}) {
     onClearEscalation: vi.fn(),
     onChangePriority: vi.fn(),
     onEdit: vi.fn(),
+    onGiveFeedback: vi.fn(),
     isPickingUp: false,
     ...overrides,
   };

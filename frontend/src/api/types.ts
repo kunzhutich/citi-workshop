@@ -120,7 +120,8 @@ export type NotificationType =
   | 'ASSIGNED'
   | 'NOTE_ADDED'
   | 'ESCALATION_CLEARED'
-  | 'WATCHED_RESOLVED';
+  | 'WATCHED_RESOLVED'
+  | 'FEEDBACK_RECEIVED';
 
 /** `app.models.enums.SeatType`. */
 export type SeatType = 'DESK' | 'MEETING_ROOM' | 'COMMON_AREA' | 'OTHER';
@@ -263,6 +264,15 @@ export interface Incident extends IncidentListItem {
   can_assign: boolean;
   can_add_note: boolean;
   can_add_internal_note: boolean;
+  /**
+   * Whether the caller may rate the current repair.
+   *
+   * The reporter only, once the work is resolved, within fourteen days of it,
+   * and not twice for the same repair. All four parts are decided by
+   * `backend/v1/app/services/feedback.py`; this flag is the whole of what the
+   * button knows.
+   */
+  can_give_feedback: boolean;
 
   /** Whether the caller has subscribed to this ticket. */
   is_watching: boolean;
@@ -291,7 +301,7 @@ export interface AssignResult {
 
 /** Mirrors `ActivityEntry` — one entry of the merged timeline. */
 export interface ActivityEntry {
-  kind: 'event' | 'note';
+  kind: 'event' | 'note' | 'feedback';
   id: string;
   created_at: string;
   actor: UserSummary | null;
@@ -312,7 +322,33 @@ export interface ActivityEntry {
 
   body: string | null;
   visibility: NoteVisibility | null;
+
+  /** Set on `feedback` entries. 1 to 5, low to high. */
+  rating: number | null;
+  comment: string | null;
+  /** The engineer the rating is about, who may not be the assignee now. */
+  rated_user: UserSummary | null;
+  /** Which repair it rates: 1 for the first, 2 after one reopen. */
+  resolution_round: number | null;
+  /** Whether the caller may still change this rating. Null on other kinds. */
+  can_edit: boolean | null;
+
+  /** Set on `note` and `feedback` entries alike. */
   edited_at: string | null;
+}
+
+/** Mirrors `FeedbackRead` — one rating of one repair. */
+export interface Feedback {
+  id: string;
+  incident_id: string;
+  author: UserSummary;
+  rated_user: UserSummary;
+  resolution_round: number;
+  rating: number;
+  comment: string;
+  created_at: string;
+  edited_at: string | null;
+  can_edit: boolean;
 }
 
 /** Mirrors `NoteRead`. */

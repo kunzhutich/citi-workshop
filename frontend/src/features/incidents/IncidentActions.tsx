@@ -1,3 +1,4 @@
+import StarBorderOutlinedIcon from '@mui/icons-material/StarBorderOutlined';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -37,6 +38,7 @@ export interface IncidentActionsProps {
   onClearEscalation: () => void;
   onChangePriority: () => void;
   onEdit: () => void;
+  onGiveFeedback: () => void;
   isPickingUp: boolean;
 }
 
@@ -109,6 +111,29 @@ export function ContextualButtons(props: IncidentActionsProps) {
       {incident.can_edit ? (
         <Button variant="outlined" onClick={props.onEdit}>
           Edit
+        </Button>
+      ) : null}
+      {/*
+        Outlined like the rest of this group, and carried by the ochre and the
+        star instead. It was filled first, on the argument that this is the
+        one contextual action which asks the reader for something rather than
+        offering them a way to change the ticket — and the screen disagreed:
+        a reporter's card already holds two filled workflow buttons, so a
+        third made the whole card a stack of brown bars and left the divider
+        between the groups doing no work at all.
+
+        Whether it appears at all is `can_give_feedback`, which is the whole of
+        what this knows: the reporter, resolved, inside fourteen days, not
+        already rated. All four live in `services/feedback.py`.
+      */}
+      {incident.can_give_feedback ? (
+        <Button
+          variant="outlined"
+          color="secondary"
+          startIcon={<StarBorderOutlinedIcon />}
+          onClick={props.onGiveFeedback}
+        >
+          Rate the work
         </Button>
       ) : null}
     </>

@@ -11,7 +11,7 @@ import Typography from '@mui/material/Typography';
 import { useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 
-import type { AllowedTransition } from '../../api/types';
+import type { ActivityEntry, AllowedTransition } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { EscalatedFlag } from '../../components/EscalatedFlag';
 import { PriorityChip } from '../../components/PriorityChip';
@@ -29,17 +29,20 @@ import { ClearEscalationDialog } from './ClearEscalationDialog';
 import { DetailsCard } from './DetailsCard';
 import { EditIncidentDialog } from './EditIncidentDialog';
 import { EscalateDialog } from './EscalateDialog';
+import { FeedbackDialog } from './FeedbackDialog';
 import {
   useActivity,
   useAddNote,
   useAllowedTransitions,
   useAssignIncident,
   useClearEscalation,
+  useCreateFeedback,
   useEscalateIncident,
   useIncident,
   usePickUpIncident,
   useSetWatching,
   useTransition,
+  useUpdateFeedback,
   useUpdateIncident,
 } from './hooks';
 import { NoteComposer } from './NoteComposer';
@@ -55,7 +58,11 @@ type OpenDialog =
   | { kind: 'escalate' }
   | { kind: 'clear-escalation' }
   | { kind: 'priority' }
-  | { kind: 'edit' };
+  | { kind: 'edit' }
+  | { kind: 'feedback' }
+  // Correcting a rating already left. Carries the row rather than only its id
+  // so the dialog opens on what is stored, without a fourth query for it.
+  | { kind: 'edit-feedback'; entry: ActivityEntry };
 
 /**
  * One ticket, in full — the screen every persona shares.
@@ -87,6 +94,8 @@ export function IncidentDetailPage() {
   const clearEscalation = useClearEscalation(incidentId);
   const changeIncident = useUpdateIncident(incidentId);
   const addNote = useAddNote(incidentId);
+  const giveFeedback = useCreateFeedback(incidentId);
+  const changeFeedback = useUpdateFeedback();
 
   const [dialog, setDialog] = useState<OpenDialog>({ kind: 'none' });
   const close = () => setDialog({ kind: 'none' });
@@ -222,7 +231,10 @@ export function IncidentDetailPage() {
                       error={activity.error}
                       errorFallback="Could not load this ticket's history."
                     >
-                      <ActivityTimeline entries={activity.data ?? []} />
+                      <ActivityTimeline
+                        entries={activity.data ?? []}
+                        onEditFeedback={(entry) => setDialog({ kind: 'edit-feedback', entry })}
+                      />
                     </QueryState>
 
                     {ticket.can_add_note ? (
@@ -264,6 +276,7 @@ export function IncidentDetailPage() {
                       onClearEscalation={() => setDialog({ kind: 'clear-escalation' })}
                       onChangePriority={() => setDialog({ kind: 'priority' })}
                       onEdit={() => setDialog({ kind: 'edit' })}
+                      onGiveFeedback={() => setDialog({ kind: 'feedback' })}
                       isPickingUp={pickUp.isPending}
                     />
                   </QueryState>
@@ -302,6 +315,7 @@ export function IncidentDetailPage() {
                     onClearEscalation={() => setDialog({ kind: 'clear-escalation' })}
                     onChangePriority={() => setDialog({ kind: 'priority' })}
                     onEdit={() => setDialog({ kind: 'edit' })}
+                    onGiveFeedback={() => setDialog({ kind: 'feedback' })}
                     isPickingUp={pickUp.isPending}
                   />
                 </Paper>
@@ -368,6 +382,40 @@ export function IncidentDetailPage() {
                   notify('Priority changed.');
                 }}
                 isSubmitting={changeIncident.isPending}
+              />
+            ) : null}
+
+            {dialog.kind === 'feedback' ? (
+              <FeedbackDialog
+                open
+                onClose={close}
+                /* Who did the work, from the ticket. Not always the current
+                   assignee — an admin may reassign a resolved ticket — but it
+                   is the closest the detail response comes to naming them, and
+                   the rating itself is attached to the resolver by the API. */
+                engineerName={ticket.assignee?.full_name}
+                onSubmit={async (payload) => {
+                  await giveFeedback.mutateAsync(payload);
+                  notify('Thanks — your feedback has been sent.');
+                }}
+                isSubmitting={giveFeedback.isPending}
+              />
+            ) : null}
+
+            {dialog.kind === 'edit-feedback' ? (
+              <FeedbackDialog
+                open
+                onClose={close}
+                engineerName={dialog.entry.rated_user?.full_name}
+                initial={{
+                  rating: dialog.entry.rating ?? 0,
+                  comment: dialog.entry.comment ?? '',
+                }}
+                onSubmit={async (payload) => {
+                  await changeFeedback.mutateAsync({ feedbackId: dialog.entry.id, ...payload });
+                  notify('Feedback updated.');
+                }}
+                isSubmitting={changeFeedback.isPending}
               />
             ) : null}
 

@@ -153,6 +153,7 @@ export function makeIncident(overrides: Partial<Incident> = {}): Incident {
     can_assign: false,
     can_add_note: false,
     can_add_internal_note: false,
+    can_give_feedback: false,
     is_watching: false,
     watcher_count: 0,
     ...overrides,

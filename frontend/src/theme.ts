@@ -316,6 +316,33 @@ export const theme = createTheme({
     MuiButton: {
       defaultProps: { disableElevation: true },
     },
+    MuiRating: {
+      styleOverrides: {
+        /*
+         * Stars in the palette's own ochre, not Material UI's amber.
+         *
+         * `#faaf00` is the default and it is the one colour in a rating that
+         * nobody thinks to check, because a gold star looks obviously right.
+         * It is not from this palette, it was never contrast-checked against
+         * these surfaces, and it is the third time in this project a colour
+         * has arrived un-derived — D48, D50 and D57 are the other two.
+         *
+         * `secondary.main` is the warm accent the palette already carries and
+         * measures **5.56:1 against paper** and 5.05:1 against the
+         * `action.hover` panel a rating sits on in the activity timeline,
+         * either way clear of the 3:1 WCAG 1.4.11 asks of a graphic.
+         *
+         * The empty stars are left at Material UI's `action.disabled`. They
+         * carry nothing a reader needs: every rating in the application is
+         * shown with its score in words beside it — "1/5 — Not fixed" — so
+         * the glyphs are decoration and are marked `aria-hidden` where they
+         * are not the control itself.
+         */
+        iconFilled: ({ theme: current }) => ({
+          color: current.palette.secondary.main,
+        }),
+      },
+    },
     MuiTextField: {
       // Every form in the app uses the same field shape; screens opt out
       // explicitly rather than each one opting in.
