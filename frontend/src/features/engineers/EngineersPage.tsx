@@ -18,30 +18,31 @@ import { levelLabel } from '../../layout/roleLabels';
 import { useCategoryTree } from '../categories/hooks';
 import { EngineerDialog } from './EngineerDialog';
 import { EngineerRoster } from './EngineerRoster';
-import {
-  useCreateEngineer,
-  useDeactivateEngineer,
-  useEngineers,
-  useUpdateEngineer,
-} from './hooks';
+import { useCreateEngineer, useDeactivateEngineer, useEngineers } from './hooks';
 import { TemporaryPasswordDialog } from './TemporaryPasswordDialog';
 
 const LEVELS: EngineerLevel[] = ['JUNIOR', 'SENIOR', 'LEAD'];
 
 /**
- * The admin's engineer roster: add them, edit them, deactivate them.
+ * The admin's engineer roster: add them, deactivate them, open them.
  *
  * Creating one hands back a temporary password that exists in that response
  * and nowhere else, so the create flow always ends in
  * `TemporaryPasswordDialog` rather than a snackbar — a confirmation that
  * disappears after five seconds is the wrong container for the only copy of a
  * credential.
+ *
+ * **There is no Edit button, and `EngineerDialog` is only ever a create form
+ * here.** §6.1 moved every one of those fields onto the engineer's own page as
+ * `EngineerBasics`, so an Edit button was a second way to the same mutation,
+ * in a modal that could not show any of the context the page shows. What
+ * replaces it is the row itself, which opens that page.
  */
 export function EngineersPage() {
   const { notify } = useSnackbar();
   const [level, setLevel] = useState<EngineerLevel | ''>('');
   const [includeInactive, setIncludeInactive] = useState(false);
-  const [editing, setEditing] = useState<Engineer | null | undefined>(undefined);
+  const [isCreating, setIsCreating] = useState(false);
   const [created, setCreated] = useState<EngineerCreated | null>(null);
 
   const engineers = useEngineers({
@@ -51,7 +52,6 @@ export function EngineersPage() {
   });
   const categories = useCategoryTree();
   const createEngineer = useCreateEngineer();
-  const updateEngineer = useUpdateEngineer();
   const deactivateEngineer = useDeactivateEngineer();
 
   const deactivate = async (engineer: Engineer) => {
@@ -69,7 +69,7 @@ export function EngineersPage() {
         title="Engineers"
         description="Who resolves tickets, what they cover, and how much they are carrying."
         actions={
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setEditing(null)}>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setIsCreating(true)}>
             Add engineer
           </Button>
         }
@@ -111,7 +111,7 @@ export function EngineersPage() {
             title="No engineers yet"
             description="Add one, and tickets can start being assigned."
             action={
-              <Button variant="contained" onClick={() => setEditing(null)}>
+              <Button variant="contained" onClick={() => setIsCreating(true)}>
                 Add engineer
               </Button>
             }
@@ -120,38 +120,25 @@ export function EngineersPage() {
           <EngineerRoster
             engineers={engineers.data?.items ?? []}
             categories={categories.data}
-            renderActions={(engineer) => (
-              <>
-                <Button size="small" onClick={() => setEditing(engineer)}>
-                  Edit
+            renderActions={(engineer) =>
+              engineer.is_active ? (
+                <Button size="small" color="warning" onClick={() => void deactivate(engineer)}>
+                  Deactivate
                 </Button>
-                {engineer.is_active ? (
-                  <Button size="small" color="warning" onClick={() => void deactivate(engineer)}>
-                    Deactivate
-                  </Button>
-                ) : null}
-              </>
-            )}
+              ) : null
+            }
           />
         )}
       </QueryState>
 
-      {editing !== undefined ? (
+      {isCreating ? (
         <EngineerDialog
           open
-          onClose={() => setEditing(undefined)}
-          engineer={editing}
-          isSubmitting={createEngineer.isPending || updateEngineer.isPending}
+          onClose={() => setIsCreating(false)}
+          isSubmitting={createEngineer.isPending}
           onCreate={async (payload) => {
             const result = await createEngineer.mutateAsync(payload);
             setCreated(result);
-          }}
-          onUpdate={async (payload) => {
-            if (!editing) {
-              return;
-            }
-            await updateEngineer.mutateAsync({ userId: editing.user_id, payload });
-            notify(`${editing.full_name} updated.`);
           }}
         />
       ) : null}

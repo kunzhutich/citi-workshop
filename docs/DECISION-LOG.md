@@ -3467,6 +3467,122 @@ filter row. Fixing the stub is a real improvement and a change to a file every
 test in the suite depends on, which is not a thing to do in the tail of a UI
 phase.
 
+## D61 — Three more clickable rows, and the rule moved out of the first one
+
+**§B of the phase brief.** Two mechanisms already existed and each was chosen
+for a written reason: the stretched link of
+[D55](#d55--a-whole-card-that-opens-a-ticket-with-buttons-that-still-do-their-own-job)
+for cards, and a row click handler with the reference left as a real link for
+tables ([D58](#d58--section-5-the-per-persona-screens-and-one-backend-flag) §5.5).
+No third was invented and neither was swapped, which leaves the interesting
+part elsewhere.
+
+| Surface | Mechanism | Because |
+| --- | --- | --- |
+| `IncidentTable` | row `onClick` | a `<table>` |
+| `EngineerRoster` | row `onClick` | a `<table>` |
+| `EngineerWorkloadTable` | row `onClick` | a `<table>` |
+| `NeedsAttentionPanel` | stretched link | flex rows inside a card |
+
+### The rule is in `components/rowNavigation.ts`, and it is a hook
+
+`openRow` lived as a closure inside `IncidentTable` with a twenty-line comment
+above it. Two more tables wanted it, and three copies of one decision is the
+thing this project treats as a defect rather than a style preference.
+
+**A hook, not an exported `shouldIgnoreRowClick` predicate.** What is being
+kept in one place is not only *which clicks to decline* but *that a row click
+navigates at all*; handing out the exceptions and leaving `void navigate(…)` at
+three call sites is half a decision in three files, free to drift from the
+other half. Only the hook is exported, so no call site can take the predicate
+and hand-roll the rest.
+
+**The reasoning moved with it**, rather than staying behind in the file that no
+longer owns the rule. Worth saying because the opposite mistake was made last
+phase — two helpers inserted between a docstring and the function it described,
+type-checking and linting clean while documenting the wrong thing.
+
+**Something learned by deleting the guards one at a time**, and now written in
+the module: the `defaultPrevented` check and the interactive-selector check
+**overlap on anchors and nowhere else**. React Router's `Link` calls
+`preventDefault` before navigating, so a link is held by either guard alone,
+while a `<button>` prevents nothing and is held only by the selector. Delete
+`defaultPrevented` on its own and every test still passes — which is exactly
+how it could be removed in good faith as redundant, and it is not.
+
+### What went, and what replaced it
+
+**The roster's Edit button.** Every field it opened has lived on the engineer's
+own page since §6.1, so it was a second route to one mutation through a modal
+that could show none of the context the page shows. The row opens the page
+instead; Deactivate keeps its own job, because the selector guard declines a
+click that lands on a button.
+
+**`EngineerDialog` became create-only.** Removing the button made its whole
+edit half unreachable: `engineer` was null at the one remaining call site, so
+every `engineer ? … : …` branch, the availability field and the `onUpdate` prop
+were dead — and the call site had to satisfy that required prop with a resolved
+promise for a path nothing could reach. Deleted rather than commented, which is
+also what D59 says the dialog is for: you fill it in once, you get a temporary
+password, you are done.
+
+**`EngineerWorkloadTable`'s docstring was describing the wrong thing.** Its last
+paragraph still said "every engineer's name links to their live queue", which
+§6.1 reversed. Rewritten to the behaviour it now has.
+
+### The attention panel, and the one piece of `clickableCard` that was not taken
+
+`AttentionRow` takes the stretched link: the **reference** is the one real
+anchor and grows over the row, `RowActions` is lifted above the overlay. The
+reference and not the title, because `TicketTitle`'s own rule is that a title
+is always ink — what is clickable is the reference, or the row.
+
+`position: relative` is written inline rather than pulled in with
+`clickableCard`, and the comment says so, so it does not read as forgotten. The
+rest of that bundle is card chrome: its hover rule moves a *card's* border, and
+the only border a row has is the divider it shares with the row below; and its
+`:has(a:hover)` rule suppresses the link underline, which here is the one hover
+affordance a row inside a card has to say it is a target.
+
+**Assign is bigger and vertically centred on desktop only.** On a phone
+`RowActions` already gives every button the row's full width and stacks them
+(§4.5), where a larger button is no easier to hit and centring a full-width
+button means nothing. Both are conditioned on `useBreakpoint`.
+
+### What the tests can and cannot prove, and what closed the gap
+
+**jsdom cannot test the stretched link.** There is no layout and no hit
+testing, so an overlay with no geometry is never what a click meets: clicking
+the middle of a row and watching it navigate would be a test that can neither
+pass nor fail honestly. The three pieces are asserted directly instead —
+including `position: relative; z-index: 1` on the actions, which is D55's "worth
+a test rather than a comment" and is the *only* way to catch it, because a
+jsdom click succeeds whatever the z-index says.
+
+So it was closed in Chromium instead, and the first attempt **reported a
+failure that was not there**: the click missed because `page.mouse.click` takes
+viewport coordinates and the panel was two thousand pixels down the page, so it
+landed on nothing. Scrolled into view and re-measured with
+`document.elementFromPoint`, the overlay is what sits at every probe, and a
+click at 35%/72% of the row opens the ticket at 1440px and at 375px. On the
+phone one probe returns the Assign button rather than the link — which is the
+arrangement working, not failing, and is why the second point was needed to
+tell the two apart.
+
+Recorded because the shape recurs: **a negative result from a harness is a
+claim about the harness until it is checked.**
+
+### What it costs
+
+Text in an attention row can no longer be selected by dragging — the stated
+trade of the pattern, and these rows quote an escalation reason, which is more
+quotable than a ticket card. Accepted, documented at the component, and worth
+the owner's eyes.
+
+A deactivated engineer's Actions cell is now empty rather than holding Edit.
+The column only renders when a screen supplies actions, so it is a blank cell
+and not a missing column.
+
 ## D62 — Two filter hooks in one address bar, and who owns which parameter
 
 **Found by building §D4**, which puts a ticket list inside the engineer page.

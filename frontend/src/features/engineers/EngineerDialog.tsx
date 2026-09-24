@@ -9,12 +9,11 @@ import MenuItem from '@mui/material/MenuItem';
 import TextField from '@mui/material/TextField';
 import { useState } from 'react';
 
-import type { EngineerCreatePayload, EngineerUpdatePayload } from '../../api/engineers';
+import type { EngineerCreatePayload } from '../../api/engineers';
 import { describeError } from '../../api/errors';
-import type { AvailabilityStatus, Engineer, EngineerLevel } from '../../api/types';
+import type { EngineerLevel } from '../../api/types';
 import { ResponsiveDialog } from '../../components/ResponsiveDialog';
 import { levelLabel } from '../../layout/roleLabels';
-import { AVAILABILITY_STATUSES, availabilityLabel } from '../../display/labels';
 import { useCategoryTree } from '../categories/hooks';
 import { useFacilityTree } from '../facilities/hooks';
 
@@ -24,45 +23,47 @@ const LEVELS: EngineerLevel[] = ['JUNIOR', 'SENIOR', 'LEAD'];
 export interface EngineerDialogProps {
   open: boolean;
   onClose: () => void;
-  /** The engineer being edited, or null when creating one. */
-  engineer: Engineer | null;
   onCreate: (payload: EngineerCreatePayload) => Promise<unknown>;
-  onUpdate: (payload: EngineerUpdatePayload) => Promise<unknown>;
   isSubmitting: boolean;
 }
 
 /**
- * Add an engineer, or change one.
+ * Add an engineer.
  *
- * There is no password field on either path. Creating an engineer generates a
- * temporary password the API returns **once**, which the caller then shows;
- * editing one cannot set a password at all. A password an engineer will keep
- * should never travel through an admin's screen or a support chat.
+ * **Creating only, since R7.** This used to be a dual-mode dialog: pass an
+ * engineer and it edited one, pass null and it created one. §6.1 moved every
+ * editable field onto the engineer's own page as `EngineerBasics`, R7 removed
+ * the roster's Edit button that was the only way into the other mode, and what
+ * was left was a second branch through every field that nothing could reach —
+ * plus an `onUpdate` its one caller had to satisfy with a resolved promise.
  *
- * Email is create-only for the same reason it is absent from `UserUpdate`: it
- * is the sign-in identity and the key the audit trail is read by.
+ * A dialog is the right shape for creating and the wrong shape for editing,
+ * which is [D59](../../../../docs/DECISION-LOG.md)'s point: you fill this in
+ * once, you get a temporary password, you are done. Editing is a question
+ * about a person you are looking at, and a modal cannot show you the person.
+ *
+ * There is no password field. Creating an engineer generates a temporary
+ * password the API returns **once**, which the caller then shows. A password
+ * an engineer will keep should never travel through an admin's screen or a
+ * support chat.
+ *
+ * Email is here and nowhere else for the same reason it is absent from
+ * `UserUpdate`: it is the sign-in identity and the key the audit trail is read
+ * by. Availability is the opposite case — it is absent here because it is the
+ * engineer's own statement about themselves, and a new account starts
+ * available.
  */
-export function EngineerDialog({
-  open,
-  onClose,
-  engineer,
-  onCreate,
-  onUpdate,
-  isSubmitting,
-}: EngineerDialogProps) {
+export function EngineerDialog({ open, onClose, onCreate, isSubmitting }: EngineerDialogProps) {
   const categories = useCategoryTree();
   const facilities = useFacilityTree();
 
-  const [email, setEmail] = useState(engineer?.email ?? '');
-  const [fullName, setFullName] = useState(engineer?.full_name ?? '');
-  const [level, setLevel] = useState<EngineerLevel>(engineer?.level ?? 'JUNIOR');
-  const [specialties, setSpecialties] = useState<string[]>(engineer?.specialty_group_ids ?? []);
-  const [homeBuildingId, setHomeBuildingId] = useState(engineer?.home_building_id ?? '');
-  const [phone, setPhone] = useState(engineer?.phone ?? '');
-  const [maxActive, setMaxActive] = useState(String(engineer?.max_active_tickets ?? 10));
-  const [availability, setAvailability] = useState<AvailabilityStatus>(
-    engineer?.availability ?? 'AVAILABLE',
-  );
+  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [level, setLevel] = useState<EngineerLevel>('JUNIOR');
+  const [specialties, setSpecialties] = useState<string[]>([]);
+  const [homeBuildingId, setHomeBuildingId] = useState('');
+  const [phone, setPhone] = useState('');
+  const [maxActive, setMaxActive] = useState('10');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -71,27 +72,15 @@ export function EngineerDialog({
     setFieldErrors({});
 
     try {
-      if (engineer) {
-        await onUpdate({
-          full_name: fullName.trim(),
-          level,
-          specialty_group_ids: specialties,
-          home_building_id: homeBuildingId || null,
-          phone: phone.trim() || null,
-          availability,
-          max_active_tickets: Number(maxActive) || 1,
-        });
-      } else {
-        await onCreate({
-          email: email.trim(),
-          full_name: fullName.trim(),
-          level,
-          specialty_group_ids: specialties,
-          home_building_id: homeBuildingId || null,
-          phone: phone.trim() || null,
-          max_active_tickets: Number(maxActive) || 1,
-        });
-      }
+      await onCreate({
+        email: email.trim(),
+        full_name: fullName.trim(),
+        level,
+        specialty_group_ids: specialties,
+        home_building_id: homeBuildingId || null,
+        phone: phone.trim() || null,
+        max_active_tickets: Number(maxActive) || 1,
+      });
       onClose();
     } catch (error) {
       const described = describeError(error, 'Could not save this engineer.');
@@ -101,25 +90,19 @@ export function EngineerDialog({
   };
 
   return (
-    <ResponsiveDialog
-      open={open}
-      onClose={onClose}
-      title={engineer ? `Edit ${engineer.full_name}` : 'Add an engineer'}
-    >
+    <ResponsiveDialog open={open} onClose={onClose} title="Add an engineer">
       <DialogContent dividers>
         <Box sx={{ display: 'grid', gap: 2 }}>
-          {engineer ? null : (
-            <TextField
-              required
-              autoFocus
-              label="Email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="name@acme.inc"
-              error={Boolean(fieldErrors.email)}
-              helperText={fieldErrors.email ?? 'An @acme.inc address. It cannot be changed later.'}
-            />
-          )}
+          <TextField
+            required
+            autoFocus
+            label="Email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="name@acme.inc"
+            error={Boolean(fieldErrors.email)}
+            helperText={fieldErrors.email ?? 'An @acme.inc address. It cannot be changed later.'}
+          />
 
           <TextField
             required
@@ -223,21 +206,6 @@ export function EngineerDialog({
             }
           />
 
-          {engineer ? (
-            <TextField
-              select
-              label="Availability"
-              value={availability}
-              onChange={(event) => setAvailability(event.target.value as AvailabilityStatus)}
-            >
-              {AVAILABILITY_STATUSES.map((option) => (
-                <MenuItem key={option} value={option}>
-                  {availabilityLabel(option)}
-                </MenuItem>
-              ))}
-            </TextField>
-          ) : null}
-
           {formError ? <Alert severity="error">{formError}</Alert> : null}
         </Box>
       </DialogContent>
@@ -247,9 +215,9 @@ export function EngineerDialog({
           variant="contained"
           onClick={() => void submit()}
           loading={isSubmitting}
-          disabled={fullName.trim() === '' || (!engineer && email.trim() === '')}
+          disabled={fullName.trim() === '' || email.trim() === ''}
         >
-          {engineer ? 'Save' : 'Create engineer'}
+          Create engineer
         </Button>
       </DialogActions>
     </ResponsiveDialog>

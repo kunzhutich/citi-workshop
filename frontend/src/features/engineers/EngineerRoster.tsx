@@ -15,6 +15,7 @@ import Link from '@mui/material/Link';
 import { Link as RouterLink } from 'react-router-dom';
 
 import { LevelChip } from '../../components/LevelChip';
+import { useRowNavigation } from '../../components/rowNavigation';
 import { engineerPath } from '../../routes';
 import { availabilityLabel } from '../../display/labels';
 import { CapacityBar } from './CapacityBar';
@@ -37,9 +38,15 @@ export interface EngineerRosterProps {
  * Availability is a chip rather than a word in a column because it is the one
  * value that is read at a glance: "who can I give this to" is answered by
  * scanning for green.
+ *
+ * **The whole row opens that engineer's page**, and the name stays a real
+ * link so the row is still reachable by keyboard and still announced as one.
+ * `components/rowNavigation.ts` holds the rule and the reasoning; a row action
+ * is left alone by it, which is what keeps Deactivate working.
  */
 export function EngineerRoster({ engineers, categories, renderActions }: EngineerRosterProps) {
   const groupNames = new Map((categories?.groups ?? []).map((group) => [group.id, group.name]));
+  const openRow = useRowNavigation();
 
   return (
     <TableContainer component={Paper} variant="outlined">
@@ -56,11 +63,18 @@ export function EngineerRoster({ engineers, categories, renderActions }: Enginee
         </TableHead>
         <TableBody>
           {engineers.map((engineer) => (
-            <TableRow key={engineer.user_id} hover>
+            <TableRow
+              key={engineer.user_id}
+              hover
+              onClick={(event) => openRow(event, engineerPath(engineer.user_id))}
+              sx={{ cursor: 'pointer' }}
+            >
               <TableCell>
                 {/* The name opens their page — §6.1. The roster is where
                     somebody goes looking for a person, so it would be an odd
-                    place for the one link to them not to be. */}
+                    place for the one link to them not to be, and the row's
+                    click handler is a convenience on top of it rather than a
+                    replacement for it. */}
                 <Link
                   component={RouterLink}
                   to={engineerPath(engineer.user_id)}
