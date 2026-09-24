@@ -4020,3 +4020,227 @@ folds like any other categorical pie, which makes its comment true.
   reader off-page to reach a table 400px below them.
 - **The availability word moved** out of the page header and into the "Right
   now" column beside the capacity bar, it being a right-now fact.
+
+## D67 — S4 part 1: suggesting the ticket somebody is about to duplicate
+
+**Why this stretch item and not another.** The brief's own problem statement
+names **duplicate tickets** as something this system exists to reduce. Of what
+was left in `BUILD-PLAN.md` §15, this is the one that answers a stated business
+problem rather than adding a capability nobody asked for.
+
+**The timing is the feature.** `ReportPage` reveals its five questions
+progressively and asks for **subcategory and location before it asks for a
+title**. So once somebody has chosen "Temperature/HVAC" and "Level 3" there is
+already enough to query — before they have typed a word, and before they have
+invested effort worth abandoning. A duplicate check that arrives at the submit
+button is a check that arrives too late to be taken.
+
+### No new search machinery
+
+`GET /incidents` already filters on `category_id`, `building_id`, `floor_id`,
+`seat_id` and status, and `repositories/incidents.py` is where that lives. The
+new endpoint reuses it and the same visibility statement. `search_vector` is
+GIN-indexed and was deliberately left out: subcategory plus location is a
+stronger signal than words a reporter has not typed yet.
+
+### Specificity and recency are two ORDER BY terms, never one score
+
+```sql
+ORDER BY  CASE WHEN seat_id  = :seat  THEN 0
+               WHEN floor_id = :floor THEN 1
+               ELSE 2 END        ASC,    -- specificity: absolute
+          <recency>              DESC    -- breaks ties inside a band only
+```
+
+Collapsed into one blended score, a week-old exact-seat match loses to
+something vague from this morning — and "someone reported this exact desk an
+hour ago" and "something of this kind happened in this building last week" are
+different claims. A reader has to be able to tell which one they are looking
+at, so the band is **selected as well as sorted on**: the integer the rows are
+ordered by and the `match` word the response carries are the same fact read
+twice, indexed into `SUGGESTION_SPECIFICITY`. Reorder that tuple and both move
+together.
+
+Recency differs by list and the difference is the point: `created_at` for a
+live ticket, because for unfinished work *when it was reported* is the only
+date that says anything about whether it is the same event; `resolved_at` for a
+finished one, because there the useful date is when it was fixed.
+
+### `match` describes the overlap, not the precision of either side
+
+A request with no `seat_id` can never produce a SEAT match **even when the
+candidate ticket has a seat**. That candidate is banded FLOOR, because the
+strongest true thing you can say to that reporter is "somebody reported this on
+your floor" — telling them "somebody reported this exact desk" about a desk
+they never mentioned would be a claim about a comparison that did not happen.
+A location the caller did not give becomes `WHEN false` in the CASE, so the
+query says literally what the docstring says.
+
+### Three smaller calls
+
+- **Floor and seat rank; only category and building filter.** Making them
+  `WHERE` clauses is the mistake that empties the panel for the first person to
+  report a fault at their own desk.
+- **The exact subcategory, not its group.** Wi-Fi and VPN are both Network &
+  Access and are not the same problem. A panel that confused them would teach
+  reporters to ignore it, which costs more than it saves.
+- **A resolved row must have a `resolution_summary`**, enforced in the `WHERE`
+  rather than filtered out afterwards — otherwise `limit` would mean a
+  different number of rows each time. A resolved ticket with nothing written on
+  it is a link to a dead end.
+
+### The resolution summary is the second half of the feature
+
+Surfacing it exposes nothing new — it is already un-gated on the incident read
+schema — and it turns the panel from "you may be duplicating this" into
+self-service: *"Replaced the failed unit and tested it with the reporter."* is
+institutional memory written by a human about that actual equipment, which
+beats generic troubleshooting because it is specific and true.
+
+### It must never block the report
+
+The panel is advisory and says so in its own words: *"If none of them is yours,
+carry straight on — nothing here stops you reporting."* No disabled button, no
+confirmation step, nothing hidden while it loads. **A false positive that stops
+a real report is far worse than a duplicate**, and a panel that can be read as
+an obstacle will be routed around by people who then stop reporting at all. Two
+of the frontend's deliberate-break tests exist for exactly this: one puts a
+modal in the way, one hides the panel once typing starts, and both fail.
+
+### Unknown ids return an empty answer, not an error
+
+This fires while somebody is still filling a form, where an error has nowhere
+to be shown and nothing for the reader to do about it. `POST /incidents`
+validates the same ids for real. The route is also declared **before**
+`/{incident_id}`, with a test pinning it, because the symptom of getting that
+wrong is an obscure `uuid_parsing … found 's' at 1`.
+
+## D68 — S4 part 2: "I'm affected too", and the audience more than one person holds
+
+A watcher is somebody who said a problem affects them too, and is told when it
+is **resolved**. `incident_watchers` per `BUILD-PLAN.md` §3, keyed on the pair
+`(incident_id, user_id)` so "one person follows one ticket at most once" is the
+only shape the table can hold, with `ON CONFLICT DO NOTHING` closing the window
+a double-clicked button would land in.
+
+### The flag, and why `location_detail` could not have been it
+
+**The owner's rule:** subscribing only makes sense for problems that affect
+other people. The field that looks as though it already answers that does not,
+and the two counter-examples are the whole point — **Software is BUILDING-level
+and an operating-system fault is one person's alone; Hardware is FLOOR-level
+and a printer is shared while a keyboard is not.** How precisely a group needs
+a location and how shared its problems are is simply not the same question.
+
+So `categories.allows_watchers`, per subcategory, admin-editable, seeded from
+the owner's list of 17. **The mapping is keyed on `(group, subcategory)` and
+had to be:** six subcategories are literally named "Other", and the list marks
+Meeting Rooms "Other" and Building & Facilities "Other" shared while Network &
+Access "Other" is not. `CategoryGroupSeed` gained a `shared_subcategories`
+field, which makes the key right by construction — the version keyed on the
+name alone cannot be written by accident. A deliberate-break test keyed it on
+the name and failed on exactly that pair.
+
+**Everything not on the list is personal, including all fourteen subcategories
+of the three groups R6 added.** The owner's list does not name them, and the
+arguable cases default to personal on purpose: *it is better that somebody
+files a duplicate than that a stranger subscribes to a problem with their
+laptop.* Worth flagging to the owner as a one-line admin toggle each, not as
+something to re-decide here.
+
+**Re-seeding does not overwrite an admin's edit.** `migrate` runs
+`seed_categories` on every deploy, so a seed that wrote this flag onto existing
+rows would silently revert an administrator's decision every time the
+application shipped — and this is precisely the field an admin curates, since
+the default is personal and the arguable cases are meant to be argued. The
+initial values are applied **once, by revision `0006`'s backfill**, at the
+moment the column came into being: it overwrites nothing by construction,
+because nobody could have had an opinion about a column that did not exist four
+statements earlier. The mapping is spelled out in the revision rather than
+imported, for the reason `0005` gives about `NotificationType` — a revision
+that reads a live constant is not frozen — and a test asserts the two copies
+are still equal.
+
+### One audience, many people
+
+WATCHER is the first capacity more than one person can hold at once, and
+`app/notifications.py` was built on `user_in_capacity(audience, incident) ->
+uuid | None`. The change is a **tuple-valued lookup table**, `CAPACITY_HOLDERS`:
+every audience is now read as a tuple of user ids, and REPORTER and ASSIGNEE
+are simply the ones that always answer with nought or one. `plan()` loops.
+
+Doing it there is what keeps the module's two universal rules true for watchers
+without a word about watchers being written in either: a watcher who resolved
+the ticket themselves is dropped by the actor check, and a watcher listed twice
+by `already_told` — the same two lines that have always been there.
+
+**Rejected:** a `watchers` field on `NotificationRule` beside `messages`, and a
+`plan_for_watchers()` beside `plan()`. Each would have given "nobody is
+notified about their own action" two implementations, and the second one is the
+one that gets forgotten.
+
+**The module still touches no database.** `_the_watchers` reads
+`incident.watchers`, an attribute exactly like `incident.reporter_id`, eager-
+loaded by `_detail_loaders()`. The property that was ever claimed is that this
+module issues no query, not that the incident arrives half-built — and that is
+what keeps the whole policy testable without a session.
+
+### A rule that does not always fire, and a bug a test caught
+
+The trigger is a status change; the audience cares about one destination
+status. `applies` — the precondition `NOTE_ADDED` already uses — is the
+mechanism, applied as **a second rule**, `WATCHED_RESOLVED`. It has to be a
+second rule rather than a third audience on `STATUS_CHANGED`, because `applies`
+gates a whole row: putting the condition there would have silenced the reporter
+and the assignee on every move that is not a resolution. CLOSED is excluded —
+the watcher already heard the thing they were waiting for, and including it
+would mean two notifications per repair.
+
+Which surfaced the bug worth recording. **`already_told` spans one `plan()`
+call, and a resolution now calls it twice.** A reporter who had also pressed "I'm
+affected too" on their own ticket got both sentences. The fix is in
+`_the_watchers`, which excludes anybody who is already the reporter or the
+assignee — a statement about *what the WATCHER audience means* (the people
+following a ticket who would not otherwise hear about it), which `plan()` could
+not make because it cannot see which other rules fired on the same moment.
+
+`watcher_count` on the API is deliberately **not** that narrowed number: "four
+people are affected" is a fact about the problem, not about who gets an email.
+
+### The endpoints, and the one that is deliberately ungated
+
+`POST`/`DELETE /incidents/{id}/watchers`, both returning `{watching,
+watcher_count}` from `services/watchers.status_of` — one function, so the
+button and the detail page cannot disagree. Subscribing is always the caller
+subscribing themselves; there is no endpoint that subscribes anybody else,
+which is what bounds a fan-out audience.
+
+`POST` is refused **409 `WATCHERS_NOT_ALLOWED`** for a personal subcategory —
+409 rather than 403 because nothing about the *caller* is wrong. **`DELETE` is
+not gated at all**, deliberately: an admin who marks a subcategory personal
+after people subscribed must not strand them.
+
+`allows_watchers` is refused on a *group* (422 `SUBCATEGORY_ONLY_FIELD`), the
+exact mirror of the existing `GROUP_ONLY_FIELDS` rule, because incidents are
+filed against subcategories so a group's copy is never read.
+
+### Where the frontend reads it, and the bug that moved
+
+Two readers, and neither derives anything. The report questionnaire has no
+ticket yet, so it looks the flag up in the cached category tree. **The ticket
+page reads `incident.category.allows_watchers`**, which the API sends on every
+ticket — and that is not convenience. `load_tree` excludes deactivated
+categories, so a ticket filed against a subcategory an admin has since retired
+is *not in the tree*, and a lookup would answer "no watchers" for a ticket
+people are already following. Found by reading the two halves against each
+other after both landed; the test that pins it makes the tree and the ticket
+disagree on purpose, and fails if the page goes back to the tree.
+
+### Not done
+
+**Watcher counts feeding the hotspot report is S3 territory**, named in
+`BUILD-PLAN.md` §15 and deliberately left alone. And the deployed demo will
+show "0 others affected" everywhere until somebody presses the button, because
+`seed_demo` refuses to run where data exists — the local demo world has 269
+watchers, the cloud one has none.
+
