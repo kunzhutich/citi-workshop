@@ -793,9 +793,10 @@ to demonstrate. Fine for a throwaway sandbox; not a pattern to copy. See
 `frontend/src/features/auth/demoAccounts.ts`, which says the same thing next to the
 credentials themselves.
 
-Scope decisions, all deliberate. The three that are **decided and simply not done**
-— the escalation chain, automatic BUSY, and the preferences table — are collected in
-[docs/TODO.md](./docs/TODO.md) with what to settle before starting each.
+Scope decisions, all deliberate. The ones that are **decided and simply not done** —
+the escalation chain, automatic BUSY, the preferences table, and what is left of the
+feedback work — are collected in [docs/TODO.md](./docs/TODO.md) with what to settle
+before starting each.
 
 Scope decisions, all deliberate:
 
@@ -818,7 +819,22 @@ Scope decisions, all deliberate:
   repository, a service, a router and the hooks to call it. `dashboardLayout.ts` is the
   only file that touches storage, so moving to the API changes that file and nothing else.
 - **A Kanban board and SLA targets are unbuilt** (stretch S2, S3). In-app notifications
-  (S1) are built.
+  (S1), similar-ticket suggestions and watchers (S4), and reporter feedback with
+  auto-close (S7) are built.
+- **Auto-close happens on a page load, not on a timer.** A resolved ticket nobody comes
+  back to closes after seven days of silence — but the check runs when somebody next
+  lists tickets, because the AWS role this deploys under grants no `events:*`, no
+  `scheduler:*` and no cluster parameter group for `pg_cron`, and Aurora sleeps at zero
+  ACU. The sweep is not scoped to the page being listed, so one visit by anybody brings
+  the whole estate current; the only way a ticket stays open past its deadline is for
+  nobody to use the system at all. `close_stale` is an ops action for the cases where
+  that matters. See [D72](./docs/DECISION-LOG.md).
+- **A rating is visible to fewer people than a note.** Employees rate a repair out of
+  five with a required comment; the engineer it is about, any lead and any admin can read
+  it, and a colleague at the same level cannot — not even on a ticket they are working.
+  Engineers *do* see one another's scores, which was the owner's call: the number is a
+  fact about somebody's work, the sentences are not. Reviews cannot be deleted or
+  moderated, deliberately; see [docs/TODO.md](./docs/TODO.md) for what to settle first.
 - **An engineer cannot ask another engineer for help.** A junior who is stuck marks a
   ticket BLOCKED, which tells the reporter something is in the way but routes the ticket
   to nobody. An escalation chain — junior to senior to lead — was specified and not
@@ -871,8 +887,7 @@ Scope decisions, all deliberate:
   failing halfway.
 
 Natural next steps, in the order they would pay off: SES email notifications, photo
-attachments via S3, per-building admin scoping, coverage measurement in CI, and scheduled
-auto-close of RESOLVED tickets.
+attachments via S3, per-building admin scoping, and coverage measurement in CI.
 
 ## Upstream scaffold and licence
 

@@ -200,19 +200,29 @@ export function EngineerDetailPage() {
                   about them rather than as thirty days of it.
 
                   Resolved by saying so in the line itself rather than by
-                  moving the stars: the sentence underneath ends "in this
-                  period", so the scope travels with the number instead of
-                  depending on a heading four hundred pixels below it. A
+                  moving the stars: the sentence directly under them ends "in
+                  this period", so the scope travels with the number instead
+                  of depending on a heading four hundred pixels below it. A
                   lifetime average beside a period one was the alternative and
                   is worse — two averages of the same thing, differing, with
                   nothing on the screen to say which is which.
                 */}
-                <RatingStars value={report.data?.average_rating ?? null} size="small" />
+                {/*
+                  The score and the way into the reviews are one block, so
+                  the link sits directly under the stars it belongs to rather
+                  than under the email. They are two halves of one statement
+                  — "4.5, over this many of their repairs" — and a line of
+                  contact details between them read as though the link
+                  belonged to the address above it.
+                */}
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                  <RatingStars value={report.data?.average_rating ?? null} size="small" />
+                  <RatedCount report={report.data} userId={userId} search={location.search} />
+                </Box>
               </Box>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                 {engineer.data.email}
               </Typography>
-              <RatedCount report={report.data} userId={userId} search={location.search} />
             </Box>
 
             {!engineer.data.is_active ? (
