@@ -82,6 +82,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -90,6 +91,8 @@ from app.models.seat import Seat
 from app.models.user import User
 from app.models.watcher import IncidentWatcher
 from app.security.passwords import hash_password
+from app.services import autoclose
+from app.services.feedback import FEEDBACK_WINDOW
 
 #: Every demo account shares this password. It is printed in the return payload
 #: and in the README: these are throwaway accounts on a demo database, and a
@@ -150,6 +153,12 @@ class DemoSeedResult:
     events: int = 0
     notes: int = 0
     watchers: int = 0
+    feedback: int = 0
+    #: Resolved tickets the sweep closed because nobody came back to them.
+    #: Part of the seed's output because a world that settles under its own
+    #: rules has a different status mix from one that does not, and a reader
+    #: comparing `by_status` against the spec should be able to see why.
+    autoclosed: int = 0
     notifications: int = 0
     by_status: dict[str, int] = field(default_factory=dict)
     by_priority: dict[str, int] = field(default_factory=dict)
@@ -409,6 +418,78 @@ WATCHED_SHARE = 0.55
 #: How many colleagues follow one of those, drawn inclusively. A jammed
 #: printer annoys a handful of people on that floor, not the whole building.
 WATCHERS_PER_INCIDENT = (1, 4)
+
+#: What share of repaired tickets the reporter goes on to rate.
+#:
+#: Deliberately well under half, and the number is the point rather than a
+#: guess at realism: feedback is optional, so every average computed from it
+#: is over people who chose to answer. A demo world in which everybody rates
+#: would make the response rate on the engineer page read 100% and quietly
+#: teach a reviewer that the figure never varies.
+RATED_SHARE = 0.45
+
+#: How the demo's scores are distributed, as weights over 1..5.
+#:
+#: Skewed high, because most repairs do work and a demo world where a third of
+#: the engineers look incompetent is not a demo of this system. The tail is
+#: what earns its place: some 1s and 2s exist, so the low-rating case has
+#: something to show and the distribution chart on an engineer's page is not a
+#: single bar.
+RATING_WEIGHTS: tuple[int, ...] = (4, 8, 16, 38, 34)
+
+#: How long after the repair the reporter gets round to saying something.
+#: Inside the fourteen-day window `services/feedback.py` allows, because a
+#: seeded rating outside it would be a row the application could not have
+#: written.
+FEEDBACK_DELAY_HOURS = (2, 96)
+
+#: What a rating says, by score. Sentences that match their stars rather than
+#: lorem ipsum, because the reviews screen is a *page of prose* and a demo of
+#: it reads as false the moment the same line appears twice on one screen.
+#:
+#: **Five each and not two**, which is the number this list started at. Six
+#: reviews fit above the fold at 1440px and a pool of two put "Could not have
+#: been handled better" on three of them — nothing was wrong with the code,
+#: and the screen still looked fabricated. Five is enough that a full page
+#: rarely repeats; the alternative is a sentence generator, which is a lot of
+#: machinery to avoid writing twenty-five sentences once.
+FEEDBACK_COMMENTS: dict[int, tuple[str, ...]] = {
+    1: (
+        "Still exactly as it was. Nobody came.",
+        "Marked as fixed without anything changing.",
+        "Closed before anyone had even looked at it.",
+        "Had to report the same thing again two days later.",
+        "No contact at all, and the problem is untouched.",
+    ),
+    2: (
+        "Working again but it took far longer than it should have.",
+        "Fixed, then broke again the same week.",
+        "Sorted eventually. I had to chase it three times.",
+        "Half of it works. I have given up on the rest.",
+        "Nobody told me anything until I asked.",
+    ),
+    3: (
+        "Sorted in the end. I had to chase it twice.",
+        "Fine. Would have liked to know what was happening.",
+        "Took a while, but it is working now.",
+        "Job done. The desk was left in a bit of a state.",
+        "All right. Not quick, not slow.",
+    ),
+    4: (
+        "Quick and tidy, and they explained what had gone wrong.",
+        "Sorted the same afternoon. No complaints.",
+        "Good work and kept me posted throughout.",
+        "Straightforward and done without any fuss.",
+        "Happy with it. Only took one visit.",
+    ),
+    5: (
+        "Turned up within the hour and had it working immediately.",
+        "Could not have been handled better. Thank you.",
+        "Diagnosed it in minutes and fixed it on the spot.",
+        "Genuinely excellent — explained the cause and prevented a repeat.",
+        "Fast, friendly, and left everything as they found it.",
+    ),
+}
 
 #: What share of the demo world's notifications have been read.
 #:
@@ -995,9 +1076,42 @@ def _seed_incidents(
     _link_duplicates(rng, plans, incidents, outcomes, specs)
     _write_events_and_notes(session, incidents, specs, result)
     watchers = _write_watchers(session, rng, plans, incidents, result, world=world)
+    feedback = _write_feedback(session, rng, plans, incidents, outcomes, result, now=now)
     _write_notifications(
-        session, rng, incidents, specs, result, world=world, watchers=watchers, now=now
+        session,
+        rng,
+        incidents,
+        specs,
+        result,
+        world=world,
+        watchers=watchers,
+        feedback=feedback,
+        now=now,
     )
+    # Let the world settle under its own rules before it is counted.
+    #
+    # The generator walks each ticket's history and stops; it has no notion of
+    # a resolved ticket nobody came back to, so it leaves a pile of them
+    # months old. The application closes those after seven days of silence —
+    # which means the *first page anybody opened* would quietly close eighteen
+    # of them and make every status figure this function is about to report
+    # wrong within a minute of the seed finishing.
+    #
+    # Running the real sweep here rather than teaching `_walk` the rule keeps
+    # one implementation of it, and makes the demo world one the application
+    # could actually have produced. The limit is the whole spec because this
+    # is not a request path.
+    autoclosed = autoclose.close_stale(session, now=now, limit=spec.incidents)
+    session.flush()
+
+    # Each closure writes one audit row, and `result.events` was counted
+    # before the sweep ran. A result that under-reports what is in the
+    # database is a result nobody can check against it —
+    # `test_every_event_is_backdated_and_in_order` compares the two and
+    # caught exactly this.
+    result.autoclosed = len(autoclosed)
+    result.events += len(autoclosed)
+
     _summarise(result, plans, incidents, world.engineers)
 
 
@@ -1635,6 +1749,12 @@ def _build_incident(plan: _Plan, outcome: _Outcome) -> Incident:
         assigned_at=outcome.assigned_at,
         acknowledged_at=outcome.acknowledged_at,
         resolved_at=outcome.resolved_at,
+        # Who the fix belongs to. The assignee, because in the demo world
+        # nothing reassigns a ticket after it has been resolved — the case
+        # that makes this column necessary at all is real and is not one the
+        # generator produces. `_apply_transition_effects` writes the same
+        # thing on the live path.
+        resolved_by_id=outcome.assignee_id if outcome.resolved_at is not None else None,
         closed_at=outcome.closed_at,
         created_at=plan.created_at,
         updated_at=outcome.last_activity or plan.created_at,
@@ -1792,6 +1912,102 @@ def _write_watchers(
     return followers_by_incident
 
 
+@dataclass(frozen=True)
+class _FeedbackSpec:
+    """One seeded rating, and the moment it was left.
+
+    A spec rather than the row itself, because `_write_notifications` has to
+    replay it through `app/notifications.py` a moment later and the rule reads
+    `rated_user_id` off the object it is handed. Carrying the plan keeps the
+    persisted row and the replayed one built from one set of decisions.
+    """
+
+    incident_id: uuid.UUID
+    author_id: uuid.UUID
+    rated_user_id: uuid.UUID
+    resolution_round: int
+    rating: int
+    comment: str
+    when: datetime
+
+
+def _write_feedback(
+    session: Session,
+    rng: random.Random,
+    plans: list[_Plan],
+    incidents: list[Incident],
+    outcomes: list[_Outcome],
+    result: DemoSeedResult,
+    *,
+    now: datetime,
+) -> dict[uuid.UUID, _FeedbackSpec]:
+    """Have some reporters rate the repairs that were actually made.
+
+    Returns the rating per incident id, because `_write_notifications` needs
+    it immediately afterwards and re-reading rows this function just wrote
+    would be a query to learn something it already knows — the same
+    arrangement `_write_watchers` uses.
+
+    **Only tickets the application would allow a rating on.** There has to be
+    a `resolved_at` and somebody to attribute the work to, which rules out
+    every ticket cancelled by its reporter or closed as a duplicate, and the
+    rating has to fall inside `services/feedback.FEEDBACK_WINDOW` and before
+    `now`. A seeded row outside those is a row no user could have created, and
+    a demo world that contains one is showing a reviewer something the system
+    does not do.
+
+    **One rating per ticket, always round 1.** The table allows one per repair
+    and a reopened ticket could carry two; the generator does not produce that
+    case, because `reopen_count` is decided while the timeline is walked and
+    matching a rating to each individual repair would mean replaying the walk.
+    The case is covered by `tests/integration/test_feedback.py` instead, which
+    is where a rule belongs rather than in a fixture.
+    """
+    specs: dict[uuid.UUID, _FeedbackSpec] = {}
+    rows: list[IncidentFeedback] = []
+
+    for plan, incident, outcome in zip(plans, incidents, outcomes, strict=True):
+        rated_user_id = incident.resolved_by_id
+        resolved_at = outcome.resolved_at
+        if rated_user_id is None or resolved_at is None:
+            continue
+        if rng.random() > RATED_SHARE:
+            continue
+
+        when = resolved_at + timedelta(hours=rng.uniform(*FEEDBACK_DELAY_HOURS))
+        if when > now or when - resolved_at > FEEDBACK_WINDOW:
+            continue
+
+        rating = rng.choices(range(1, 6), weights=RATING_WEIGHTS, k=1)[0]
+        spec = _FeedbackSpec(
+            incident_id=incident.id,
+            author_id=plan.reporter.id,
+            rated_user_id=rated_user_id,
+            resolution_round=1,
+            rating=rating,
+            comment=rng.choice(FEEDBACK_COMMENTS[rating]),
+            when=when,
+        )
+        specs[incident.id] = spec
+        rows.append(
+            IncidentFeedback(
+                incident_id=spec.incident_id,
+                author_id=spec.author_id,
+                rated_user_id=spec.rated_user_id,
+                resolution_round=spec.resolution_round,
+                rating=spec.rating,
+                comment=spec.comment,
+                created_at=spec.when,
+                updated_at=spec.when,
+            )
+        )
+
+    session.add_all(rows)
+    session.flush()
+    result.feedback = len(rows)
+    return specs
+
+
 #: Which `EventType` produces which notification, when replaying a timeline.
 #:
 #: Four kinds of event out of ten. The absences are the rules: CREATED,
@@ -1814,6 +2030,7 @@ def _write_notifications(
     *,
     world: _World,
     watchers: dict[uuid.UUID, list[uuid.UUID]],
+    feedback: dict[uuid.UUID, _FeedbackSpec],
     now: datetime,
 ) -> None:
     """Build the demo inbox by replaying each ticket through the real rules.
@@ -1844,6 +2061,12 @@ def _write_notifications(
     `services/incident_service.perform_transition` does at the two lines it
     calls `notification_service.record`. Whether the second one produces
     anything is `_is_a_resolution` in the rule table, not a condition here.
+
+    A rating is handed to it once more, after the timeline, because that is
+    when it happened: `_write_feedback` places every rating after the repair
+    it is about. The row is transient here for the same reason the incident
+    snapshot is — `app/notifications.py` reads `rated_user_id` as an
+    attribute, and reads nothing from a session.
     """
     people = {person.id: person for person in [world.admin, *world.engineers, *world.employees]}
     rows: list[Notification] = []
@@ -1924,6 +2147,47 @@ def _write_notifications(
                 )
                 for item in planned
             )
+
+        rated = feedback.get(incident.id)
+        if rated is None:
+            continue
+
+        author = people.get(rated.author_id)
+        if author is None:  # pragma: no cover - the reporter is always seeded
+            continue
+
+        snapshot = _snapshot(
+            incident,
+            status=status,
+            assignee_id=assignee_id,
+            people=people,
+            watcher_ids=watcher_ids,
+        )
+        rows.extend(
+            Notification(
+                user_id=item.user_id,
+                incident_id=incident.id,
+                type=item.type,
+                message=item.message,
+                created_at=rated.when,
+                read_at=_read_at(rng, rated.when, now=now),
+            )
+            for item in notification_rules.plan(
+                NotificationType.FEEDBACK_RECEIVED,
+                notification_rules.NotificationContext(
+                    incident=snapshot,
+                    actor=author,
+                    feedback=IncidentFeedback(
+                        incident_id=rated.incident_id,
+                        author_id=rated.author_id,
+                        rated_user_id=rated.rated_user_id,
+                        resolution_round=rated.resolution_round,
+                        rating=rated.rating,
+                        comment=rated.comment,
+                    ),
+                ),
+            )
+        )
 
     session.add_all(rows)
     session.flush()

@@ -418,8 +418,8 @@ Two minutes of setup that make the whole pass better:
 ## 5. The worklist
 
 **Ordered by where defects are most likely, not by what was built last.** The
-newest feature (S1, notifications) is fourth, not first, because it is the most
-heavily tested thing in the build. The admin screens are first because **not one
+newest features are late in the list, not first, because they are the most
+heavily tested things in the build. The admin screens are first because **not one
 of them has a component test**.
 
 ### Pass 1 — the thin ice: the admin screens and `/team` · 35 min
@@ -638,7 +638,54 @@ class of defect; you can, in five minutes.
 - At 375 px, open the navigation drawer from the keyboard and close it; focus
   should return to the button.
 
-### Pass 6 — the happy path · 10 min, skim
+### Pass 6 — ratings and the ticket that closes itself · 15 min
+
+**Why here.** S7 is the newest work and among the best covered — 49 backend tests
+across `test_feedback.py`, `test_engineer_reviews.py` and `test_autoclose.py`, plus
+an end-to-end round trip at both viewports. What a suite cannot judge is whether
+the *audience* rule reads correctly on a screen, and that rule is narrower than
+anything else in the application.
+
+**Leave a rating.** Sign in as an employee with a recently resolved ticket, open
+it, and press **Rate the work**. The comment is required at every score — try to
+send a five with no words. The rating then appears on the activity timeline
+alongside the notes and events, and the button is gone (one rating per repair).
+
+**Then check who can see it.** This is the pass's real subject, and it is four
+sign-ins:
+
+| Who | Should see |
+| --- | --- |
+| The reporter who wrote it | the rating, on the timeline |
+| The engineer it is about | the rating, in full |
+| A **different** engineer at the same level | the ticket, its notes, its events — and **no trace of the review** |
+| An admin or a lead | the rating |
+
+The third row is the one to look hardest at. Open the same ticket as an engineer
+who is *not* the one rated — they can act on it and read its internal notes, and
+should still see nothing of the review. If you can see it, that is a real defect.
+
+**The engineer's page.** `/engineers/:id` now carries stars beside the name and,
+under them, "*N* of *M* resolved rated in this period". Follow it. The reviews page
+holds a clickable score distribution that doubles as the filter, and every row
+names the ticket it is about with two timestamps — when the repair was made, and
+when the reporter got round to rating it. **A colleague sees the score and no
+link**: engineers may see one another's numbers, not one another's sentences.
+
+**The ticket that closes itself.** A resolved ticket nobody comes back to closes
+after seven days of silence, and a **public note restarts the clock**. There is no
+scheduler in this deployment — the check runs when somebody lists tickets — so to
+see it, open `/tickets` and then look for a ticket whose timeline ends
+"**System** · Status changed: Resolved → Closed" with the details card reading
+"Closed automatically after a week with no reply". No notification is sent for it,
+deliberately: see [D72](DECISION-LOG.md).
+
+The one thing most worth probing: leave a public note on an overdue resolved
+ticket and confirm the sweep then leaves it alone.
+
+---
+
+### Pass 7 — the happy path · 10 min, skim
 
 **Why last.** This is the best-covered path in the build: a full lifecycle e2e test
 across two viewports, plus an assignment variant, plus component tests on every
@@ -746,15 +793,16 @@ cannot see, and the two viewports — which is most of the value.
 
 ## 8. What to do with what you find
 
-- **A defect** → it is a real one; nothing here is merged to `main` yet, so it can
-  be fixed on its branch. `s1-notifications` is the tip and contains every phase.
+- **A defect** → it is a real one. Everything is merged to `main`.
 - **A judgement call you disagree with** → check [DECISION-LOG.md](DECISION-LOG.md)
-  first. Thirty-nine decisions are recorded with the alternatives that were
+  first. Sixty-nine decisions are recorded — numbered to D72, three numbers never used — with the alternatives that were
   rejected and why; the ones most likely to come up on a click-through are D9 and
   D14 (the two kinds of dashboard number), D21 (the 404's status code), D26 and D30
-  (notifications and polling) and D31 (what S1 deliberately does not do). If you
-  are reviewing the deployed app, add D36 and D38 (the login loop, and the wrong
-  diagnosis of it) and D39 (what deploying proved and what it cost).
+  (notifications and polling), D31 (what S1 deliberately does not do), D71 (who may
+  read a rating, and why the window is not tied to closing) and D72 (auto-close
+  without a scheduler). If you are reviewing the deployed app, add D36 and D38 (the
+  login loop, and the wrong diagnosis of it) and D39 (what deploying proved and
+  what it cost).
 - **Something the docs got wrong** → say so. The documents were reconciled against
   the code, but reconciliation catches contradictions, not omissions.
 

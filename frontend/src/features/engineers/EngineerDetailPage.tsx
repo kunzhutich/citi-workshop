@@ -1,17 +1,21 @@
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Divider from '@mui/material/Divider';
+import Link from '@mui/material/Link';
 import Typography from '@mui/material/Typography';
-import { Link as RouterLink, useParams } from 'react-router-dom';
+import { Link as RouterLink, useLocation, useParams } from 'react-router-dom';
 
 import { LevelChip } from '../../components/LevelChip';
+import { RatingStars } from '../../components/RatingStars';
 import { QueryState } from '../../components/QueryState';
 import { availabilityLabel } from '../../display/labels';
-import { paths } from '../../routes';
+import { engineerReviewsPath, paths } from '../../routes';
 import { BreakdownChart } from '../dashboard/BreakdownChart';
 import { DashboardFilterBar } from '../dashboard/DashboardFilterBar';
+import type { EngineerDetailReport } from '../../api/reports';
 import { useEngineerDetailReport } from '../dashboard/hooks';
 import { PeriodScopeHeading, ScopeLabel } from '../dashboard/ScopeHeading';
 import { StatTile, StatTileGrid } from '../dashboard/StatTile';
@@ -127,6 +131,12 @@ const TICKET_COLUMN = 260;
  */
 export function EngineerDetailPage() {
   const { userId = '' } = useParams();
+  // Carried to the reviews link verbatim. `listLinks.ts`'s rule is that a
+  // link carries the same scope the number was computed under, and the
+  // literal query string is the strongest form of that: the reviews page
+  // reads it with the same hook this page does, so the two cannot resolve a
+  // period differently.
+  const location = useLocation();
   const controls = useDashboardFilters();
   const { periodParams } = controls;
 
@@ -176,6 +186,39 @@ export function EngineerDetailPage() {
                   {engineer.data.full_name}
                 </Typography>
                 <LevelChip level={engineer.data.level} />
+                {/*
+                  How their work was rated, beside their name because that is
+                  the question this page exists to answer and a reader should
+                  not have to scroll to it.
+
+                  **It is a period figure sitting above the period heading**,
+                  which is the one thing about this block that needed an
+                  argument. Everything else on this page is split into "Right
+                  now" and "Over the selected period" (D9, D14) precisely so
+                  that no number can be read against the wrong scope — and a
+                  rating next to somebody's name reads as a standing fact
+                  about them rather than as thirty days of it.
+
+                  Resolved by saying so in the line itself rather than by
+                  moving the stars: the sentence directly under them ends "in
+                  this period", so the scope travels with the number instead
+                  of depending on a heading four hundred pixels below it. A
+                  lifetime average beside a period one was the alternative and
+                  is worse — two averages of the same thing, differing, with
+                  nothing on the screen to say which is which.
+                */}
+                {/*
+                  The score and the way into the reviews are one block, so
+                  the link sits directly under the stars it belongs to rather
+                  than under the email. They are two halves of one statement
+                  — "4.5, over this many of their repairs" — and a line of
+                  contact details between them read as though the link
+                  belonged to the address above it.
+                */}
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                  <RatingStars value={report.data?.average_rating ?? null} size="small" />
+                  <RatedCount report={report.data} userId={userId} search={location.search} />
+                </Box>
               </Box>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                 {engineer.data.email}
@@ -412,5 +455,65 @@ export function EngineerDetailPage() {
         ) : null}
       </QueryState>
     </Box>
+  );
+}
+
+/**
+ * How much of their work was rated, and the way in to the reviews behind it.
+ *
+ * **Two different things depending on who is looking, and deliberately not
+ * two different facts.** Every member of staff sees this sentence: the
+ * response rate is an aggregate, and the owner's rule is that engineers may
+ * see one another's *scores*. Only an admin, a lead or this engineer
+ * themselves gets it as a link, because the sentences behind it are theirs
+ * alone — and that is `can_read_reviews` from the API rather than a role test
+ * here. `apply_feedback_visibility` enforces it either way; this only decides
+ * whether a link is drawn onto something a colleague would find empty.
+ *
+ * It ends "in this period" because it is a period figure sitting above the
+ * period heading. See the note where the stars are rendered.
+ */
+function RatedCount({
+  report,
+  userId,
+  search,
+}: {
+  report: EngineerDetailReport | undefined;
+  userId: string;
+  search: string;
+}) {
+  if (report === undefined) {
+    return null;
+  }
+
+  const { rated_in_period: rated, resolved_in_period: resolved } = report;
+  if (resolved === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+        Nothing resolved in this period
+      </Typography>
+    );
+  }
+
+  const sentence = `${rated} of ${resolved} resolved rated in this period`;
+
+  if (!report.can_read_reviews || rated === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+        {sentence}
+      </Typography>
+    );
+  }
+
+  return (
+    <Link
+      component={RouterLink}
+      to={`${engineerReviewsPath(userId)}${search}`}
+      variant="body2"
+      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}
+    >
+      {sentence}
+      <ChevronRightIcon fontSize="small" />
+    </Link>
   );
 }

@@ -64,7 +64,6 @@ export function useResponseTimesReport(params: ReportPeriodParams, enabled = tru
   });
 }
 
-/** Every engineer's live load, and what they resolved during the period. */
 /** One engineer's output over the period, for their profile page. */
 export function useEngineerDetailReport(userId: string, params: ReportPeriodParams) {
   return useQuery({
@@ -75,6 +74,27 @@ export function useEngineerDetailReport(userId: string, params: ReportPeriodPara
   });
 }
 
+/**
+ * One page of the reviews an engineer earned in the period.
+ *
+ * `enabled` is the caller's, and every caller passes `can_read_reviews` from
+ * the report above: a colleague who may not read them would otherwise fetch
+ * an empty page on every render of a screen they cannot reach anyway.
+ */
+export function useEngineerReviews(
+  userId: string,
+  params: ReportPeriodParams & { rating?: number; page?: number; page_size?: number },
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: queryKeys.reports.engineerReviews(userId, params),
+    queryFn: () => reportsApi.fetchEngineerReviews(userId, params),
+    placeholderData: keepPrevious,
+    enabled: enabled && userId !== '',
+  });
+}
+
+/** Every engineer's live load, and what they resolved during the period. */
 export function useEngineerWorkloadReport(params: ReportPeriodParams, enabled = true) {
   return useQuery({
     queryKey: queryKeys.reports.engineerWorkload(params),

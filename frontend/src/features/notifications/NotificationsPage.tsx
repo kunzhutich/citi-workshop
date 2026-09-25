@@ -1,6 +1,7 @@
 import AssignmentIndIcon from '@mui/icons-material/AssignmentInd';
 import ChatBubbleOutlinedIcon from '@mui/icons-material/ChatBubbleOutlined';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
+import StarBorderOutlinedIcon from '@mui/icons-material/StarBorderOutlined';
 import DoneIcon from '@mui/icons-material/Done';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import OutlinedFlagIcon from '@mui/icons-material/OutlinedFlag';
@@ -61,6 +62,11 @@ const NOTIFICATION_ICONS: Record<NotificationType, ComponentType<SvgIconProps>> 
   // the only reason this row is in your inbox at all: you did not report this
   // ticket and you do not hold it.
   WATCHED_RESOLVED: GroupAddOutlinedIcon,
+  // A star, because the row is about a rating — and an outlined one, because
+  // the icon must not suggest what the rating was. This inbox row looks the
+  // same whether the score was a 1 or a 5, for the same reason the message
+  // does not quote it: see `backend/v1/app/notifications.py`.
+  FEEDBACK_RECEIVED: StarBorderOutlinedIcon,
 };
 
 type Filter = 'all' | 'unread';

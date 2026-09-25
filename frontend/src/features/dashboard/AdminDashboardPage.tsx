@@ -62,7 +62,7 @@ const UNASSIGNED_PAGE_SIZE = 50;
  *   ticket that has been blocked since February. They sit under a
  *   {@link CurrentScopeHeading} that says the date range does not reach them.
  *
- * That split is decision D9 in `docs/DECISION-LOG.md`, and it was made in the
+ * That split is decision D9 in `readme/DECISION-LOG.md`, and it was made in the
  * API precisely so that a dashboard could explain itself. The failure it was
  * raised against is a tile reading "Blocked · 21" under a "last 30 days"
  * filter when the 21 is every blocked ticket there is. Against the demo data

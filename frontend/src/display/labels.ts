@@ -53,6 +53,10 @@ const CLOSE_REASON_LABELS: Record<CloseReason, string> = {
   INVALID: 'Not a valid issue',
   CANCELLED_BY_REPORTER: 'Cancelled by the reporter',
   ADMIN_CLOSED: 'Closed by a facility admin',
+  // Says what happened rather than naming an actor, because there was not
+  // one. "Closed automatically" would be true and would leave the reader
+  // asking why; the reason is the interesting half.
+  SYSTEM_CLOSED: 'Closed automatically after a week with no reply',
 };
 
 const AVAILABILITY_LABELS: Record<AvailabilityStatus, string> = {

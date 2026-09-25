@@ -91,7 +91,7 @@ resource "aws_cloudfront_distribution" "this" {
       viewer_protocol_policy = "redirect-to-https"
       # CloudFront defaults compression off. JSON responses gzip well and
       # the API is the chattiest thing here. Approved by the workshop
-      # organisers alongside the three edits in docs/INFRA-CHANGES.md.
+      # organisers alongside the three edits in readme/INFRA-CHANGES.md.
       compress = true
 
       # Use managed cache policy for no caching (ID: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad)

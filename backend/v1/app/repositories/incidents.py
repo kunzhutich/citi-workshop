@@ -23,6 +23,7 @@ and on Aurora that is the whole response time.
 import re
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import ColumnElement, Select, case, delete, false, func, select
@@ -68,21 +69,87 @@ def _list_loaders() -> tuple[Any, ...]:
 def _detail_loaders() -> tuple[Any, ...]:
     """Return the eager-loading options for a single incident.
 
-    Three more than a list row: who escalated it, which ticket it duplicates,
-    and who is following it. All three appear only on the detail page, so a
-    list does not pay for them.
+    Four more than a list row: who escalated it, which ticket it duplicates,
+    who is following it, and how each of its repairs was rated. All four
+    appear only on the detail page, so a list does not pay for them.
 
-    `watchers` is load-bearing beyond the screen. `app/notifications.py` reads
-    `incident.watchers` as an attribute and does no database access of its
-    own, which only holds because every incident that reaches a service has
-    come through `get` or `reload` and therefore through this tuple.
+    `watchers` and `feedback` are load-bearing beyond the screen.
+    `app/notifications.py` reads `incident.watchers` as an attribute and
+    `services/feedback.can_give_feedback` reads `incident.feedback` as one;
+    neither does any database access of its own, which only holds because
+    every incident that reaches a service has come through `get` or `reload`
+    and therefore through this tuple.
     """
     return (
         *_list_loaders(),
         selectinload(Incident.escalator),
         selectinload(Incident.duplicate_of),
         selectinload(Incident.watchers),
+        selectinload(Incident.feedback),
     )
+
+
+def list_autoclose_candidates(
+    session: Session,
+    *,
+    resolved_before: datetime,
+    limit: int,
+) -> Sequence[Incident]:
+    """Return resolved tickets that *may* be due to close themselves.
+
+    **A deliberately permissive prefilter, not the rule.** The rule is
+    `workflow.autoclose_deadline`, which restarts the quiet clock on a public
+    note and is a pure function of a loaded row. Expressing that in SQL as
+    well would put one rule in two languages, and the version that drifts is
+    the one nobody reads.
+
+    So this asks the cheap, index-friendly half — resolved, and resolved
+    longer ago than the window — and hands back a bounded batch for the guard
+    to decide on. A ticket resolved months ago whose reporter wrote yesterday
+    is selected here and refused there, every sweep, for ever; that is a
+    handful of rows and a free comparison.
+
+    `notes` is eager-loaded because the guard reads
+    `Incident.last_public_note_at`, which reads them. Without this the sweep
+    is one query plus one per candidate.
+
+    Ordered oldest first so a capped sweep always makes progress on the most
+    overdue rather than revisiting the same page.
+
+    **`FOR UPDATE SKIP LOCKED`, and it is not decoration.** The sweep runs on
+    an ordinary request path, so two requests can be in it at once — one
+    Lambda container handles one invocation, but a local uvicorn and any
+    future concurrency do not. Without the lock both would select the same
+    overdue ticket, both would pass the guard, and the ticket would close
+    twice: the second closure is harmless on the incident row and writes a
+    *second* audit event, which puts a duplicate in an append-only log that
+    is meant to be the record. Skipping locked rows makes concurrent sweeps
+    disjoint instead of racing, and a row another sweep already holds is one
+    this sweep does not need.
+    """
+    statement = (
+        select(Incident)
+        .where(
+            Incident.status == IncidentStatus.RESOLVED,
+            Incident.resolved_at.is_not(None),
+            Incident.resolved_at <= resolved_before,
+        )
+        .order_by(Incident.resolved_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    # `selectinload` is applied after the locking select rather than inside
+    # it: PostgreSQL will not lock the far side of an outer join, and a
+    # `FOR UPDATE` statement carrying an eager load raises rather than
+    # quietly locking less than it looks like it does.
+    incidents = list(session.scalars(statement).unique().all())
+    if incidents:
+        session.execute(
+            select(Incident)
+            .where(Incident.id.in_([incident.id for incident in incidents]))
+            .options(selectinload(Incident.notes))
+        )
+    return incidents
 
 
 def parse_ticket_number(query: str) -> int | None:
@@ -465,6 +532,7 @@ def add_event(
     from_value: str | None = None,
     to_value: str | None = None,
     reason: str | None = None,
+    created_at: datetime | None = None,
 ) -> IncidentEvent:
     """Append one row to an incident's audit log.
 
@@ -472,6 +540,18 @@ def add_event(
     that records history — transitions, assignment, escalation — writes it the
     same way, and so `from_value` / `to_value` are always stringified here
     instead of at four call sites.
+
+    **`created_at` is almost always left alone**, and the default is the one
+    that matters: the column takes `clock_timestamp()`, not `now()`, so the
+    several rows one request writes are ordered rather than identical — which
+    is what revision 0003 exists for.
+
+    It is passed by exactly one caller, `incident_service.apply_system_transition`,
+    where the moment of the change is the sweep's `now` rather than the wall
+    clock. That path also writes `closed_at` from the same value, and an audit
+    row disagreeing with the column it describes is the kind of second-long
+    inconsistency nobody notices until they are reading a timeline trying to
+    work out what happened.
     """
     event = IncidentEvent(
         incident_id=incident_id,
@@ -481,6 +561,8 @@ def add_event(
         to_value=to_value,
         reason=reason,
     )
+    if created_at is not None:
+        event.created_at = created_at
     session.add(event)
     session.flush()
     return event

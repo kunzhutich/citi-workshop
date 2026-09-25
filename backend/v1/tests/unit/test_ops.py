@@ -73,7 +73,13 @@ def _fail_if_called(*args: object, **kwargs: object) -> None:
 
 def test_seed_demo_is_a_registered_action() -> None:
     assert "seed_demo" in ops.ACTIONS
-    assert sorted(ops.ACTIONS) == ["health", "migrate", "seed_admin", "seed_demo"]
+    assert sorted(ops.ACTIONS) == [
+        "close_stale",
+        "health",
+        "migrate",
+        "seed_admin",
+        "seed_demo",
+    ]
 
 
 def test_seed_demo_refuses_to_run_outside_local_development(

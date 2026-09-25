@@ -24,8 +24,8 @@ is shaped that way, what was rejected, and what bit us. It is a chronology, so a
 section describes code that later phases changed; Part I is the current account, and wins
 where the two disagree.
 
-[docs/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
-[docs/DECISION-LOG.md](DECISION-LOG.md) records the calls made without the owner present;
+[readme/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
+[readme/DECISION-LOG.md](DECISION-LOG.md) records the calls made without the owner present;
 [CLAUDE.md](../CLAUDE.md) holds the scaffold constraints that are not negotiable.
 Where a decision was *forced* by the scaffold or the AWS IAM boundary rather than
 freely chosen, this guide says so explicitly — that distinction is invisible in finished
@@ -46,26 +46,32 @@ that the identifier exists somewhere, but that it is **defined in the file named
 it**, which is the stricter question and the one that catches an imported name posing as
 a local one.*
 
-***Read this with one caveat.** The redesign phases R1–R7 and the stretch item S4 landed
-after this part was last revised, and only the figures below were brought forward.
-Nothing here has been contradicted — the architecture did not move, and every rule
-described below still lives where it says — but **§3's rule-to-file map does not list
-the rules R7 and S4 introduced**, and on a detail those two phases changed, their own
-sections are right and this one is stale. Each carries a rule-to-file map of its own for
-exactly that reason. The older phase sections are the opposite case: where one of them
-disagrees with this part, this part is right, because a phase section is a snapshot of a
-morning and the oldest are eight phases back.*
+***Read this with one caveat.** The redesign phases R1–R7 and the stretch items S4 and
+S7 landed after this part was last revised, and only the figures below were brought
+forward. Nothing here has been contradicted — the architecture did not move, and every
+rule described below still lives where it says — but **§3's rule-to-file map does not
+list the rules R7, S4 and S7 introduced**, and on a detail those phases changed, their
+own sections are right and this one is stale. Each carries a rule-to-file map of its own
+for exactly that reason. S7 is also the one phase that *widened* something §3 describes:
+`services/visibility.py` has three filters now, not two, and the third is the first that
+reads the row rather than only the reader. S7's second pass added the other thing §3
+could not predict: `app/workflow.py` has a twelfth row held by `Actor.SYSTEM`, which is
+the first move in the application that no user may make.*
+
+*The older phase sections are the opposite case: where one of them disagrees with this
+part, this part is right, because a phase section is a snapshot of a morning and the
+oldest are eight phases back.*
 
 *The build is finished. **M1**–**M8** are the MVP; **S6** (hardening) and **S1** (in-app
-notifications) are the stretch phases that followed, **R1**–**R7** the redesign, and
-**S4** (similar-ticket suggestions) the last stretch item. The
+notifications) are the stretch phases that followed, **R1**–**R7** the redesign,
+**S4** (similar-ticket suggestions) the last stretch item from the build plan, and
+**S7** (feedback) the first the owner specified from scratch. The
 [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built, and
-[docs/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
+[readme/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
 
-**The system in numbers, as it finally stands:** 13 tables over 6 Alembic revisions ·
-48 paths / 69 operations under `/api/v1` on one Lambda · 8 reports · 11 workflow
-transitions · 5 notification rules · 1,466 passing tests (897 pytest, 477 vitest,
-92 Playwright, plus 10 deliberate viewport skips).
+**The system in numbers, as it finally stands:** 14 tables over 8 Alembic revisions ·
+51 paths / 73 operations under `/api/v1` on one Lambda · 8 reports · 12 workflow
+transitions · 6 notification rules · 3 visibility filters · 5 ops actions.
 
 ---
 
@@ -167,7 +173,7 @@ runs under. In finished code these are invisible, so they are collected here.
 | **Migrations cannot run from a laptop** | Aurora is `publicly_accessible = false` | `function.py` dispatches on a non-HTTP event shape to `app/services/ops.py`. Direct invoke is IAM-protected and is not routed by CloudFront, so `migrate`, `seed_admin` and `seed_demo` exist without a public maintenance endpoint or a second Lambda. |
 | **A cold request can take ~15 seconds** | Aurora Serverless v2 runs at `min_capacity = 0.0` and sleeps when idle | `postgres_connect_timeout` defaults to 30 s, the engine uses `pool_pre_ping=True`, and the browser's query client retries once. A hung first request after a quiet period is usually this, not a bug. |
 | **Connection details arrive as env vars** | `infra/locals.tf` injects `IS_LOCAL`, `POSTGRES_*` and `JWT_SECRET` | There is no `DATABASE_URL` and no `docker-compose.yml`. `app/config.py` builds the SQLAlchemy URL from the parts and appends `sslmode=require` when not local. |
-| **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `docs/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
+| **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `readme/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
 | **No memory is shared between requests** *(found in S6)* | a Lambda container handles one invocation and the next request may land on a different container | The failed-login counter cannot be an in-process dict, which is how such a thing is usually written. It is the `login_attempts` table — a database row per email address, self-cleaning on the failure path because a sweeper would have nowhere to run against an Aurora that sleeps at `min_capacity = 0`. See §2.10 and D19. |
 | **The server cannot push** *(found in S1)* | a Lambda Function URL cannot hold a connection open, so there is no websocket and no SSE | The unread badge **polls**: one integer every 30 seconds, stopping while the tab is unfocused. This was never a websocket-versus-polling argument — there was nothing to argue with. What it forces instead is that the polled route must be *cheap*, which is why `unread-count` is an index-only scan answered from `ix_notifications_user_id_read_at` with `Heap Fetches: 0`. See D30. |
 
@@ -1324,7 +1330,7 @@ that each step makes the next one obvious.
 
 **First, 20 minutes — the constraints, so nothing later looks arbitrary.**
 1. `CLAUDE.md` — the scaffold's hard rules. Read §1.4 above alongside it.
-2. `docs/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
+2. `readme/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
 
 **Then, 30 minutes — the shape of the domain.**
 3. `backend/v1/app/models/enums.py` — twelve enums, and the whole vocabulary of the system
@@ -1358,7 +1364,7 @@ that each step makes the next one obvious.
 
 **Finally, 30 minutes — the parts that are their own world.**
 13. `backend/v1/app/repositories/reports.py` module docstring, then `_window_clauses` and
-    `_scope_clauses` — and `docs/DECISION-LOG.md` D9, D10, D11, which are the best worked
+    `_scope_clauses` — and `readme/DECISION-LOG.md` D9, D10, D11, which are the best worked
     example in the repository of a rule being got wrong, exposed, and fixed twice.
 14. `backend/v1/app/seed/demo.py` docstring — only if you are going to change the demo data.
 
@@ -1397,7 +1403,7 @@ current.
 | **ACU (Aurora Capacity Unit)** | Aurora's unit of provisioned capacity (roughly 2 GiB of memory plus matching CPU). Ours has `min_capacity = 0.0`, so it sleeps when idle and takes about 15 seconds to wake — the cause of a slow first request. |
 | **STS credentials** | Short-lived AWS credentials issued by Security Token Service. `./bin/setup-participant.sh` refreshes them into `ENVIRONMENT.config`, which is gitignored and must never be committed or echoed. |
 | **IAM boundary** | The policy (`infra/policy.tftpl`) capping what the deploy role may do — here, most resources only on ARNs matching `coding-workshop*`, with no VPC, API Gateway, EKS or DocumentDB rights. |
-| **Terraform / `terraform apply`** | The infrastructure-as-code tool the scaffold uses. We author none of it; we edited three provided files (see `docs/INFRA-CHANGES.md`). |
+| **Terraform / `terraform apply`** | The infrastructure-as-code tool the scaffold uses. We author none of it; we edited three provided files (see `readme/INFRA-CHANGES.md`). |
 
 ### 6.2 PostgreSQL
 
@@ -2054,7 +2060,7 @@ do what.
 
 **Everything in this phase was verified against local PostgreSQL only** — AWS credentials
 did not exist yet. What that leaves unproven is recorded, item by item with the exact
-command to run, in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). Read that
+command to run, in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). Read that
 before the first cloud deploy.
 
 ### 1. What was built
@@ -2317,7 +2323,7 @@ Never use `get_authenticated_user` outside `/auth` — it skips the password-cha
 
 **Add an ops action.** `def _op_name(event) -> dict`, register it in `ACTIONS`, add a
 test in `tests/integration/test_ops_actions.py`, and add a checklist entry in
-`docs/DEPLOYMENT-CHECKLIST.md` for whatever about it can only be proven in the cloud.
+`readme/DEPLOYMENT-CHECKLIST.md` for whatever about it can only be proven in the cloud.
 
 **Change the category tree.** Edit `CATEGORY_GROUPS` in `app/seed/categories.py`, then
 re-run `migrate`. Additions appear; renames create a *new* row and leave the old one, so
@@ -2472,7 +2478,7 @@ building them twice.
 **Everything here was verified against local PostgreSQL only**, as in M2: through the
 294-test suite, and once end to end over HTTP against a throwaway database with a real
 uvicorn server. What remains unproven in the cloud is in
-[docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+[readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section also covers two carry-overs from M2 that were fixed first.
 
@@ -2941,7 +2947,7 @@ Still no frontend; the React shell arrives in M5. **Everything here was verified
 local PostgreSQL only** — through the 605-test suite, and once end to end over HTTP
 against the real development database, walking one ticket from report through pick-up,
 block, escalate, clear, resolve, confirm and reopen with three accounts. What remains
-unproven in the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+unproven in the cloud is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section starts with a carry-over from M2 that had to be fixed before any of it
 would work.
@@ -3848,7 +3854,7 @@ waiting on M6.
 **Verified against local PostgreSQL only.** 112 frontend tests, 606 backend tests, and
 one end-to-end pass over HTTP through the Vite dev proxy against a scratch database —
 register, login, the forced password change, and logout. What still needs the cloud is
-in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section starts, as M3 and M4 did, with a defect in an earlier phase that this
 phase's verification uncovered.
@@ -4660,7 +4666,7 @@ Playwright, and the first thing it found was a defect that only exists in a brow
 
 **Verified against local PostgreSQL only.** 211 frontend tests (up from 112), 609
 backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
-What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+What still needs the cloud is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 ### 0. Two carry-overs, both the same shape
 
@@ -5679,7 +5685,7 @@ tested against a fixture world small enough to check by hand.
 
 **Verified against local PostgreSQL only.** 665 backend tests (up from 609), ruff check
 and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
-that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+that leaves unproven is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 ### 1. What was built
 
@@ -6097,7 +6103,7 @@ ACME. Pass 3 is the three dashboard screens, and appends its own section below.
 **Verified against local PostgreSQL only.** 683 backend tests (up from 666), ruff check
 and ruff format clean. A full default seed takes **0.9 seconds** and writes 300 incidents,
 ~1,800 events and ~500 notes. What that leaves unproven in the cloud is items 7.5 to 7.8
-in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
+in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
 guard's `IS_LOCAL` really arrives on the deployed Lambda.
 
 ### 1. What was built
@@ -6108,7 +6114,7 @@ guard's `IS_LOCAL` really arrives on the deployed Lambda.
 | `app/services/ops.py` | `_op_seed_demo` — the environment guard, the payload overrides, and the registry entry beside `migrate` and `seed_admin`. |
 | `tests/integration/test_seed_demo.py` | 13 tests against a 60-incident spec. Shape, not values. |
 | `tests/unit/test_ops.py` | 4 more: the registry, the production refusal, and payload validation. No database needed for any of them. |
-| `docs/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
+| `readme/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
 
 It is invoked exactly as `migrate` and `seed_admin` are — a direct Lambda invoke, or the
 same handler called locally:
@@ -6873,7 +6879,7 @@ columns on a desktop and one on a phone without a breakpoint per count.
 
 M8 in BUILD-PLAN section 15 is "final deploy, README, guide, demo script". No AWS
 credentials exist for this build, so the deploy half cannot run and is not attempted;
-[D1](DECISION-LOG.md) records that choice and `docs/DEPLOYMENT-CHECKLIST.md` holds every
+[D1](DECISION-LOG.md) records that choice and `readme/DEPLOYMENT-CHECKLIST.md` holds every
 step that needs the cloud, with its command and its expected output. This phase is the
 other half: the documents a reviewer, and later you, will actually read.
 
@@ -6894,9 +6900,9 @@ that can be re-queried. Section 6 lists what that cost and where it nearly went 
 | File | Responsibility |
 | --- | --- |
 | [README.md](../README.md) | Rewritten end to end, 281 lines → ~615. The repository's front door for someone with fifteen minutes and no context. |
-| [docs/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
-| [docs/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
-| [docs/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
+| [readme/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
+| [readme/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
+| [readme/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
 | **[Part I](#part-i--the-system-as-a-whole) of this guide** | The front section BUILD-PLAN §15 asks for: system overview, the data model as a narrative, the complete rule-to-file map, one full end-to-end trace, a reading order, and the merged glossary. ~1,330 lines, written last and checked against the code rather than against the phase sections. |
 | This section | The M8 entry in this guide. |
 
@@ -7016,12 +7022,12 @@ is, how it is built, who may do what, how to run it, what is tested, what was tr
 and what is missing — and links out rather than expanding. Nothing else is required
 reading, which is the constraint the rewrite was designed against.
 
-**Someone about to demo it.** `docs/DEMO-SCRIPT.md` — setup section first, hours before;
+**Someone about to demo it.** `readme/DEMO-SCRIPT.md` — setup section first, hours before;
 then the walkthrough. It links back to the README only for installation.
 
 **You, later, changing something.** This guide, at the phase that built the thing you are
-changing; then `docs/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
-scaffold constraints that are not negotiable; then `docs/DEPLOYMENT-CHECKLIST.md` before
+changing; then `readme/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
+scaffold constraints that are not negotiable; then `readme/DEPLOYMENT-CHECKLIST.md` before
 anything reaches AWS.
 
 Tracing one claim end to end, which is the property the rewrite was trying to buy — the
@@ -7049,15 +7055,15 @@ The documentation map — which file answers which question, so no question has 
 | Question | Document |
 | --- | --- |
 | What is this, how do I run it, what is tested, what is missing? | `README.md` |
-| How do I show it to someone in five minutes? | `docs/DEMO-SCRIPT.md` |
-| How does the whole system fit together, and where does rule X live? | `docs/PROJECT-GUIDE.md` [Part I](#part-i--the-system-as-a-whole) |
-| What was built in each phase, and why is it shaped this way? | `docs/PROJECT-GUIDE.md` [Part II](#part-ii--the-build-phase-by-phase) |
-| Why was *this* call made, and what was rejected? | `docs/DECISION-LOG.md` (D1–D18) |
+| How do I show it to someone in five minutes? | `readme/DEMO-SCRIPT.md` |
+| How does the whole system fit together, and where does rule X live? | `readme/PROJECT-GUIDE.md` [Part I](#part-i--the-system-as-a-whole) |
+| What was built in each phase, and why is it shaped this way? | `readme/PROJECT-GUIDE.md` [Part II](#part-ii--the-build-phase-by-phase) |
+| Why was *this* call made, and what was rejected? | `readme/DECISION-LOG.md` (D1–D18) |
 | What does the scaffold force on us? | `CLAUDE.md` |
-| What was the plan, and what does each phase have to prove? | `docs/BUILD-PLAN.md` |
-| Where has the build got to? | `docs/BUILD-STATUS.md` |
-| What must be checked the first time credentials exist? | `docs/DEPLOYMENT-CHECKLIST.md` |
-| What did we change in the provided Terraform, and why? | `docs/INFRA-CHANGES.md` |
+| What was the plan, and what does each phase have to prove? | `readme/BUILD-PLAN.md` |
+| Where has the build got to? | `readme/BUILD-STATUS.md` |
+| What must be checked the first time credentials exist? | `readme/DEPLOYMENT-CHECKLIST.md` |
+| What did we change in the provided Terraform, and why? | `readme/INFRA-CHANGES.md` |
 | What is this project graded on? | `docs/full-stack.md` (the scaffold's, not ours) |
 
 Facts that live in more than one document, and which copy wins:
@@ -7068,7 +7074,7 @@ Facts that live in more than one document, and which copy wins:
 | Test counts | the suites themselves | README, BUILD-STATUS, this guide |
 | Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
 | Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
-| The API surface | the running OpenAPI document | README (45 paths / 65 operations), BUILD-PLAN §9 |
+| The API surface | the running OpenAPI document | README (51 paths / 73 operations), BUILD-PLAN §9 |
 | Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the eleven per-phase §4 maps it merges (M1–S1; M8's own §4 maps documents, not rules). Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
 
 ### 5. How to change it
@@ -7078,7 +7084,7 @@ three documentation edits: the transition table in `README.md`, the state diagra
 if the new row adds an edge, and BUILD-PLAN §6 if you want the plan to stay honest. The
 frontend needs nothing.
 
-**You added or changed an endpoint.** The README quotes "45 paths / 65 operations"; re-derive
+**You added or changed an endpoint.** The README quotes "51 paths / 73 operations"; re-derive
 it rather than adjusting it by hand:
 
 ```sh
@@ -7093,7 +7099,7 @@ print(len(spec), 'paths', ops, 'operations')"
 finds three routes and no endpoints. Read the OpenAPI document instead.)
 
 **The test numbers moved.** They appear in `README.md` (twice — the summary table at the
-top and the results table), `docs/BUILD-STATUS.md` and this guide's phase headers. Change
+top and the results table), `readme/BUILD-STATUS.md` and this guide's phase headers. Change
 all of them in one commit or they will disagree within a day.
 
 **You want the demo data fresh.** `seed_demo` will not top up or refresh:
@@ -7113,7 +7119,7 @@ history is 90 days ending at seed time, so a dashboard opened weeks later shows 
 "Reported in this period" section under the default 30-day window, and looks broken when it
 is merely old.
 
-**Credentials arrived and you are deploying.** `docs/DEPLOYMENT-CHECKLIST.md` top to
+**Credentials arrived and you are deploying.** `readme/DEPLOYMENT-CHECKLIST.md` top to
 bottom, then update the README's status paragraph, the "Deployed (AWS) — designed and
 configured, not yet verified" heading, and known-limitation item 4. Those three are written
 to be changed together on that day.
@@ -7989,7 +7995,7 @@ one looks fine in a screenshot.
 
 ## Phase R1 — The redesign brief, section 1: the four bugs
 
-*[`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
+*[`readme/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
 after using the built application, grouped by the order they want them done. Section 1
 is "things that are wrong now", and this is that section and nothing else — no theme,
 no shared components, no new features. Four reported bugs, which turned out to be
@@ -8194,7 +8200,7 @@ not an in-app absolute path.
 
 ## Phase R2 — The redesign brief, section 2: the theme
 
-*Section 2 of [`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
+*Section 2 of [`readme/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
 brown primary, and a third colour to be proposed. It is one palette and no layout, and
 it lands before the per-screen work because it touches every screen. The brief's own
 warning — that two things validated against the old palette will break quietly — turned
@@ -9286,3 +9292,328 @@ is told weeks later when it is fixed.**
 | **Backfill** | A migration statement that writes values into rows that already existed. `0006`'s runs once, when the column is created, so it cannot overwrite a decision. |
 | **Capacity** | The role somebody holds *on one ticket* — reporter, assignee, watcher. Not their role in the application. |
 | **Precondition (`applies`)** | A condition on a whole notification rule, checked before any recipient is worked out. What makes `WATCHED_RESOLVED` fire on one status and not on five. |
+
+---
+
+## Phase S7 — Feedback: rating a repair
+
+*The first phase the owner specified from scratch rather than from
+`BUILD-PLAN.md`. Part 1 of two: this is the rating itself. Autoclose, the
+engineer page's ratings and the reviews drawer are part 2.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `alembic/versions/0007_incident_feedback.py` | The table, `incidents.resolved_by_id`, the `FEEDBACK_RECEIVED` enum member, and a backfill that admits it is a guess. |
+| `app/models/feedback.py` | `IncidentFeedback`: one rating of one repair, keyed on `(incident_id, resolution_round)`. |
+| `app/schemas/feedback.py` | `FeedbackCreate` / `FeedbackUpdate` / `FeedbackRead`, and the 1–5 bounds **mirrored** from the check constraint. |
+| `app/repositories/feedback.py` | Statements handed out unexecuted so the visibility filter cannot be skipped, plus the `ON CONFLICT` insert. |
+| `app/services/feedback.py` | **Every rule.** Who may rate, what may be rated, the fourteen-day window, the fifteen-minute edit window. |
+| `app/services/visibility.py` | `apply_feedback_visibility` — the third filter, and the first that reads the row. |
+| `app/routers/feedback.py` | `GET`/`POST /incidents/{id}/feedback`, `PATCH /feedback/{id}`. No `DELETE`, deliberately. |
+| `app/notifications.py` | `Audience.RATED_ENGINEER`, the `FEEDBACK_RECEIVED` rule, and `CapacityLookup` widened to take the context. |
+| `app/seed/demo.py` | `_write_feedback`: 45% of eligible repairs rated, replayed through the real notification rules. |
+| `frontend/src/api/feedback.ts` | Two writes. Reads come through the activity timeline, as notes do. |
+| `frontend/src/features/incidents/FeedbackDialog.tsx` | The form. Will not send without words at any score. |
+| `frontend/src/features/incidents/ActivityTimeline.tsx` | A third `kind`, with its own avatar treatment. |
+| `frontend/src/layout/navigation.ts` | `profilePathFor` — one rule, two account menus. |
+| `frontend/src/theme.ts` | `MuiRating.iconFilled` in the palette's ochre rather than Material UI's amber. |
+
+### 2. Why it is shaped this way
+
+Six decisions, and the full reasoning with the alternatives rejected is
+[D71](DECISION-LOG.md#d71--feedback-a-rating-belongs-to-a-repair-not-to-a-ticket).
+In short:
+
+**A table, not two columns on `incidents`.** A ticket can be fixed more than
+once and the owner asked for each repair to be ratable, so the relationship is
+one-to-many and a pair of columns could only ever hold the last one.
+
+**Keyed on `(incident_id, resolution_round)`.** `(incident_id, rated_user_id)`
+cannot express it — the same engineer may fix the same ticket twice and earn
+two separate ratings.
+
+**`incidents.resolved_by_id`, which nobody asked for.** A RESOLVED ticket can
+be reassigned, so the live `assignee_id` is not reliably the engineer who did
+the work. Without this column a review can drift onto a colleague.
+
+**The rating window is independent of closing.** Tying it to "until you close
+it" lets whoever closes the ticket decide whether the work gets rated — and
+the engineer can close their own.
+
+**A wording change, not a second notification rule.** Two rules on one
+resolution is the bug D68 found.
+
+**`SMALLINT` and not an enum**, alone among this codebase's domain values.
+Every reader of a rating is an aggregate, and PostgreSQL will not average an
+enum.
+
+### 3. How the pieces connect
+
+One rating, end to end:
+
+```
+reporter clicks "Rate the work"          features/incidents/IncidentActions.tsx
+  ← the button exists because             incident.can_give_feedback
+     services/feedback.can_give_feedback said so, via routers/incidents._to_read
+  ↓ setDialog({kind:'feedback'})          features/incidents/IncidentDetailPage.tsx
+  ↓ FeedbackDialog: score + words         features/incidents/FeedbackDialog.tsx
+  ↓ useCreateFeedback → api/feedback.ts   POST /api/v1/incidents/{id}/feedback
+  ↓ Vite proxy, path unchanged            frontend/vite.config.ts
+  ↓ routers/feedback.create_feedback      → incident_service.get_incident (404s early)
+  ↓ services/feedback.submit
+      ├─ _require_can_give_feedback       reporter? resolved? in window? already rated?
+      ├─ repositories/feedback.add        ON CONFLICT DO NOTHING → None means "already"
+      ├─ session.expire(incident,         so the detail response built next is honest
+      │    ["feedback"])
+      └─ notification_service.record(FEEDBACK_RECEIVED, feedback=stored)
+             └─ app/notifications.plan → CAPACITY_HOLDERS[RATED_ENGINEER]
+                    → reads feedback.rated_user_id, never incident.assignee_id
+  ↓ router commits                        one transaction: rating + notification
+  ↓ 201 FeedbackRead
+  ↓ invalidateIncidents                   ['incidents'] and ['reports'] prefixes
+  ↓ /activity re-fetched                  services/incident_service.load_activity
+      └─ feedback_service.list_for_incident → apply_feedback_visibility on the query
+  ↓ ActivityTimeline renders kind==='feedback'
+```
+
+The engineer's bell picks the notification up on its next 30-second poll.
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| Who may rate | `app/services/feedback.py` | `can_give_feedback`, `_require_can_give_feedback` |
+| What may be rated | `app/services/feedback.py` | `RATEABLE_STATUSES` **plus** the `resolved_at` / `resolved_by_id` checks |
+| How long the window stays open | `app/services/feedback.py` | `FEEDBACK_WINDOW` (14 days from `resolved_at`) |
+| That closing does not shut it | `app/services/feedback.py` | the absence of any `closed_at` test — and `test_closing_the_ticket_does_not_close_the_rating_window` |
+| How long a correction is possible | `app/services/feedback.py` | `EDIT_WINDOW`, `can_modify` — author only, no admin override |
+| Which repair a rating is about | `app/services/feedback.py` | `current_round` (`reopen_count + 1`), frozen on write |
+| One rating per repair | `app/models/feedback.py` + `app/repositories/feedback.py` | the unique constraint; `add`'s `ON CONFLICT DO NOTHING` is the authority |
+| Who a rating is **about** | `app/services/incident_service.py` | `_apply_transition_effects` sets `resolved_by_id`; `feedback.submit` copies it |
+| **Who may read one** | `app/services/visibility.py` | `apply_feedback_visibility` — applied to the query |
+| A rating you may not read is 404 | `app/services/feedback.py` | `get_feedback` — the filter is on the lookup |
+| The score's bounds | `app/models/feedback.py` | `ck_incident_feedback_rating_range`; mirrored by `app/schemas/feedback.py` |
+| That a comment is mandatory | `app/models/feedback.py` | `comment` NOT NULL; mirrored by `FeedbackComment`'s `min_length` and the dialog's disabled button |
+| Who is told | `app/notifications.py` | the `FEEDBACK_RECEIVED` rule; `_the_rated_engineer` |
+| What the reporter is told on a resolution | `app/notifications.py` | `_status_message_for_reporter` — the RESOLVED branch |
+| How many demo repairs are rated | `app/seed/demo.py` | `RATED_SHARE`, `RATING_WEIGHTS`, `FEEDBACK_DELAY_HOURS` |
+| Whether the button is drawn | `frontend/.../IncidentActions.tsx` | `incident.can_give_feedback` and nothing else |
+| What each score means in words | `frontend/.../FeedbackDialog.tsx` | `SCORE_WORDING` — mirrored in `ActivityTimeline.tsx`, pinned by its test |
+| The star's colour | `frontend/src/theme.ts` | `MuiRating.styleOverrides.iconFilled` |
+| Whether an engineer can reach their own page | `frontend/src/layout/navigation.ts` | `profilePathFor` |
+
+### 5. How to change it
+
+**To change the rating window** — one constant, `FEEDBACK_WINDOW` in
+`app/services/feedback.py`. The message in `FEEDBACK_WINDOW_CLOSED` reads
+`.days` off it, so the sentence follows.
+
+**To let an admin delete a rating** — decide the policy first (is a deleted
+review still counted? is the engineer told?), then: a `deleted_at` column, an
+exclusion in `apply_feedback_visibility` beside the note one, a `DELETE` route,
+and a test that a deleted rating leaves the timeline. See D71's last section.
+
+**To add a second question** (courtesy, speed, and so on) — a column on
+`incident_feedback`, a field on all three schemas, one control in
+`FeedbackDialog`, and one line in the timeline entry. The notification does not
+change: it quotes nothing.
+
+**To let watchers rate too** — the table is already keyed on the pair through
+`resolution_round`, but `(incident_id, resolution_round)` would have to become
+`(incident_id, resolution_round, author_id)`, and `can_give_feedback`'s first
+line would widen from "the reporter" to "the reporter or a watcher".
+
+### 6. Gotchas
+
+- **`tsc --noEmit` checks nothing here.** The root `tsconfig.json` is
+  solution-style with `"files": []`, so it type-checks no files and exits 0.
+  Use `npm run typecheck` (`tsc -b`), which is what `npm run build` runs.
+- **`incident.feedback` is stale immediately after an insert.** The collection
+  was loaded before the row existed. `submit` expires it; the `ON CONFLICT`
+  insert is what makes the rule true regardless.
+- **The relationship is unfiltered on purpose.** `Incident.feedback` is every
+  rating, not the ones the reader may see. Narrowing it would make
+  `can_give_feedback` answer yes to a reporter who has already rated.
+- **A rating is not an event.** It writes no `incident_events` row, so it has
+  no `EventType` and does not appear in the audit log — it *is* its own
+  timeline source, the third one.
+- **`chooseScore` must assert.** Clicking Material UI's hidden star span or
+  its `<label>` selects nothing in jsdom; only a `fireEvent` click on the
+  input does. Four tests using the helper assert a *disabled* button, which is
+  true of a dialog nobody touched.
+- **Adding a `NotificationType` member breaks two tests**, `test_it_fills_an_inbox`
+  and `src/api/enumMirrors.test.ts`. Both are the design working.
+- **The demo world's `RATED_SHARE` has an upper bound in a test.** Rating
+  everything would make the response rate read 100% for ever.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Repair** | One pass of a ticket through RESOLVED. A ticket reopened and fixed again has had two, and each may be rated separately. |
+| **`resolution_round`** | Which repair a rating is about: `reopen_count + 1`, frozen when the rating is written because `reopen_count` keeps going up. |
+| **Resolver** (`resolved_by_id`) | Who held the ticket at the moment it was resolved — not who holds it now, which reassignment can change. |
+| **Response rate** | Rated repairs over repairs that could have been rated. The number that says whether an average is worth reading. |
+| **`ON CONFLICT DO NOTHING`** | PostgreSQL's "insert unless the key exists". Here it returns no id, which the service turns into the same 409 the pre-check raises. |
+| **WCAG 1.4.11** | The contrast rule for non-text graphics: 3:1. Why the stars had to leave Material UI's default amber. |
+
+---
+
+## Phase S7 part 2 — The engineer's rating, the reviews page, and auto-close
+
+*Everything S7 part 1 left for a second pass, plus the auto-close the owner
+asked for once part 1 had shown that a cron was not available.*
+
+### 1. What was built
+
+| File | Responsibility |
+| --- | --- |
+| `alembic/versions/0008_system_closed.py` | One `ALTER TYPE`: the close reason nobody chose. |
+| `app/workflow.py` | `Actor.SYSTEM`, one transition row, `AUTOCLOSE_AFTER` and `autoclose_deadline` — the quiet clock and the note that restarts it. |
+| `app/models/incident.py` | `last_public_note_at`, the one input that guard needs. |
+| `app/services/autoclose.py` | The sweep, and why it cannot be a scheduled job. |
+| `app/services/incident_service.py` | `apply_system_transition` — a move with no user behind it. |
+| `app/repositories/incidents.py` | `list_autoclose_candidates`: a permissive prefilter, locked with `SKIP LOCKED`. |
+| `app/routers/incidents.py` | `GET /incidents` runs the sweep. A GET that writes, said out loud. |
+| `app/services/ops.py` | `close_stale`, so a demo can force one and see what it did. |
+| `app/repositories/reports.py` | `engineer_satisfaction`, `engineer_reviews`, and `engineer_detail` moved onto `resolved_by_id`. |
+| `app/services/visibility.py` | `sees_every_rating` — one definition of "admin or lead", now that two places ask. |
+| `frontend/src/components/RatingStars.tsx` | A score, drawn as stars and *said in words*. |
+| `frontend/src/features/engineers/EngineerReviewsPage.tsx` | The reviews, the distribution, and the filter they double as. |
+
+### 2. Why it is shaped this way
+
+The full reasoning is
+[D72](DECISION-LOG.md#d72--auto-close-with-no-scheduler-and-where-a-sweep-is-allowed-to-live);
+the four decisions a reader most needs:
+
+**Auto-close is a sweep on a request path** because the IAM boundary grants no
+`events:*`, no `scheduler:*` and no `cluster-pg:` ARN for `pg_cron`. The only
+true timer available — an SQS message re-enqueuing itself every fifteen
+minutes — needs new Terraform and fails silently. `login_attempts` reached the
+same conclusion in S6 and the same answer.
+
+**The move is a row in `app/workflow.py`, held by `Actor.SYSTEM`.**
+`resolve_actors` takes a `User` and can never return SYSTEM, so the row is
+legal and offered to nobody — no button, no `allowed-transitions` entry, and
+no `if` anywhere outside the table.
+
+**`engineer_detail` counts by `resolved_by_id` now.** A satisfaction ratio
+beside the counts forced it: a rating belongs to whoever resolved the ticket,
+so a denominator counted by the live assignee would have made "18 of 26
+resolved rated" a ratio between two different meanings of one word. Measured
+first — every resolved ticket in the demo world had the two ids equal, so it
+moved no number.
+
+**Scores are public to staff; sentences are not.** One filter,
+`apply_feedback_visibility`, applied to the query. `can_read_reviews` only
+decides whether a link is drawn.
+
+### 3. How the pieces connect
+
+An overdue ticket closing itself:
+
+```
+anybody opens a ticket list          GET /api/v1/incidents
+  ↓ routers/incidents.list_incidents  ← the write is declared here, not hidden
+  ↓ services/autoclose.close_stale
+      ├─ repositories.list_autoclose_candidates
+      │     status = RESOLVED AND resolved_at <= now - 7d
+      │     ORDER BY resolved_at LIMIT 50 FOR UPDATE SKIP LOCKED
+      │     (a permissive prefilter — the rule is the guard)
+      ├─ workflow.check_guard(row, incident, now)
+      │     └─ autoclose_deadline: max(resolved_at, last public note) + 7d
+      │        → skip the ones a conversation is holding open
+      └─ incident_service.apply_system_transition
+            ├─ _apply_transition_effects  ← the same function every closure uses
+            └─ add_event(actor_id=None, created_at=now)
+  ↓ session.commit()                  ← before the read, so a closure survives it
+  ↓ the list query runs and the response is built
+```
+
+An admin reading somebody's reviews:
+
+```
+engineer page: stars + "17 of 41 resolved rated in this period"
+  ← can_read_reviews on /reports/engineers/{id} decided the link exists
+  ↓ /engineers/:id/reviews?range=30d   ← the period travels in the query string
+  ↓ useEngineerDetailReport            the same figures, so the header agrees
+  ↓ useEngineerReviews                 GET /reports/engineers/{id}/reviews
+      └─ apply_feedback_visibility on the query
+            admin or lead → everything; the engineer → their own; a peer → none
+  ↓ click a bar in the distribution → ?rating=2 → the request, not the rendered rows
+```
+
+### 4. Where the rules live
+
+| Rule | File | Symbol |
+| --- | --- | --- |
+| How long a resolved ticket may stay quiet | `app/workflow.py` | `AUTOCLOSE_AFTER` |
+| When a ticket becomes due | `app/workflow.py` | `autoclose_deadline` — the note restarts it |
+| Which note restarts it | `app/models/incident.py` | `last_public_note_at` — PUBLIC and not deleted |
+| That the move exists at all, and who may make it | `app/workflow.py` | the `Actor.SYSTEM` row in `TRANSITIONS` |
+| That no human can make it | `app/workflow.py` | `resolve_actors` takes a `User` and never returns SYSTEM |
+| What a closure does to the row | `app/services/incident_service.py` | `_apply_transition_effects` — the same one every closure uses |
+| A move with no user behind it | `app/services/incident_service.py` | `apply_system_transition` — no permission check, no guard check |
+| Where the sweep runs, and how many at once | `app/services/autoclose.py` | `close_stale`, `SWEEP_LIMIT` |
+| That concurrent sweeps do not collide | `app/repositories/incidents.py` | `list_autoclose_candidates` — `FOR UPDATE SKIP LOCKED` |
+| That the sweep tells nobody | `app/services/autoclose.py` | the absence of a `notification_service.record` call, and its docstring |
+| An engineer's average, and its response rate | `app/repositories/reports.py` | `engineer_satisfaction`; `_mean_score` in `services/reporting.py` |
+| Which timestamp the rating window filters on | `app/repositories/reports.py` | `engineer_satisfaction` — `Incident.resolved_at`, not the rating's |
+| Who may read the *sentences* | `app/services/visibility.py` | `apply_feedback_visibility`, `sees_every_rating` |
+| Whether the link to them is drawn | `app/services/reporting.py` | `can_read_reviews` on `engineer_detail` |
+| Which repairs count as an engineer's | `app/repositories/reports.py` | `engineer_detail` — `resolved_by_id` |
+| That the demo world settles under its own rules | `app/seed/demo.py` | the `autoclose.close_stale` call before `_summarise` |
+| Every score is reachable in the demo | `app/seed/demo.py` | `RATING_WEIGHTS` — no zero, asserted |
+| The star's colour | `frontend/src/theme.ts` | `MuiRating.styleOverrides.iconFilled` |
+| The score in words | `RatingStars.tsx`, `FeedbackDialog.tsx`, `ActivityTimeline.tsx` | `SCORE_WORDING` — pinned across the last two by a test |
+
+### 5. How to change it
+
+**To change how long a ticket stays quiet** — `AUTOCLOSE_AFTER` in
+`app/workflow.py`. Not `REOPEN_WINDOW`, which is seven days by coincidence and
+answers a different question.
+
+**To make something else restart the clock** — `autoclose_deadline` is the
+only place that decides, and it is a pure function of a loaded row. Whatever
+you add has to be readable off the incident, and
+`list_autoclose_candidates` must stay a *superset* of what the guard allows.
+
+**To run the sweep somewhere else as well** — call `autoclose.close_stale` and
+commit. It is idempotent by status: a closed ticket is not a candidate.
+
+**To show "closes in three days"** — `autoclose.next_deadline` already returns
+it and nothing renders it.
+
+### 6. Gotchas
+
+- **`GET /incidents` writes.** It is the only read endpoint in the application
+  that does, it is declared in the route's docstring, and it is why that
+  handler commits.
+- **The prefilter is deliberately wrong-ish.** It selects tickets the guard
+  will refuse, for ever, every sweep. That is the cost of keeping the rule in
+  one language.
+- **A `FOR UPDATE` select cannot carry an eager load.** PostgreSQL will not
+  lock the far side of an outer join, so `list_autoclose_candidates` locks
+  first and loads `notes` in a second statement.
+- **`add_event(created_at=…)` has exactly one caller.** The default is
+  `clock_timestamp()` so several rows in one request are ordered rather than
+  identical (revision 0003); only the system path passes a value, because its
+  `now` is authoritative and also went into `closed_at`.
+- **The seed sweeps itself.** If it did not, the first page load would close
+  eighteen tickets and make the figures the seed had just printed wrong.
+- **`RATING_WEIGHTS` may not contain a zero.** A score with no weight is a row
+  on the reviews filter that can never have anything behind it.
+
+### 7. Glossary
+
+| Term | What it means here |
+| --- | --- |
+| **Sweep** | Work done on a request that was going to happen anyway, because no scheduler exists to do it on a timer. `login_attempts` cleans itself the same way. |
+| **Prefilter** | A cheap, index-friendly query that returns a superset, leaving the real rule to a guard that runs in Python. |
+| **`FOR UPDATE SKIP LOCKED`** | PostgreSQL's "lock these rows, and silently pass over any another transaction already holds". Turns two racing sweeps into two disjoint ones. |
+| **`Actor.SYSTEM`** | The capacity the application acts in when nobody does. Holds one transition row and no user can ever hold it. |
+| **Quiet clock** | Time since the later of the repair and the last public note. What auto-close measures. |
+| **Response rate** | Rated repairs over repairs that could have been rated — the number that says whether an average is worth reading. |

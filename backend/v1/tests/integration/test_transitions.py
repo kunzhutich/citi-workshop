@@ -138,6 +138,34 @@ def row_id(transition: Transition) -> str:
     )
 
 
+#: The rows a *person* can make, which is every row but the auto-close one.
+#:
+#: `Actor.SYSTEM` is held by nobody — `workflow.resolve_actors` takes a `User`
+#: and can never return it — so the two tests below, which drive each row
+#: through `perform_transition` as a signed-in caller, have no caller to use.
+#: The move is exercised end to end in `test_autoclose.py` instead, through
+#: the sweep that is the only thing able to make it.
+#:
+#: **The exclusion is enumerated, not assumed**, by the test underneath. An
+#: unenumerated exclusion is one that silently grows, which is D25's lesson
+#: and the reason that test exists rather than a comment.
+HUMAN_TRANSITIONS = tuple(
+    transition for transition in TRANSITIONS if Actor.SYSTEM not in transition.allowed_actors
+)
+
+
+def test_only_the_autoclose_row_is_kept_out_of_the_human_matrix() -> None:
+    """Exactly one row is excluded, and it is the one we think it is.
+
+    A second `Actor.SYSTEM` row added later would be skipped by the two tests
+    below without anybody noticing. This fails instead, which is the point:
+    the skip has to be a decision each time rather than a precedent.
+    """
+    excluded = [row_id(row) for row in TRANSITIONS if row not in HUMAN_TRANSITIONS]
+
+    assert excluded == ["RESOLVED->CLOSED (Close automatically)"]
+
+
 # --- The matrix: every row, every caller -------------------------------------
 
 
@@ -183,7 +211,7 @@ def test_every_transition_admits_and_refuses_exactly_who_the_table_says(
         assert updated.close_reason in expected.close_reasons
 
 
-@pytest.mark.parametrize("transition", TRANSITIONS, ids=row_id)
+@pytest.mark.parametrize("transition", HUMAN_TRANSITIONS, ids=row_id)
 def test_every_transition_writes_its_audit_event(
     db_session: Session,
     cast: dict[str, User],
@@ -205,7 +233,7 @@ def test_every_transition_writes_its_audit_event(
     assert latest.actor_id == user.id  # type: ignore[union-attr]
 
 
-@pytest.mark.parametrize("transition", TRANSITIONS, ids=row_id)
+@pytest.mark.parametrize("transition", HUMAN_TRANSITIONS, ids=row_id)
 def test_every_required_field_is_actually_required(
     db_session: Session,
     cast: dict[str, User],

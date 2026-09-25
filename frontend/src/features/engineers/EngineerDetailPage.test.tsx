@@ -90,6 +90,20 @@ const REPORT: EngineerDetailReport = {
     group_name: name,
     count: 12 - index,
   })),
+  // 17 of the 41 rated, averaging 4.1. The two numbers are a *ratio* in the
+  // sentence the page draws from them, so they are set to a pair somebody
+  // would actually see rather than to round placeholders.
+  rated_in_period: 17,
+  average_rating: 4.1,
+  response_rate_pct: 41.5,
+  rating_distribution: [
+    { rating: 1, count: 1 },
+    { rating: 2, count: 1 },
+    { rating: 3, count: 3 },
+    { rating: 4, count: 6 },
+    { rating: 5, count: 6 },
+  ],
+  can_read_reviews: true,
 };
 
 /** The ticket they are holding now. Named so it cannot be mistaken for the other. */
@@ -438,5 +452,81 @@ describe('what they fix', () => {
     // And the two smallest — the ones the pie folded away — are still links.
     expect(within(table).getByRole('link', { name: 'Deliveries & Moves' })).toBeInTheDocument();
     expect(within(table).getByRole('link', { name: 'Safety & Security' })).toBeInTheDocument();
+  });
+});
+
+describe('their rating, in the header', () => {
+  it('says the score in words as well as in stars', async () => {
+    // jsdom has no layout, so "the stars are to the right of the level chip"
+    // is not a thing this suite can say — it was checked in a browser at 1440
+    // and 375. What it *can* say is that the number is readable as text,
+    // which is the half that matters: five glyphs are nothing a screen reader
+    // can total, so `RatingStars` marks them `aria-hidden` and the figure
+    // beside them carries the value.
+    await renderLoaded();
+
+    expect(screen.getByText('4.1')).toBeInTheDocument();
+  });
+
+  it('says how much of their work was rated, and over what', async () => {
+    /*
+     * The sentence ends "in this period" and that is not decoration. It is a
+     * period figure sitting *above* the period heading — every other number
+     * on this page is under one of the two scope labels (D9, D14) — so the
+     * scope has to travel in the line itself or a reader takes 4.1 for a
+     * standing fact about the person.
+     */
+    await renderLoaded();
+
+    expect(
+      screen.getByRole('link', { name: /17 of 41 resolved rated in this period/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('links to the reviews carrying the period it was counted over', async () => {
+    // `listLinks.ts`'s rule, applied to a link that is not a ticket list: the
+    // scope the number was computed under goes with the reader, or they
+    // arrive at a different set from the one they clicked.
+    await renderLoaded('/engineers/eng-1?range=7d');
+
+    const link = screen.getByRole('link', { name: /resolved rated/ });
+    expect(link).toHaveAttribute('href', '/engineers/eng-1/reviews?range=7d');
+  });
+
+  it('shows a colleague the figure without a way into the reviews', async () => {
+    /*
+     * The owner's rule: engineers see one another's scores and not one
+     * another's reviews. Both halves are asserted, because "there is no link"
+     * is also true of a page that failed to render the sentence at all — and
+     * the score is the thing that must still be there.
+     */
+    vi.mocked(fetchEngineerDetail).mockResolvedValue({ ...REPORT, can_read_reviews: false });
+
+    await renderLoaded();
+
+    expect(screen.getByText(/17 of 41 resolved rated in this period/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /resolved rated/ })).not.toBeInTheDocument();
+    expect(screen.getByText('4.1')).toBeInTheDocument();
+  });
+
+  it('says nothing about a rating when nothing was resolved', async () => {
+    // An average over nothing is `None` on the API and must not become a 0
+    // here — 0 is below a scale that starts at 1, so it reads as the worst
+    // possible record rather than as "no data".
+    vi.mocked(fetchEngineerDetail).mockResolvedValue({
+      ...REPORT,
+      resolved_in_period: 0,
+      rated_in_period: 0,
+      average_rating: null,
+      response_rate_pct: null,
+    });
+
+    const result = render();
+    await screen.findByRole('heading', { name: 'Priya Raman' });
+
+    expect(await screen.findByText('Not yet rated')).toBeInTheDocument();
+    expect(screen.getByText('Nothing resolved in this period')).toBeInTheDocument();
+    expect(screen.queryByText('0.0')).not.toBeInTheDocument();
+    return result;
   });
 });

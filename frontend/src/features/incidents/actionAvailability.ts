@@ -22,7 +22,8 @@ export function hasContextualActions(incident: Incident): boolean {
     incident.can_escalate ||
     incident.can_clear_escalation ||
     incident.can_change_priority ||
-    incident.can_edit
+    incident.can_edit ||
+    incident.can_give_feedback
   );
 }
 

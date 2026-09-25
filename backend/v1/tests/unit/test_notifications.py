@@ -24,6 +24,7 @@ from app.models.enums import (
     NotificationType,
     UserRole,
 )
+from app.models.feedback import IncidentFeedback
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.user import User
@@ -96,6 +97,31 @@ def make_note(
     )
 
 
+def make_feedback(
+    *,
+    incident: Incident,
+    author: User,
+    rated_user: User,
+    rating: int = 4,
+    resolution_round: int = 1,
+) -> IncidentFeedback:
+    """Build a transient rating.
+
+    `rated_user` is passed rather than taken from `incident.assignee`, because
+    the two being allowed to differ is the reason this row carries the id at
+    all — see `test_the_rated_engineer_is_read_off_the_rating_not_the_ticket`.
+    """
+    return IncidentFeedback(
+        id=uuid.uuid4(),
+        incident_id=incident.id,
+        author_id=author.id,
+        rated_user_id=rated_user.id,
+        rating=rating,
+        comment="Quick and explained what had gone wrong.",
+        resolution_round=resolution_round,
+    )
+
+
 def recipients(planned: list[notifications.PlannedNotification]) -> set[uuid.UUID]:
     """Return just the user ids, for the many assertions that only care who."""
     return {item.user_id for item in planned}
@@ -159,8 +185,19 @@ def test_every_audience_a_rule_speaks_to_is_a_relationship_to_the_ticket(
     wrote about themselves on this one ticket, and `allows_watchers` decides
     which tickets may have any. It is the first audience more than one person
     can hold, which is the whole of `CAPACITY_HOLDERS`.
+
+    RATED_ENGINEER passes for the same kind of reason and is the sharpest case
+    of it: an engineer is a role, but *the engineer this rating is about* is a
+    relationship to one repair of one ticket, frozen when the work was done.
+    The engineer who holds the ticket today may be somebody else, and is not
+    in this audience.
     """
-    assert rule.audiences <= {Audience.REPORTER, Audience.ASSIGNEE, Audience.WATCHER}
+    assert rule.audiences <= {
+        Audience.REPORTER,
+        Audience.ASSIGNEE,
+        Audience.RATED_ENGINEER,
+        Audience.WATCHER,
+    }
 
 
 def test_every_audience_can_be_resolved() -> None:
@@ -513,7 +550,7 @@ def test_the_reporter_of_a_ticket_they_also_follow_is_told_once() -> None:
     the assertion is on the total.
     """
     reporter = make_user()
-    engineer = make_user(UserRole.ENGINEER)
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
     incident = make_incident(
         reporter=reporter,
         assignee=engineer,
@@ -527,7 +564,9 @@ def test_the_reporter_of_a_ticket_they_also_follow_is_told_once() -> None:
     )
 
     assert [item.user_id for item in everything] == [reporter.id]
-    assert everything[0].message == "Your ticket INC-000123 is now Resolved."
+    assert everything[0].message == (
+        "Sam Senior resolved your ticket INC-000123. Please confirm the fix and rate the work."
+    )
 
 
 def test_an_assignee_who_also_follows_the_ticket_is_told_once() -> None:
@@ -597,6 +636,186 @@ def test_a_status_change_does_not_reach_a_watcher_through_the_other_rule() -> No
     assert recipients(planned) == {reporter.id}
 
 
+# --- FEEDBACK_RECEIVED: the rated engineer -----------------------------------
+
+
+def test_the_engineer_who_was_rated_is_told() -> None:
+    reporter = make_user(full_name="Robin Reporter")
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+    feedback = make_feedback(incident=incident, author=reporter, rated_user=engineer)
+
+    planned = notifications.plan(
+        NotificationType.FEEDBACK_RECEIVED,
+        NotificationContext(incident=incident, actor=reporter, feedback=feedback),
+    )
+
+    assert recipients(planned) == {engineer.id}
+    assert planned[0].message == "Robin Reporter rated your work on INC-000123."
+
+
+def test_the_rated_engineer_is_read_off_the_rating_not_the_ticket() -> None:
+    """The reason `rated_user_id` exists at all, asserted from the audience end.
+
+    A RESOLVED ticket can be reassigned — `services/assignment.can_assign`
+    blocks only CLOSED — so by the time the reporter rates the work, the
+    engineer holding the ticket may be somebody who never touched it. This
+    builds exactly that: Sam did the work and Jo holds the ticket now.
+
+    An implementation that read `incident.assignee_id` would tell Jo and
+    would pass every other test in this file, because everywhere else the two
+    are the same person.
+    """
+    reporter = make_user(full_name="Robin Reporter")
+    who_fixed_it = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    who_holds_it_now = make_user(UserRole.ENGINEER, full_name="Jo Junior")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=who_holds_it_now,
+        status=IncidentStatus.RESOLVED,
+    )
+    feedback = make_feedback(incident=incident, author=reporter, rated_user=who_fixed_it)
+
+    planned = notifications.plan(
+        NotificationType.FEEDBACK_RECEIVED,
+        NotificationContext(incident=incident, actor=reporter, feedback=feedback),
+    )
+
+    assert recipients(planned) == {who_fixed_it.id}
+
+
+def test_nobody_else_hears_that_a_rating_was_left() -> None:
+    """The negative half, and the one that matters.
+
+    A rating is the reporter's private judgement of one engineer's work.
+    Watchers of the ticket, the current assignee if that is somebody else, and
+    the reporter themselves all get nothing — the rule has exactly one
+    audience, and this is what would fail if a second were added without the
+    argument being had.
+
+    Built so that every one of those people exists on the ticket: an assertion
+    that nobody was told is satisfied by an empty ticket, so the ticket is not
+    empty.
+    """
+    reporter = make_user(full_name="Robin Reporter")
+    who_fixed_it = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    who_holds_it_now = make_user(UserRole.ENGINEER, full_name="Jo Junior")
+    onlooker = make_user(full_name="Bo Nearby")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=who_holds_it_now,
+        watchers=[onlooker],
+        status=IncidentStatus.RESOLVED,
+    )
+    feedback = make_feedback(incident=incident, author=reporter, rated_user=who_fixed_it)
+
+    planned = notifications.plan(
+        NotificationType.FEEDBACK_RECEIVED,
+        NotificationContext(incident=incident, actor=reporter, feedback=feedback),
+    )
+
+    told = recipients(planned)
+    assert told == {who_fixed_it.id}
+    assert reporter.id not in told
+    assert who_holds_it_now.id not in told
+    assert onlooker.id not in told
+
+
+def test_an_engineer_rating_their_own_ticket_is_not_told_about_it() -> None:
+    """Rule 1, in the one arrangement where it can fire for this notification.
+
+    An engineer who reported a fault at their own desk and then fixed it is
+    both the author of the rating and the person it is about. `plan()` drops a
+    recipient who is also the actor, with no line in this rule saying so.
+    """
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    incident = make_incident(
+        reporter=engineer,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+    feedback = make_feedback(incident=incident, author=engineer, rated_user=engineer)
+
+    planned = notifications.plan(
+        NotificationType.FEEDBACK_RECEIVED,
+        NotificationContext(incident=incident, actor=engineer, feedback=feedback),
+    )
+
+    assert planned == []
+
+
+def test_a_rating_notification_quotes_neither_the_score_nor_the_words() -> None:
+    """`models/notification.py`'s rule: a notification is a pointer, never a copy.
+
+    A rating is editable for fifteen minutes, so a stored "rated 2 out of 5"
+    could outlive the 2 — the same argument that keeps NOTE_ADDED from
+    quoting a note.
+
+    Asserted as **the two sentences being identical** rather than as "the
+    digit is absent", which was the first version of this test and was wrong:
+    `INC-000123` contains a 1, so a message that did quote a rating of 1 would
+    have passed. Equality across the extremes of the scale cannot be satisfied
+    by any wording that reads the score at all.
+    """
+    reporter = make_user(full_name="Robin Reporter")
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+
+    def message_for(rating: int, comment: str) -> str:
+        feedback = make_feedback(
+            incident=incident,
+            author=reporter,
+            rated_user=engineer,
+            rating=rating,
+        )
+        feedback.comment = comment
+        planned = notifications.plan(
+            NotificationType.FEEDBACK_RECEIVED,
+            NotificationContext(incident=incident, actor=reporter, feedback=feedback),
+        )
+        return planned[0].message
+
+    worst = message_for(1, "Never turned up and closed it anyway.")
+    best = message_for(5, "Fixed in ten minutes and explained the cause.")
+
+    assert worst == best
+    assert "Never turned up" not in worst
+    assert "Fixed in ten minutes" not in best
+
+
+def test_a_rating_that_never_arrived_notifies_nobody_rather_than_raising() -> None:
+    """The context without its row. Unreachable through `services/feedback.py`.
+
+    `submit` always passes the row it has just written, so this is a guard on
+    a future caller rather than on today's. It is asserted because the
+    alternative shape — an `AttributeError` on `None.rated_user_id` — would
+    turn a forgotten argument into a 500 on a ticket page rather than into a
+    notification nobody got.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER)
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.FEEDBACK_RECEIVED,
+        NotificationContext(incident=incident, actor=reporter),
+    )
+
+    assert planned == []
+
+
 # --- The wording -------------------------------------------------------------
 
 
@@ -605,7 +824,10 @@ def test_a_status_change_does_not_reach_a_watcher_through_the_other_rule() -> No
     [
         (IncidentStatus.IN_PROGRESS, "Your ticket INC-000123 is now In progress."),
         (IncidentStatus.BLOCKED, "Your ticket INC-000123 is now Blocked."),
-        (IncidentStatus.RESOLVED, "Your ticket INC-000123 is now Resolved."),
+        (
+            IncidentStatus.RESOLVED,
+            "Sam Senior resolved your ticket INC-000123. Please confirm the fix and rate the work.",
+        ),
         (IncidentStatus.CLOSED, "Your ticket INC-000123 is now Closed."),
     ],
 )
@@ -613,8 +835,16 @@ def test_the_reporter_is_told_the_new_status_in_words(
     status: IncidentStatus,
     expected: str,
 ) -> None:
+    """RESOLVED is the one that reads differently, and the three others prove it.
+
+    A resolution is the only move that wants something back from the reader —
+    confirm the fix, rate the work — so it is the only one that asks. The
+    other three are here so that a change which made *every* status carry the
+    invitation would fail: an inbox that asks for feedback on a ticket that
+    has just been blocked is worse than one that never asks.
+    """
     reporter = make_user()
-    engineer = make_user(UserRole.ENGINEER)
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
     incident = make_incident(reporter=reporter, assignee=engineer, status=status)
 
     planned = notifications.plan(
@@ -623,6 +853,32 @@ def test_the_reporter_is_told_the_new_status_in_words(
     )
 
     assert planned[0].message == expected
+
+
+def test_the_resolution_sentence_names_whoever_resolved_it_not_the_assignee() -> None:
+    """An admin may resolve a ticket on an engineer's behalf, and it should say so.
+
+    Reading `incident.assignee` instead of `context.actor` would have been the
+    easy way to write that sentence and would be wrong here — the reporter
+    would be told the engineer fixed it on a ticket the engineer never
+    touched. Both people are on the incident, so only the assertion tells them
+    apart.
+    """
+    reporter = make_user()
+    engineer = make_user(UserRole.ENGINEER, full_name="Sam Senior")
+    admin = make_user(UserRole.FACILITY_ADMIN, full_name="Henry Ford")
+    incident = make_incident(
+        reporter=reporter,
+        assignee=engineer,
+        status=IncidentStatus.RESOLVED,
+    )
+
+    planned = notifications.plan(
+        NotificationType.STATUS_CHANGED,
+        NotificationContext(incident=incident, actor=admin),
+    )
+
+    assert planned[0].message.startswith("Henry Ford resolved your ticket INC-000123.")
 
 
 def test_every_status_has_wording() -> None:
@@ -724,16 +980,21 @@ def test_a_lead_is_not_an_audience_on_every_ticket() -> None:
     assert lead.id not in recipients(planned)
 
 
-def test_users_in_capacity_reads_the_incident_and_nothing_else() -> None:
+def test_users_in_capacity_reads_the_context_and_nothing_else() -> None:
     reporter = make_user()
     engineer = make_user(UserRole.ENGINEER)
     onlooker = make_user()
     incident = make_incident(reporter=reporter, assignee=engineer, watchers=[onlooker])
+    context = NotificationContext(incident=incident, actor=reporter)
 
-    assert notifications.users_in_capacity(Audience.REPORTER, incident) == (reporter.id,)
-    assert notifications.users_in_capacity(Audience.ASSIGNEE, incident) == (engineer.id,)
-    assert notifications.users_in_capacity(Audience.WATCHER, incident) == (onlooker.id,)
+    assert notifications.users_in_capacity(Audience.REPORTER, context) == (reporter.id,)
+    assert notifications.users_in_capacity(Audience.ASSIGNEE, context) == (engineer.id,)
+    assert notifications.users_in_capacity(Audience.WATCHER, context) == (onlooker.id,)
+    # No rating on this context, so the capacity is held by nobody — the same
+    # empty tuple an unassigned ticket gives for ASSIGNEE.
+    assert notifications.users_in_capacity(Audience.RATED_ENGINEER, context) == ()
 
     bare = make_incident(reporter=reporter)
-    assert notifications.users_in_capacity(Audience.ASSIGNEE, bare) == ()
-    assert notifications.users_in_capacity(Audience.WATCHER, bare) == ()
+    bare_context = NotificationContext(incident=bare, actor=reporter)
+    assert notifications.users_in_capacity(Audience.ASSIGNEE, bare_context) == ()
+    assert notifications.users_in_capacity(Audience.WATCHER, bare_context) == ()

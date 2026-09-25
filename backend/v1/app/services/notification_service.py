@@ -5,7 +5,7 @@ what words* lives in `app/notifications.py`; this module turns a plan into
 rows and answers the four questions the inbox screen asks. If you are looking
 for the rule, it is not here.
 
-**`record` is the only way a notification is written**, and the four services
+**`record` is the only way a notification is written**, and the five services
 that call it each do so in one line that names the kind of event, never the
 recipient:
 
@@ -15,6 +15,7 @@ recipient:
 | `services/assignment.assign` | `NotificationType.ASSIGNED` |
 | `services/notes.add_note` | `NotificationType.NOTE_ADDED` |
 | `services/incident_service.clear_escalation` | `NotificationType.ESCALATION_CLEARED` |
+| `services/feedback.submit` | `NotificationType.FEEDBACK_RECEIVED` |
 
 The caller commits, like every other service here. A notification therefore
 lands in the same transaction as the event it describes: a resolve that fails
@@ -32,6 +33,7 @@ from app import notifications as rules
 from app.clock import utc_now
 from app.errors import NotFoundError
 from app.models.enums import NotificationType
+from app.models.feedback import IncidentFeedback
 from app.models.incident import Incident
 from app.models.note import IncidentNote
 from app.models.notification import Notification
@@ -47,13 +49,21 @@ def record(
     incident: Incident,
     actor: User,
     note: IncidentNote | None = None,
+    feedback: IncidentFeedback | None = None,
 ) -> list[Notification]:
     """Write whatever `app/notifications.py` says this action is worth telling.
 
     Returns the rows written, which is usually one, often none, and never more
     than one per person. The caller commits.
+
+    `note` and `feedback` are the two rows a rule may need to look at beyond
+    the incident itself — one to read a note's visibility, one to read which
+    engineer a rating is about. Each is used by exactly one rule and ignored
+    by every other, which the rule table rather than this function decides.
     """
-    context = rules.NotificationContext(incident=incident, actor=actor, note=note)
+    context = rules.NotificationContext(
+        incident=incident, actor=actor, note=note, feedback=feedback
+    )
     planned = rules.plan(notification_type, context)
 
     return [

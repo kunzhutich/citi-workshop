@@ -6,6 +6,7 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 
+import * as feedbackApi from '../../api/feedback';
 import * as incidentsApi from '../../api/incidents';
 import * as notesApi from '../../api/notes';
 import { queryKeys } from '../../api/queryKeys';
@@ -105,7 +106,7 @@ export function useIncidentSuggestions(query: incidentsApi.IncidentSuggestionQue
   });
 }
 
-/** The merged events-and-notes timeline for one ticket. */
+/** The merged events, notes and ratings timeline for one ticket. */
 export function useActivity(id: string) {
   return useQuery({
     queryKey: queryKeys.incidents.activity(id),
@@ -231,6 +232,32 @@ export function useAddNote(id: string) {
   return useMutation({
     mutationFn: (payload: { body: string; visibility: NoteVisibility }) =>
       notesApi.createNote(id, payload),
+    onSuccess: () => invalidateIncidents(queryClient),
+  });
+}
+
+/**
+ * Rate the current repair on a ticket.
+ *
+ * Invalidates the whole prefix like every other mutation here, and it has to:
+ * the rating joins the activity timeline, and `can_give_feedback` on the
+ * ticket itself has just become false, so a detail response left in the cache
+ * would keep offering a button the API would now refuse.
+ */
+export function useCreateFeedback(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: feedbackApi.FeedbackPayload) => feedbackApi.createFeedback(id, payload),
+    onSuccess: () => invalidateIncidents(queryClient),
+  });
+}
+
+/** Correct a rating, within fifteen minutes of leaving it. */
+export function useUpdateFeedback() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ feedbackId, ...payload }: feedbackApi.FeedbackPayload & { feedbackId: string }) =>
+      feedbackApi.updateFeedback(feedbackId, payload),
     onSuccess: () => invalidateIncidents(queryClient),
   });
 }

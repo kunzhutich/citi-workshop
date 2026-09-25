@@ -1,5 +1,6 @@
 import { screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ActivityEntry } from '../../api/types';
 import { renderWithAuth } from '../../test/renderWithProviders';
@@ -33,6 +34,11 @@ function event(overrides: Partial<ActivityEntry>): ActivityEntry {
     reason: null,
     body: null,
     visibility: null,
+    rating: null,
+    comment: null,
+    rated_user: null,
+    resolution_round: null,
+    can_edit: null,
     edited_at: null,
     ...overrides,
   };
@@ -40,6 +46,26 @@ function event(overrides: Partial<ActivityEntry>): ActivityEntry {
 
 function note(overrides: Partial<ActivityEntry>): ActivityEntry {
   return { ...event({}), kind: 'note', id: 'n1', event_type: null, ...overrides };
+}
+
+function feedback(overrides: Partial<ActivityEntry> = {}): ActivityEntry {
+  return {
+    ...event({}),
+    kind: 'feedback',
+    id: 'f1',
+    event_type: null,
+    rating: 4,
+    comment: 'Sorted the same afternoon.',
+    rated_user: {
+      id: 'u2',
+      full_name: 'Sam Senior',
+      email: 'sam@acme.inc',
+      role: 'ENGINEER',
+    },
+    resolution_round: 1,
+    can_edit: false,
+    ...overrides,
+  };
 }
 
 describe('events', () => {
@@ -173,5 +199,86 @@ describe('notes', () => {
     );
 
     expect(screen.getByText(/edited 3m ago/)).toBeInTheDocument();
+  });
+});
+
+describe('feedback', () => {
+  it('shows the score in words as well as in stars', () => {
+    // jsdom has no layout, so the five glyphs are untestable and would be
+    // meaningless to a screen reader anyway. The words are the assertion
+    // because the words are what carries the meaning.
+    renderWithAuth(
+      <ActivityTimeline
+        entries={[feedback({ rating: 4, comment: 'Back up within the hour.' })]}
+      />,
+    );
+
+    expect(screen.getByText('4/5 — Fixed well')).toBeInTheDocument();
+    expect(screen.getByText('Back up within the hour.')).toBeInTheDocument();
+  });
+
+  it('names the engineer the rating is about, who is not always the assignee', () => {
+    // The whole reason `rated_user` is on the entry rather than being read off
+    // the ticket: a resolved ticket can be reassigned, and the review stays
+    // with whoever did the work.
+    renderWithAuth(
+      <ActivityTimeline
+        entries={[
+          feedback({
+            rating: 2,
+            comment: 'Came back the next morning.',
+            rated_user: {
+              id: 'u9',
+              full_name: 'Priya Raman',
+              email: 'priya@acme.inc',
+              role: 'ENGINEER',
+            },
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/About Priya Raman/)).toBeInTheDocument();
+  });
+
+  it('says which repair it rates only once there has been more than one', () => {
+    const { rerender } = renderWithAuth(
+      <ActivityTimeline entries={[feedback({ resolution_round: 1 })]} />,
+    );
+    expect(screen.queryByText(/repair 1/)).not.toBeInTheDocument();
+
+    rerender(<ActivityTimeline entries={[feedback({ resolution_round: 2 })]} />);
+    expect(screen.getByText(/repair 2/)).toBeInTheDocument();
+  });
+
+  it('offers a correction only when the API says it is still possible', async () => {
+    const onEditFeedback = vi.fn();
+    const { rerender } = renderWithAuth(
+      <ActivityTimeline
+        entries={[feedback({ can_edit: false })]}
+        onEditFeedback={onEditFeedback}
+      />,
+    );
+    // The negative half, and it earns it: the same render with `can_edit`
+    // true below produces the button, so this is not an empty page passing.
+    expect(screen.queryByRole('button', { name: 'Change this' })).not.toBeInTheDocument();
+
+    rerender(
+      <ActivityTimeline entries={[feedback({ can_edit: true })]} onEditFeedback={onEditFeedback} />,
+    );
+    const button = screen.getByRole('button', { name: 'Change this' });
+    await userEvent.click(button);
+
+    expect(onEditFeedback).toHaveBeenCalledTimes(1);
+    expect(onEditFeedback.mock.calls[0][0]).toMatchObject({ kind: 'feedback' });
+  });
+
+  it('draws no correction button when there is nowhere to open one', () => {
+    // `can_edit` is true and `onEditFeedback` is absent. Without the second
+    // half of that condition this would render a button that does nothing.
+    renderWithAuth(<ActivityTimeline entries={[feedback({ can_edit: true })]} />);
+
+    expect(screen.queryByRole('button', { name: 'Change this' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Fixed well/)).toBeInTheDocument();
   });
 });

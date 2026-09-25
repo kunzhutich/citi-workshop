@@ -56,7 +56,7 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.building import Building
@@ -71,6 +71,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -781,7 +782,22 @@ def engineer_detail(session: Session, user_id: uuid.UUID, window: ReportWindow) 
     about a person rather than about the queue:
 
     * `resolved_in_period` — tickets this engineer resolved inside the window.
-      The same definition `engineer_workload` uses, so the two agree.
+
+      **Attributed by `resolved_by_id`, not by `assignee_id`.** Those are the
+      same person on every ticket that has not been reassigned *after* being
+      resolved, which `services/assignment.can_assign` permits because it
+      blocks only CLOSED. On this page that distinction stopped being
+      theoretical when S7 added a satisfaction figure beside these counts:
+      a rating is attached to whoever resolved the ticket, so a denominator
+      counted by the live assignee would have made "18 of 26 resolved rated"
+      a ratio between two different definitions of the word "resolved".
+
+      It changed no number when it was made — every resolved ticket in the
+      demo world had the two ids equal — and it cannot change one except on
+      a ticket that was handed on after the work was done, which is the case
+      it exists for. `engineer_workload` still counts by `assignee_id`, and
+      correctly: that report answers "who is free right now", which is a
+      question about who holds tickets rather than who fixed them.
     * `closed_in_period` — of those, the ones that reached CLOSED. A resolved
       ticket is the engineer's claim; a closed one is the reporter's agreement,
       or an admin's.
@@ -803,7 +819,7 @@ def engineer_detail(session: Session, user_id: uuid.UUID, window: ReportWindow) 
     *did* in the period, not which tickets happened to be raised in it.
     """
     resolved_in_window = [
-        Incident.assignee_id == user_id,
+        Incident.resolved_by_id == user_id,
         Incident.resolved_at.is_not(None),
         Incident.resolved_at >= window.date_from,
         Incident.resolved_at <= window.date_to,
@@ -822,6 +838,113 @@ def engineer_detail(session: Session, user_id: uuid.UUID, window: ReportWindow) 
     return session.execute(statement).one_or_none()
 
 
+def engineer_satisfaction(
+    session: Session, user_id: uuid.UUID, window: ReportWindow
+) -> Sequence[Row[Any]]:
+    """Return how the repairs this engineer made in the window were rated.
+
+    One row per score present, with its count, so the caller can build both
+    the average and the distribution from the same read. The zero scores are
+    filled in by `services/reporting.py`, which iterates the scale rather than
+    the result rows — the same thing `summary` does for unused statuses, and
+    for the same reason: a distribution chart missing its empty bars is a
+    chart that changes shape as the data changes.
+
+    **The window filters on `Incident.resolved_at`, not on the rating's own
+    `created_at`.** That is D5's rule applied to a new pair, and the opposite
+    of the call D29 made for the notification read rate. The difference is
+    which row is the subject: there, a notification was the thing being
+    counted, so the notification's timestamp was the one that mattered. Here
+    the subject is the engineer's *work* — the denominator beside this figure
+    is "tickets they resolved in the window" — so a rating left on the first
+    of the month for a repair made on the last of the previous one belongs to
+    the month of the repair. Windowing on the rating instead would let the
+    same fix count in a period the engineer did nothing in.
+
+    Joined from the feedback to its incident rather than the other way round,
+    and matched on **both** `rated_user_id` and `resolved_by_id`: the first is
+    what the rating is about, the second is what the counts beside it are
+    about, and the join asserts the two agree. They are written from one value
+    by `services/feedback.submit`, so a row where they differ is a bug and
+    this query declines to average it.
+    """
+    clauses: list[ColumnElement[bool]] = [
+        IncidentFeedback.rated_user_id == user_id,
+        Incident.resolved_by_id == user_id,
+        Incident.resolved_at.is_not(None),
+        Incident.resolved_at >= window.date_from,
+        Incident.resolved_at <= window.date_to,
+    ]
+    if window.building_id is not None:
+        clauses.append(Incident.building_id == window.building_id)
+
+    statement = (
+        select(IncidentFeedback.rating, func.count(IncidentFeedback.id).label("count"))
+        .join(Incident, Incident.id == IncidentFeedback.incident_id)
+        .where(*clauses)
+        .group_by(IncidentFeedback.rating)
+        .order_by(IncidentFeedback.rating)
+    )
+    return session.execute(statement).all()
+
+
+def engineer_reviews(
+    session: Session,
+    visible: Select[Any],
+    *,
+    user_id: uuid.UUID,
+    window: ReportWindow,
+    rating: int | None,
+    limit: int,
+    offset: int,
+) -> tuple[Sequence[IncidentFeedback], int]:
+    """Return one page of the ratings this engineer earned, newest first, and the total.
+
+    `visible` is the already-narrowed statement from
+    `services/visibility.apply_feedback_visibility`, handed in rather than
+    built here — the same arrangement `list_incidents` uses, and what stops a
+    reader reaching a review the filter would have removed.
+
+    Newest first, unlike the ticket timeline's oldest-first: this is a list
+    somebody scans to see what has come in lately, not a history read in
+    order.
+
+    `rating` narrows to one score, which is why anybody opens this screen with
+    a purpose: the question is almost never "show me everything", it is "show
+    me the ones who were unhappy". `total` is computed *after* it, so the
+    pager counts the filtered set rather than the whole one.
+
+    The incident is eager-loaded with its category and reporter, because every
+    row names the ticket it is about — which is the whole reason this is a
+    page rather than a column of scores.
+    """
+    scoped = visible.join(Incident, Incident.id == IncidentFeedback.incident_id).where(
+        IncidentFeedback.rated_user_id == user_id,
+        Incident.resolved_by_id == user_id,
+        Incident.resolved_at.is_not(None),
+        Incident.resolved_at >= window.date_from,
+        Incident.resolved_at <= window.date_to,
+    )
+    if window.building_id is not None:
+        scoped = scoped.where(Incident.building_id == window.building_id)
+    if rating is not None:
+        scoped = scoped.where(IncidentFeedback.rating == rating)
+
+    total = session.scalar(select(func.count()).select_from(scoped.order_by(None).subquery()))
+
+    rows = session.scalars(
+        scoped.options(
+            selectinload(IncidentFeedback.author),
+            selectinload(IncidentFeedback.incident).selectinload(Incident.category),
+        )
+        .order_by(IncidentFeedback.created_at.desc(), IncidentFeedback.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).unique()
+
+    return list(rows), total or 0
+
+
 def engineer_resolved_by_group(
     session: Session, user_id: uuid.UUID, window: ReportWindow
 ) -> Sequence[Row[Any]]:
@@ -837,7 +960,9 @@ def engineer_resolved_by_group(
     """
     parent = aliased(Category)
     clauses: list[ColumnElement[bool]] = [
-        Incident.assignee_id == user_id,
+        # `resolved_by_id`, matching `engineer_detail` above — the two are
+        # read side by side on one page and must count the same tickets.
+        Incident.resolved_by_id == user_id,
         Incident.resolved_at.is_not(None),
         Incident.resolved_at >= window.date_from,
         Incident.resolved_at <= window.date_to,

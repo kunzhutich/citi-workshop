@@ -401,6 +401,27 @@ Click **"Confirm fixed"**.
 > and the reopen counted. And she has seven days to change her mind — after that, closed is
 > final and the button is gone."
 
+**Then press "Rate the work"** — still there, because closing the ticket did not take it
+away. Give it four stars and a sentence.
+
+> "Two things worth noticing. The comment is required at *every* score, not just the bad
+> ones — a five with no words teaches nobody anything, and making praise free while
+> complaining costs a paragraph is how an average stops meaning anything. And this button
+> survived the ticket closing: the rating window is fourteen days from the repair, and it
+> is deliberately not tied to the close. Tying them would have let the engineer close
+> their own ticket and lock out their own review."
+
+The rating joins the activity timeline, under the events and the note.
+
+> "And the audience for it is narrower than for anything else in this application. Nina
+> can read it, her lead can, Henry can — and another engineer at Nina's level cannot, even
+> on a ticket they are working. Engineers do see each other's *scores*; the sentences are
+> a different question."
+
+*If you have a fourth window,* sign in as **Omar** (a senior, like Nina) and open the same
+ticket — the events and notes are all there and the review is not. That contrast is the
+most convincing thirty seconds in this section.
+
 ---
 
 ### Act 4 — Henry sees all of it at once (3:25 – 5:00)
@@ -556,7 +577,19 @@ Each of these is one extra minute and shows something the main script skips.
 - **The same screens at 375 px.** Narrow the window: the sidebar becomes a bottom bar, the
   ticket table becomes cards, dialogs go full-screen, and the ticket's action buttons move
   into a sticky bar at the bottom of the screen.
-- **The API itself** — <http://localhost:8000/api/v1/docs>. 45 paths, 65 operations, and
+- **An engineer's record.** Sign in as Henry and open **Engineers → Nina Alvarez**. Stars
+  sit beside her name; under them, "*N* of *M* resolved rated in this period" opens the
+  reviews. The distribution there is the filter — click "2 stars" to see only the unhappy
+  ones, which is what anybody actually opens that screen for. Every row links to the
+  ticket and carries two timestamps: when the repair was made, and when the reporter got
+  round to rating it.
+- **A ticket that closed itself.** Search the list for one whose timeline ends
+  "**System** · Status changed: Resolved → Closed" — the details card reads "Closed
+  automatically after a week with no reply". Nobody pressed anything: a resolved ticket
+  nobody comes back to closes after seven days of silence, and the clock restarts on any
+  public note. There is no scheduler in this deployment, so the check runs when somebody
+  lists tickets.
+- **The API itself** — <http://localhost:8000/api/v1/docs>. 51 paths, 73 operations, and
   `GET /incidents/{id}/allowed-transitions` is the one the frontend leans on.
   `docs_url` is mounted unconditionally in `backend/v1/app/main.py`, so the deployed
   equivalent is `https://d3jo3ezb7ss05m.cloudfront.net/api/v1/docs` — **not yet opened in

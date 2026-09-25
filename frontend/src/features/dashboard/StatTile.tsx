@@ -13,7 +13,7 @@ import { Link as RouterLink } from 'react-router-dom';
  * with two `<Typography>`s in it. A dashboard tile reading "Blocked · 21"
  * under a "last 30 days" filter is a lie if that 21 is every blocked ticket
  * there has ever been, and that exact confusion is what decision D9 in
- * `docs/DECISION-LOG.md` was raised to fix in the API. `caption` is where the
+ * `readme/DECISION-LOG.md` was raised to fix in the API. `caption` is where the
  * tile says which of the two it is — "right now" or "reported 25 Aug – 23 Sep"
  * — and it is a required prop for that reason: a tile cannot be added without
  * someone deciding what its number is scoped to.

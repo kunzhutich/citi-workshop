@@ -76,6 +76,11 @@ class CloseReason(StrEnum):
     INVALID = "INVALID"
     CANCELLED_BY_REPORTER = "CANCELLED_BY_REPORTER"
     ADMIN_CLOSED = "ADMIN_CLOSED"
+    #: Nobody closed it. A resolved ticket that went quiet for a week is
+    #: closed by ``services/autoclose.py``, and this is what makes that a fact
+    #: in the data rather than something a reader has to infer from an audit
+    #: row with no actor. Added by revision 0008.
+    SYSTEM_CLOSED = "SYSTEM_CLOSED"
 
 
 class NoteVisibility(StrEnum):
@@ -149,6 +154,10 @@ class NotificationType(StrEnum):
     #: two triggers differ: the reporter and the assignee hear about every
     #: move, and a watcher hears about exactly one. See ``app/notifications.py``.
     WATCHED_RESOLVED = "WATCHED_RESOLVED"
+    #: The reporter rated the work on a ticket. Told to the engineer who was
+    #: rated, who is not necessarily the engineer holding the ticket now — see
+    #: ``Incident.resolved_by_id`` and ``app/notifications.py``.
+    FEEDBACK_RECEIVED = "FEEDBACK_RECEIVED"
 
 
 #: PostgreSQL type name -> Python enum. The single source of truth for which
@@ -157,7 +166,8 @@ class NotificationType(StrEnum):
 #: adds it (``notification_type`` by revision 0005), because 0001 has already
 #: run everywhere it is ever going to run. A *member* added later is likewise
 #: an ``ALTER TYPE ... ADD VALUE`` in its own revision (WATCHED_RESOLVED by
-#: revision 0006), never a quiet edit to the one that created the type.
+#: revision 0006, FEEDBACK_RECEIVED by 0007), never a quiet edit to the one
+#: that created the type.
 ENUM_TYPES: dict[str, type[StrEnum]] = {
     "user_role": UserRole,
     "engineer_level": EngineerLevel,

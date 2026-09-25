@@ -14,7 +14,7 @@ import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { ComponentType } from 'react';
 
 import type { CurrentUser, EngineerLevel } from '../api/types';
-import { paths } from '../routes';
+import { engineerPath, paths } from '../routes';
 
 /**
  * Who sees which navigation items.
@@ -115,6 +115,28 @@ function adminNavItems(): NavItem[] {
  * path, and `features/incidents/backTarget.ts` names a screen. They share this
  * function so that "which screen am I on?" is decided once.
  */
+/**
+ * Where an engineer's own profile page is, or null for everybody else.
+ *
+ * The page it points at — `/engineers/:userId` — has been reachable by any
+ * member of staff since R7, and `GET /reports/engineers/{id}` is `STAFF_ONLY`
+ * for exactly that reason: *"a LEAD opens it to decide who to hand work to,
+ * an admin to see how somebody is doing, and an engineer on themselves."*
+ * What was missing was a way to get there without knowing the URL. This is it.
+ *
+ * **Engineers only, and an admin is not an omission.** The page is built from
+ * an engineer profile — level, specialties, capacity, what they resolved — and
+ * an admin has no such row, so the link would lead them to a page about
+ * nobody. An admin reaches any engineer's page from the roster instead.
+ *
+ * A function here rather than a condition in each menu, because there are two
+ * account surfaces — the desktop avatar menu and the mobile drawer — and a
+ * rule written twice is a rule one of them will eventually get wrong.
+ */
+export function profilePathFor(user: CurrentUser): string | null {
+  return user.role === 'ENGINEER' ? engineerPath(user.id) : null;
+}
+
 export function activeNavItem(pathname: string, items: NavItem[]): NavItem | undefined {
   const matches = items
     .filter((item) =>

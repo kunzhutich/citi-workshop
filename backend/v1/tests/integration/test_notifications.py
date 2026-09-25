@@ -136,7 +136,10 @@ def test_resolving_tells_the_reporter_and_not_the_engineer_who_did_it(
     reporter_inbox = inbox(db_session, reporter)
     assert len(reporter_inbox) == 1
     assert reporter_inbox[0].type == NotificationType.STATUS_CHANGED
-    assert reporter_inbox[0].message == f"Your ticket {ticket.reference} is now Resolved."
+    assert reporter_inbox[0].message == (
+        f"Sam Senior resolved your ticket {ticket.reference}. "
+        "Please confirm the fix and rate the work."
+    )
     assert reporter_inbox[0].read_at is None
     assert reporter_inbox[0].incident_id == ticket.id
     assert inbox(db_session, engineer) == []
@@ -878,6 +881,14 @@ def test_the_message_is_stored_not_re_rendered(
     The sentence was true when it was sent, and an inbox that silently
     rewrites its own history is worse than one that is out of date. The row's
     `incident_status` is where the reader sees where the ticket stands now.
+
+    The stored sentence here is the resolution one, which also carries an
+    invitation to rate the work — and by the time this assertion runs the
+    ticket has been reopened, so that invitation can no longer be acted on.
+    That is deliberate and is the distinction this test now also pins: the
+    *claim* ("is now Resolved") must not be rewritten because it would become
+    false, while an *instruction* merely becomes moot. `services/feedback.py`
+    decides whether it can still be acted on, not the sentence.
     """
     engineer_token = login(client, engineer.email)
     client.post(
@@ -895,7 +906,8 @@ def test_the_message_is_stored_not_re_rendered(
     items = client.get("/api/v1/notifications", headers=auth_header(reporter_token)).json()["items"]
 
     assert [item["message"] for item in items] == [
-        f"Your ticket {ticket.reference} is now Resolved."
+        f"Sam Senior resolved your ticket {ticket.reference}. "
+        "Please confirm the fix and rate the work."
     ]
     assert items[0]["incident_status"] == "IN_PROGRESS"
 

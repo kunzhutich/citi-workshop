@@ -22,12 +22,14 @@ from app.models.enums import (
     EngineerLevel,
     EventType,
     IncidentStatus,
+    NoteVisibility,
     UserRole,
 )
 from app.models.incident import Incident
+from app.models.note import IncidentNote
 from app.models.user import User
 from app.schemas.incident import TransitionRequest
-from app.workflow import TRANSITIONS, Actor, Transition
+from app.workflow import AUTOCLOSE_AFTER, TRANSITIONS, Actor, Transition
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
@@ -52,15 +54,44 @@ def make_incident(
     reporter_id: uuid.UUID | None = None,
     assignee_id: uuid.UUID | None = None,
     closed_at: datetime | None = None,
+    resolved_at: datetime | None = None,
+    notes: list[IncidentNote] | None = None,
 ) -> Incident:
-    """Build a transient incident in the given state."""
-    return Incident(
+    """Build a transient incident in the given state.
+
+    `notes` stands in for the relationship `Incident.last_public_note_at`
+    reads, which the auto-close guard reads through. Nothing here is flushed,
+    which is the property this whole file rests on: the workflow table is
+    checkable without a session, and the newest guard did not change that.
+    """
+    incident = Incident(
         id=uuid.uuid4(),
         status=status,
         reporter_id=reporter_id or uuid.uuid4(),
         assignee_id=assignee_id,
         closed_at=closed_at,
+        resolved_at=resolved_at,
         reopen_count=0,
+    )
+    incident.notes = notes or []
+    return incident
+
+
+def note(
+    *,
+    created_at: datetime,
+    visibility: NoteVisibility = NoteVisibility.PUBLIC,
+    deleted_at: datetime | None = None,
+) -> IncidentNote:
+    """Build a transient note, for the guard that reads them."""
+    return IncidentNote(
+        id=uuid.uuid4(),
+        incident_id=uuid.uuid4(),
+        author_id=uuid.uuid4(),
+        body="Checking this is still holding up.",
+        visibility=visibility,
+        deleted_at=deleted_at,
+        created_at=created_at,
     )
 
 
@@ -73,6 +104,11 @@ def satisfying_incident(transition: Transition, *, actor_id: uuid.UUID) -> Incid
         assignee_id=actor_id,
         # "Reopen" is guarded on the 7-day window.
         closed_at=NOW - timedelta(days=1),
+        # "Close automatically" is guarded on the ticket having been quiet for
+        # longer than that — so this has to be *outside* the window the line
+        # above is inside. One row's satisfying state is another's blocked
+        # one, which is why this helper takes the transition at all.
+        resolved_at=NOW - workflow.AUTOCLOSE_AFTER - timedelta(days=1),
     )
 
 
@@ -354,3 +390,118 @@ def test_available_transitions_offers_each_status_once() -> None:
     statuses = [transition.to_status for transition in offered]
 
     assert len(statuses) == len(set(statuses))
+
+
+# --- The auto-close guard -----------------------------------------------------
+
+
+def test_the_quiet_clock_runs_from_the_repair() -> None:
+    incident = make_incident(IncidentStatus.RESOLVED, resolved_at=NOW - timedelta(days=3))
+
+    assert workflow.autoclose_deadline(incident) == NOW - timedelta(days=3) + AUTOCLOSE_AFTER
+
+
+def test_a_ticket_that_was_never_resolved_has_no_deadline() -> None:
+    """`None` rather than something far in the future, so a caller must handle it.
+
+    A sentinel date would make "not a candidate" indistinguishable from "due
+    in a hundred years", and the sweep would be one comparison away from
+    closing tickets that were never fixed.
+    """
+    assert workflow.autoclose_deadline(make_incident(IncidentStatus.OPEN)) is None
+
+
+def test_a_public_note_pushes_the_deadline_out() -> None:
+    """The rule that makes an automatic close housekeeping rather than a filing error."""
+    resolved_at = NOW - timedelta(days=30)
+    spoke_at = NOW - timedelta(days=1)
+    incident = make_incident(
+        IncidentStatus.RESOLVED,
+        resolved_at=resolved_at,
+        notes=[note(created_at=spoke_at)],
+    )
+
+    assert workflow.autoclose_deadline(incident) == spoke_at + AUTOCLOSE_AFTER
+
+
+def test_an_internal_note_does_not() -> None:
+    """The reporter cannot see one, so it is not evidence anybody is waiting.
+
+    Asserted against the same instant the public case uses, so the only
+    difference between the two is the visibility.
+    """
+    resolved_at = NOW - timedelta(days=30)
+    incident = make_incident(
+        IncidentStatus.RESOLVED,
+        resolved_at=resolved_at,
+        notes=[note(created_at=NOW - timedelta(days=1), visibility=NoteVisibility.INTERNAL)],
+    )
+
+    assert workflow.autoclose_deadline(incident) == resolved_at + AUTOCLOSE_AFTER
+
+
+def test_a_deleted_note_does_not_either() -> None:
+    """A note nobody can read is not a conversation."""
+    resolved_at = NOW - timedelta(days=30)
+    incident = make_incident(
+        IncidentStatus.RESOLVED,
+        resolved_at=resolved_at,
+        notes=[note(created_at=NOW - timedelta(days=1), deleted_at=NOW - timedelta(hours=1))],
+    )
+
+    assert workflow.autoclose_deadline(incident) == resolved_at + AUTOCLOSE_AFTER
+
+
+def test_a_note_written_before_the_repair_does_not_move_it() -> None:
+    """Only silence *since* the fix counts.
+
+    Every ticket has notes from while it was being worked on; if those
+    restarted the clock, a ticket would close seven days after the last thing
+    anybody said during the repair rather than seven days after the repair —
+    earlier than intended on a long job, and never later.
+    """
+    resolved_at = NOW - timedelta(days=10)
+    incident = make_incident(
+        IncidentStatus.RESOLVED,
+        resolved_at=resolved_at,
+        notes=[note(created_at=resolved_at - timedelta(days=2))],
+    )
+
+    assert workflow.autoclose_deadline(incident) == resolved_at + AUTOCLOSE_AFTER
+
+
+def test_the_guard_refuses_a_ticket_that_is_not_due_yet() -> None:
+    transition = workflow.select_transition(
+        IncidentStatus.RESOLVED, IncidentStatus.CLOSED, frozenset({Actor.SYSTEM})
+    )
+    assert transition is not None
+
+    early = make_incident(
+        IncidentStatus.RESOLVED, resolved_at=NOW - AUTOCLOSE_AFTER + timedelta(hours=1)
+    )
+    assert workflow.check_guard(transition, early, NOW) is not None
+
+    due = make_incident(
+        IncidentStatus.RESOLVED, resolved_at=NOW - AUTOCLOSE_AFTER - timedelta(hours=1)
+    )
+    assert workflow.check_guard(transition, due, NOW) is None
+
+
+def test_no_human_actor_can_reach_the_autoclose_row() -> None:
+    """The whole reason `Actor.SYSTEM` exists.
+
+    Asserted over every other member of `Actor` rather than over the three we
+    happen to have, so a fourth human capacity added later cannot quietly
+    acquire the ability to close tickets on the system's behalf.
+    """
+    incident = make_incident(
+        IncidentStatus.RESOLVED,
+        resolved_at=NOW - AUTOCLOSE_AFTER - timedelta(days=1),
+    )
+
+    for actor in Actor:
+        if actor is Actor.SYSTEM:
+            continue
+        offered = workflow.available_transitions(incident, frozenset({actor}), NOW)
+        labels = {row.action_label for row in offered}
+        assert "Close automatically" not in labels, actor

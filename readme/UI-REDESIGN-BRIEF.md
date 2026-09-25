@@ -245,7 +245,7 @@ log:
   will confuse everyone.
 - **Every request for help is recorded on the engineer's profile**, per 6.1.
 
-Read `docs/PROJECT-GUIDE.md` Part I §3 (the rule-to-file map) and the workflow
+Read `readme/PROJECT-GUIDE.md` Part I §3 (the rule-to-file map) and the workflow
 section before designing this.
 
 ### 6.4 Should availability go BUSY automatically?

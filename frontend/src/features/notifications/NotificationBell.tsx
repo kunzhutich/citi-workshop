@@ -31,7 +31,7 @@ const BADGE_MAX = 99;
  * every thirty seconds, on every screen. The trade is that a screen-reader
  * user learns of a notification when they next reach the bell rather than the
  * moment it arrives; it is recorded as a known limitation in
- * `docs/DEPLOYMENT-CHECKLIST.md` rather than left as an accident.
+ * `readme/DEPLOYMENT-CHECKLIST.md` rather than left as an accident.
  */
 export function NotificationBell() {
   const { data } = useUnreadCount();

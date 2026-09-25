@@ -45,6 +45,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.event import IncidentEvent
+from app.models.feedback import IncidentFeedback
 from app.models.floor import Floor
 from app.models.incident import Incident
 from app.models.note import IncidentNote
@@ -65,10 +66,17 @@ from app.schemas.incident import (
     SuggestionQuery,
     TransitionRequest,
 )
+from app.services import feedback as feedback_service
 from app.services import notes as note_service
 from app.services import notification_service
 from app.services.visibility import apply_incident_visibility
 from app.workflow import Transition
+
+#: One entry in the merged activity timeline, whichever table it came from.
+#: A union rather than a common base class, because the three have almost no
+#: columns in common beyond `created_at` — which is the one thing
+#: `load_activity` needs and the reason it can sort them together at all.
+ActivityRow = IncidentEvent | IncidentNote | IncidentFeedback
 
 #: Fields of `IncidentUpdate` that describe what the problem is and where it
 #: is. They share one permission; `priority` has its own.
@@ -239,18 +247,26 @@ def load_activity(
     *,
     incident: Incident,
     user: User,
-) -> list[IncidentEvent | IncidentNote]:
-    """Return the incident's events and readable notes as one timeline.
+) -> list[ActivityRow]:
+    """Return the incident's events, readable notes and readable ratings as one timeline.
 
-    Merged in Python rather than with a SQL `UNION`: the two tables have
-    almost no columns in common, so a union would mean padding both sides with
+    Merged in Python rather than with a SQL `UNION`: the three tables have
+    almost no columns in common, so a union would mean padding every side with
     nulls to make the shapes match, and the result is a page of a single
     ticket's history — tens of rows, not thousands.
+
+    **Two of the three sources are filtered and they are filtered
+    differently.** Notes go through `apply_note_visibility`, which asks only
+    what the reader is; ratings go through `apply_feedback_visibility`, which
+    also asks who each row is about. Both filters are applied to their query
+    by the service that owns them, so nothing here has to remember them — this
+    function sorts, and decides nothing.
     """
     events = repository.list_events(session, incident.id)
     notes = note_service.list_notes(session, incident=incident, user=user)
+    ratings = feedback_service.list_for_incident(session, incident=incident, user=user)
 
-    timeline: list[IncidentEvent | IncidentNote] = [*events, *notes]
+    timeline: list[ActivityRow] = [*events, *notes, *ratings]
     timeline.sort(key=lambda entry: entry.created_at)
     return timeline
 
@@ -261,7 +277,7 @@ _USER_VALUED_EVENTS = frozenset({EventType.ASSIGNED, EventType.UNASSIGNED})
 
 def resolve_event_labels(
     session: Session,
-    timeline: Sequence[IncidentEvent | IncidentNote],
+    timeline: Sequence[ActivityRow],
 ) -> dict[str, str]:
     """Return ``{user id: full name}`` for every id an event refers to.
 
@@ -769,6 +785,69 @@ def perform_transition(
     return repository.reload(session, incident)
 
 
+def apply_system_transition(
+    session: Session,
+    *,
+    incident: Incident,
+    transition: Transition,
+    close_reason: CloseReason | None,
+    now: datetime,
+) -> Incident:
+    """Perform a transition the application makes with no user behind it.
+
+    The sibling of `perform_transition`, and the differences are the point.
+
+    **No permission check, because there is no caller to check.** The
+    permission question is answered by which rows name `Actor.SYSTEM` in
+    `app/workflow.py` — one, today — and `resolve_actors` can never return
+    SYSTEM for a `User`, so nothing reachable from an endpoint arrives here.
+
+    **No guard check either**, and that is the one thing worth reading twice.
+    The guard belongs to the caller: `services/autoclose.py` evaluates it per
+    candidate and skips the ones that fail, because a sweep over fifty
+    tickets wants to *pass over* the ones that are not due rather than raise
+    on the first. `perform_transition` raises instead, because a person who
+    pressed a button deserves to be told why it did not work.
+
+    **The same effects, from the same function.** `_apply_transition_effects`
+    is what makes this a real closure — `closed_at`, the close reason, the
+    blocked fields cleared — rather than a second, drifting idea of what
+    CLOSED means.
+
+    The audit row carries `actor_id=None`, which is what the column has always
+    allowed and what `ActivityTimeline` already renders as "System". The
+    caller commits.
+    """
+    previous_status = incident.status
+
+    _apply_transition_effects(
+        incident,
+        transition=transition,
+        payload=TransitionRequest(to_status=transition.to_status),
+        close_reason=close_reason,
+        duplicate_of=None,
+        now=now,
+    )
+
+    repository.add_event(
+        session,
+        incident_id=incident.id,
+        actor_id=None,
+        event_type=transition.event_type,
+        from_value=previous_status.value,
+        to_value=transition.to_status.value,
+        # The same instant `_apply_transition_effects` wrote to `closed_at`.
+        # The default `clock_timestamp()` would be a second later, which is
+        # harmless in production and wrong in the demo seed, where `now` is
+        # the moment the whole world is pinned to.
+        created_at=now,
+    )
+
+    # Nobody is notified. See `services/autoclose.py` on why, and D31 on the
+    # general shape of that decision.
+    return incident
+
+
 def _describe(
     incident: Incident,
     actors: frozenset[workflow.Actor],
@@ -882,6 +961,7 @@ def _apply_transition_effects(
     if transition.to_status == IncidentStatus.IN_PROGRESS:
         incident.acknowledged_at = incident.acknowledged_at or now
         incident.resolved_at = None
+        incident.resolved_by_id = None
         incident.closed_at = None
         incident.close_reason = None
         incident.duplicate_of_id = None
@@ -889,6 +969,13 @@ def _apply_transition_effects(
     if transition.to_status == IncidentStatus.RESOLVED:
         incident.resolved_at = now
         incident.resolution_summary = payload.resolution_summary
+        # Who the fix belongs to, frozen here because `assignee_id` does not
+        # stay frozen: an admin or a lead may reassign a RESOLVED ticket, and
+        # `services/feedback.py` copies this onto every rating so a review
+        # cannot drift onto an engineer who never touched the problem. Cleared
+        # again above on the way back into IN_PROGRESS, beside `resolved_at`
+        # and for the same reason — a reopened ticket has no current fix.
+        incident.resolved_by_id = incident.assignee_id
 
     if transition.to_status == IncidentStatus.CLOSED:
         incident.closed_at = now

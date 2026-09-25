@@ -7,7 +7,7 @@ A Citi coding-workshop submission built **inside the provided scaffold** at
 incident management platform for "ACME Inc." (employees report workplace/facility
 issues; admins define facilities and assign work; engineers resolve tickets).
 
-The full build plan lives in [docs/BUILD-PLAN.md](docs/BUILD-PLAN.md). Read it before
+The full build plan lives in [readme/BUILD-PLAN.md](readme/BUILD-PLAN.md). Read it before
 starting a phase.
 
 **This repo is not an empty starter.** `infra/` and `bin/` are pre-built, and the AWS
@@ -130,7 +130,7 @@ exists. Deployment is Lambda Function URLs behind CloudFront — there is no API
 **Deployed and live (2026-09-23): <https://d3jo3ezb7ss05m.cloudfront.net>** — Lambda
 `coding-workshop-v1-1bd1dfd7`, Aurora `coding-workshop-rds-1bd1dfd7`, account `332991882156`
 (shared with other participants), `us-east-2`. The IAM boundary permits everything `infra/`
-asks for. See `docs/BUILD-STATUS.md` § "The AWS deployment" and `docs/DEPLOYMENT-CHECKLIST.md`,
+asks for. See `readme/BUILD-STATUS.md` § "The AWS deployment" and `readme/DEPLOYMENT-CHECKLIST.md`,
 where 30 of 68 cloud checks now carry an observation and 36 do not.
 
 Permitted `infra/` edits, kept minimal and commented:
@@ -203,13 +203,13 @@ per phase.
   **vertical slice** (migration → endpoint → test → screen) so the app is demoable
   end-to-end at all times.
 
-## The living guide — `docs/PROJECT-GUIDE.md`
+## The living guide — `readme/PROJECT-GUIDE.md`
 
 This project has a second audience beyond the graders: **the repo owner, who needs to
 understand every part of it in depth after it is built.** Assume they did not write the
 code and will read the guide cold.
 
-Maintain `docs/PROJECT-GUIDE.md` **as you build, not afterwards.** Every phase's
+Maintain `readme/PROJECT-GUIDE.md` **as you build, not afterwards.** Every phase's
 stop-and-summarize step includes appending that phase's section. A guide written at the
 end from memory is worth a fraction of one written while the reasoning is fresh.
 

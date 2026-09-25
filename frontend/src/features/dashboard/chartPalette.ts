@@ -194,7 +194,7 @@ export interface CategoricalSlice extends FoldableRow {
 /**
  * Fit any number of categories into the three colours this palette validated.
  *
- * **The remedy [D57](../../../../docs/DECISION-LOG.md) named**, made into a
+ * **The remedy [D57](../../../../readme/DECISION-LOG.md) named**, made into a
  * function because R7 needed it a second time. Three is the cap and it is not
  * a coincidence — the reference order clears the all-pairs gates for its first
  * three slots and not beyond, and a pie is an all-pairs chart — so the entry
