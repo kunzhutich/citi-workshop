@@ -15,7 +15,7 @@ import { defineConfig, devices } from '@playwright/test';
  * anyone having to remember.
  *
  * `??=`, so an explicit environment variable still wins. That is how the
- * deployed smoke run in `docs/DEPLOYMENT-CHECKLIST.md` points the same suite
+ * deployed smoke run in `readme/DEPLOYMENT-CHECKLIST.md` points the same suite
  * at a different stack. The password is the one `seed_demo` gives every
  * account it invents and is already published in
  * `src/features/auth/demoAccounts.ts`; this is a local sandbox, and if this

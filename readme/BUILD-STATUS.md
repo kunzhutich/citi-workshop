@@ -1,8 +1,18 @@
 # Build status
 
 **The build is finished.** Every phase that was going to be built has been built:
-the MVP `M1`–`M8`, then two stretch phases, `S6` (hardening) and `S1` (in-app
-notifications). Nothing is in progress and no further features are planned.
+the MVP `M1`–`M8`, the redesign `R1`–`R7`, and four stretch phases — `S6`
+(hardening), `S1` (in-app notifications), `S4` (similar-ticket suggestions and
+watchers) and `S7` (reporter feedback, engineer ratings and auto-close). Nothing
+is in progress and no further features are planned.
+
+> **This file stops at S1.** It was the running log of the MVP and the first two
+> stretch phases, and it was not resumed for the redesign or for S4 and S7 —
+> those phases recorded themselves in
+> [`DECISION-LOG.md`](DECISION-LOG.md) (D44–D72) and in
+> [`PROJECT-GUIDE.md` Part II](PROJECT-GUIDE.md), which is where the per-phase
+> account now lives. Everything below is accurate as of S1 and is left as
+> written, for the reason the next paragraph gives.
 
 This file was written **during** the build, appended after every verified step,
 so that a session resumed after a machine restart could reconstruct its position
@@ -238,12 +248,12 @@ there.
 verified by signing in as `henry@acme.inc` and confirming a wrong password
 returns 401 with the lockout counter live. Category seeding reported 37 already
 present and 0 created, so the action is idempotent as documented. Both
-databases are now at head; the demo script in `docs/DEMO-SCRIPT.md` works
+databases are now at head; the demo script in `readme/DEMO-SCRIPT.md` works
 without any migration step.
 
 **M8 verified:** `README.md` rewritten for this application (281 lines, ~160 of
 them the upstream Citi template, → ~615 lines that are about what was built);
-`docs/DEMO-SCRIPT.md` written; D15–D18 appended to the decision log; an M8
+`readme/DEMO-SCRIPT.md` written; D15–D18 appended to the decision log; an M8
 section appended to the project guide. **No application file changed in this
 phase** — `git diff m7-dashboards-demo-data..` touches `README.md` and four
 files under `docs/` and nothing else — so the 683 / 271 / 25 figures carry over
@@ -273,7 +283,7 @@ the default 30-day period, 26 unassigned over 24 h, 318 incidents).
    newer" and names all three.
 
 **Done in a second M8 pass:** BUILD-PLAN §15's *front section* on
-`docs/PROJECT-GUIDE.md`. The guide is now in two parts. **Part I** (~1,310 lines)
+`readme/PROJECT-GUIDE.md`. The guide is now in two parts. **Part I** (~1,310 lines)
 is a single coherent account of the system as it stands: a system overview
 separating what the scaffold and the IAM boundary forced from what was chosen, the
 ten tables as a narrative in the order that makes them make sense, the complete
@@ -470,7 +480,7 @@ Nothing is left to build.
   `POSTGRES_TEST_NAME`; check `pgrep -af pytest` before starting.
 - Do not push to `upstream` (the Citi template). `origin` is the owner's repo.
 - Do not merge anything to `main`.
-- Infra edits are limited to the **four** recorded in `docs/INFRA-CHANGES.md`.
+- Infra edits are limited to the **four** recorded in `readme/INFRA-CHANGES.md`.
   The fourth (`compress`) was proposed, put to the workshop organisers, approved
   and applied — see [D37](DECISION-LOG.md). It is no longer pending.
 - Commit after every verified step, not at phase end — the VDI may stop without
@@ -585,7 +595,7 @@ This was predicted in the checklist and is now confirmed.
 **The mitigation for a demonstration is to load the page about a minute
 beforehand.** Raising `min_capacity` to 0.5 would also work, but it costs money
 continuously on a shared sandbox account and deviates from the scaffold's
-default, so it was declined. `docs/DEMO-SCRIPT.md` carries the warning where
+default, so it was declined. `readme/DEMO-SCRIPT.md` carries the warning where
 somebody running a demo will actually see it.
 
 ### Two bugs found by deploying, and only by deploying

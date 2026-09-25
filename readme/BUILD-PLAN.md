@@ -9,7 +9,7 @@
 Build one phase at a time (Section 15). At the end of each phase, **stop** and:
 
 1. Summarize what was built, what was tested, and anything that deviated from this plan.
-2. **Append that phase's section to `docs/PROJECT-GUIDE.md`** — the living guide for the
+2. **Append that phase's section to `readme/PROJECT-GUIDE.md`** — the living guide for the
    repo owner, written while the reasoning is fresh. Its required contents are specified in
    [CLAUDE.md](../CLAUDE.md#the-living-guide--docsproject-guidemd). This is part of the
    phase, not optional polish: a phase is not complete until its guide section exists.
@@ -49,13 +49,13 @@ TS-aware `eslint.config.js`).
 ## 2. Repository layout
 
 We build inside the existing scaffold. Only `backend/v1/`, `frontend/src/`, `CLAUDE.md`,
-`docs/BUILD-PLAN.md` and three small `infra/` edits are ours.
+`readme/BUILD-PLAN.md` and three small `infra/` edits are ours.
 
 ```
 coding-workshop-participant/
 ├── CLAUDE.md
-├── docs/BUILD-PLAN.md      # this file
-├── docs/PROJECT-GUIDE.md   # living guide, appended each phase
+├── readme/BUILD-PLAN.md      # this file
+├── readme/PROJECT-GUIDE.md   # living guide, appended each phase
 ├── backend/v1/            # the single auto-discovered Lambda
 │   ├── function.py        # handler = Mangum(app) + ops dispatch
 │   ├── requirements.txt
@@ -627,7 +627,7 @@ Deploy, seed and verify on AWS. README with setup, architecture diagram, role/pe
 summary, test commands and results, and known limitations. A 5-minute demo script walking
 one ticket's life across all three personas, then the admin dashboard.
 
-Finalize `docs/PROJECT-GUIDE.md`: add a front section that reads as a single coherent
+Finalize `readme/PROJECT-GUIDE.md`: add a front section that reads as a single coherent
 introduction rather than eight stitched-together phase logs — a system overview, the data
 model narrative, the complete rule-to-file map, an end-to-end request trace, and the merged
 glossary. Verify every file path and code excerpt in it still matches the code.

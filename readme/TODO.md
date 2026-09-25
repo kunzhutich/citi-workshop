@@ -34,7 +34,7 @@ Settle these before writing code, and log the answers:
   Two things called "escalate" meaning different things will confuse everyone.
 - Every request for help should appear on the engineer's page (§6.1, built).
 
-Read `docs/PROJECT-GUIDE.md` Part I §3 (the rule-to-file map) and the workflow
+Read `readme/PROJECT-GUIDE.md` Part I §3 (the rule-to-file map) and the workflow
 section first. Reasoning: [D59](DECISION-LOG.md#d59--section-6-an-engineer-is-a-page-and-the-demo-world-grew-to-fill-it).
 
 ## 2. Automatic BUSY at capacity

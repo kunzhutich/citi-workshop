@@ -38,7 +38,7 @@ export interface EngineerDialogProps {
  * plus an `onUpdate` its one caller had to satisfy with a resolved promise.
  *
  * A dialog is the right shape for creating and the wrong shape for editing,
- * which is [D59](../../../../docs/DECISION-LOG.md)'s point: you fill this in
+ * which is [D59](../../../../readme/DECISION-LOG.md)'s point: you fill this in
  * once, you get a temporary password, you are done. Editing is a question
  * about a person you are looking at, and a modal cannot show you the person.
  *

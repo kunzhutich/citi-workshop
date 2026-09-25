@@ -11,10 +11,11 @@ take, and what is stuck.
 Built inside the [Citi coding-workshop scaffold](#upstream-scaffold-and-licence) — see
 that section for what is ours and what is the template's.
 
-**Status.** The build is complete: the MVP (**M1–M8**) plus two stretch phases,
-**S6** (hardening — accessibility, error boundaries, a real 404, login lockout, structured
-logging) and **S1** (in-app notifications). All of it is verified locally; no further
-features are planned.
+**Status.** The build is complete: the MVP (**M1–M8**), the redesign (**R1–R7**), and
+four stretch phases — **S6** (hardening: accessibility, error boundaries, a real 404,
+login lockout, structured logging), **S1** (in-app notifications), **S4** (similar-ticket
+suggestions and "I'm affected too"), and **S7** (reporter feedback, engineer ratings and
+auto-close). All of it is verified locally; no further features are planned.
 
 **🚀 Deployed to AWS and live: <https://d3jo3ezb7ss05m.cloudfront.net>** *(2026-09-23)*
 
@@ -39,14 +40,14 @@ stopped it dead — the IAM boundary, the Lambda package, `CREATE EXTENSION` on 
 no local test could have found** (D36 and D38). It did not walk every endpoint.
 **30 of the 68 cloud-only checks now carry an observation and 36 do not**, each marked
 individually with what was seen, in
-[docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
+[readme/DEPLOYMENT-CHECKLIST.md](./readme/DEPLOYMENT-CHECKLIST.md).
 
 | | |
 | --- | --- |
-| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 12 tables, 45 paths / 65 operations under `/api/v1` |
+| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL — one Lambda, 14 tables over 8 migrations, 51 paths / 73 operations under `/api/v1` |
 | **Frontend** | React 19 + TypeScript, Vite, Material UI, TanStack Query, react-responsive |
-| **Tests** | **1,466 passing** — 897 backend (pytest) · 477 frontend (Vitest) · 92 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips |
-| **Docs** | [Review guide](./docs/REVIEW-GUIDE.md) · [Build plan](./docs/BUILD-PLAN.md) · [Project guide](./docs/PROJECT-GUIDE.md) · [Decision log](./docs/DECISION-LOG.md) · [Deployment checklist](./docs/DEPLOYMENT-CHECKLIST.md) · [Demo script](./docs/DEMO-SCRIPT.md) |
+| **Tests** | **1,616 passing** — 1,009 backend (pytest) · 511 frontend (Vitest) · 96 end-to-end (Playwright, two viewports, axe-core included), plus 10 deliberate viewport skips and [one known failure](#known-gaps) |
+| **Docs** | Everything written for this submission is in **[`readme/`](./readme/)** — [start here](./readme/README.md). The scaffold's own briefs stay in [`docs/`](./docs/). |
 
 **Contents** — [What it does](#what-it-does) · [Architecture](#architecture) ·
 [Roles and permissions](#roles-and-permissions) · [The incident workflow](#the-incident-workflow) ·
@@ -69,34 +70,53 @@ Three personas, one ticket.
   same floor before same building, and it says which — and, for problems that were fixed
   before, what the engineer wrote down. It never blocks the report. For the kinds of
   problem other people share, it also offers **"I'm affected too"**, which is a
-  subscription to the resolution rather than a second ticket.
+  subscription to the resolution rather than a second ticket. Once the work is done they
+  can **rate it out of five with a comment** — the comment is required at every score,
+  because a five with no words teaches nobody anything.
 - **Engineer** — works a queue. Seniors and leads pick up unassigned tickets in their
   specialties; leads also assign their team. Engineers see internal notes that employees
-  never do.
+  never do, reach **their own profile page** from the account menu, and read the reviews
+  of their own work in full.
 - **Facility admin** — defines the world (buildings → floors → seats, category tree,
   engineer accounts), assigns and escalates anything, and reads the dashboard — which
   since S1 also answers the brief's question about whether employees are being kept
   informed: what share of resolved tickets got a public update first, how long the first
-  one took, and how much of what the application sent was read.
+  one took, and how much of what the application sent was read. Admins and **lead
+  engineers** also see each engineer's rating and can open the reviews behind it.
+
+**Who may read a rating is narrower than anything else in the application.** The reporter
+who wrote it, the engineer it is about, any lead and any admin — and a colleague at the
+same level sees none of it, not even on a ticket they are working. Engineers *do* see one
+another's **scores**: the number is a fact about somebody's work, the sentences are not.
+One filter in `services/visibility.py` enforces it, applied to the query rather than to
+the response.
+
+**A resolved ticket nobody comes back to closes itself** after seven days of silence,
+with the clock restarting on any public note — a ticket closing in the middle of a
+conversation is a filing error, not housekeeping. The check runs on a page load rather
+than a timer, because the AWS role this deploys under has no scheduler in it at all; see
+[Known limitations](#known-limitations) and [D72](./readme/DECISION-LOG.md).
 
 Everybody also has an **inbox**. A bell in the app bar carries an unread badge and links
 to `/notifications` — a full page, not a dropdown, so it pages, filters to unread and
 survives a deep link. A notification is created when a ticket you reported or hold
 changes status, gains an owner, gets a public update from staff, or has its escalation
-cleared — and, since S4, when a ticket you said affected you too is **resolved**. Never
-when you did the thing yourself; an internal note never produces one. Who hears about
-what is a table of five rules in `backend/v1/app/notifications.py`, not five copies of
-an `if`.
+cleared — since S4, when a ticket you said affected you too is **resolved** — and since
+S7, when somebody **rates your work**. Never when you did the thing yourself; an internal
+note never produces one, and neither does a ticket closing itself. Who hears about what
+is a table of six rules in `backend/v1/app/notifications.py`, not six copies of an `if`.
 
 The badge asks the server for one integer every thirty seconds and stops while the tab is
 unfocused. That is not a preference: a Lambda behind a Function URL cannot hold a
-connection open, so there was no websocket to reject ([D30](./docs/DECISION-LOG.md)).
+connection open, so there was no websocket to reject ([D30](./readme/DECISION-LOG.md)).
 
 ### The data model
 
-**Thirteen tables**, created by six Alembic revisions (`0001` → `0006`). Ten arrived with
-the initial schema; `login_attempts` came with S6's login lockout, `notifications`
-with S1, and `incident_watchers` with S4's "I'm affected too".
+**Fourteen tables**, created by eight Alembic revisions (`0001` → `0008`). Ten arrived
+with the initial schema; `login_attempts` came with S6's login lockout, `notifications`
+with S1, `incident_watchers` with S4's "I'm affected too", and `incident_feedback` with
+S7's ratings. `0008` adds no table — it is one `ALTER TYPE`, for the close reason an
+automatic close records.
 
 Two conventions are declared once in `app/models/base.py` and then inherited, and the
 exceptions are the interesting part. `UUIDPrimaryKeyMixin` gives a table a surrogate
@@ -118,12 +138,13 @@ the write-once tables omit `updated_at` to say so in the schema.
 | `incidents` | The ticket: status, priority, escalation flag, reporter, assignee, location, and the lifecycle timestamps the reports are computed from | `0001` |
 | `incident_notes` | Public or `INTERNAL` notes. The visibility filter is a `WHERE` clause, so an employee's response never contains an internal row | `0001` |
 | `incident_events` | **Append-only.** Every accepted transition writes one, with from/to and reason. Every timing metric and every blocked age is read out of here rather than stored on the ticket | `0001` |
-| `login_attempts` | One row per email address, counting failed sign-ins for the lockout. Keyed on the `CITEXT` address, with **no foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./docs/DECISION-LOG.md)) | `0004` (S6) |
+| `login_attempts` | One row per email address, counting failed sign-ins for the lockout. Keyed on the `CITEXT` address, with **no foreign key to `users`** — deliberately, so that addresses with no account are counted identically ([D19](./readme/DECISION-LOG.md)) | `0004` (S6) |
 | `notifications` | One row per thing a person was told: recipient, `NotificationType`, the incident it is about, the rendered sentence, and `read_at` | `0005` (S1) |
 | `incident_watchers` | One row per person who said a ticket affects them too. Keyed on the **pair**, so one person cannot follow one ticket twice, and told only when it is resolved | `0006` (S4) |
+| `incident_feedback` | One rating and comment per **repair**, keyed on `(incident_id, resolution_round)` — a ticket fixed twice carries two, each attached to the engineer who made that fix | `0007` (S7) |
 
-Full schema: [BUILD-PLAN §3](./docs/BUILD-PLAN.md); the narrative version, in the order
-that makes the tables make sense, is [PROJECT-GUIDE Part I](./docs/PROJECT-GUIDE.md).
+Full schema: [BUILD-PLAN §3](./readme/BUILD-PLAN.md); the narrative version, in the order
+that makes the tables make sense, is [PROJECT-GUIDE Part I](./readme/PROJECT-GUIDE.md).
 
 ## Architecture
 
@@ -260,7 +281,7 @@ Three rules hold this together, and each is enforced in exactly one file:
 
 ### The API surface
 
-**45 paths, 65 operations**, all under `/api/v1` and all on one Lambda. Browse them at
+**51 paths, 73 operations**, all under `/api/v1` and all on one Lambda. Browse them at
 <http://localhost:8000/api/v1/docs>.
 
 | Group | Ops | Notes |
@@ -271,10 +292,11 @@ Three rules hold this together, and each is enforced in exactly one file:
 | `/categories/*` | 5 | The two-level tree |
 | `/engineers/*` | 6 | Includes `PATCH /engineers/me` for own availability and phone |
 | `/users/*` | 3 | List, read, change role / deactivate |
-| `/incidents/*` | 11 | Including `allowed-transitions`, `transitions`, `assign`, `pick-up`, `escalate`, `clear-escalation`, `activity` |
+| `/incidents/*` | 14 | Including `allowed-transitions`, `transitions`, `assign`, `pick-up`, `escalate`, `clear-escalation`, `activity`, `suggestions`, `watchers` |
 | `/incidents/{id}/notes`, `/notes/{id}` | 4 | |
 | **`/notifications/*`** | **4** | **S1** — see below |
-| `/reports/*` | 8 | |
+| **`/incidents/{id}/feedback`, `/feedback/{id}`** | **3** | **S7** — leave a rating, read a ticket's ratings, correct one inside the edit window |
+| `/reports/*` | 10 | Eight reports, plus one engineer's reviews (**S7**) |
 
 **The S1 endpoints.** Four, and every one is scoped to the caller — none of them takes a
 user parameter, and another person's notification is a **404**, not a 403, because a 403
@@ -293,7 +315,7 @@ would confirm the row exists:
 
 Six take a `from`/`to` window; **`blocked-escalated` and `me` refuse one outright** and
 return a `scope` instead of a `window`, because they answer present-tense questions
-([D9](./docs/DECISION-LOG.md)).
+([D9](./readme/DECISION-LOG.md)).
 
 `/reports/communication` is the one S1 changed. It already answered "are employees being
 kept informed?" with `informed_pct`, `median_first_public_note_hours` and `reopen_rate_pct`;
@@ -377,6 +399,7 @@ stateDiagram-v2
     BLOCKED --> IN_PROGRESS: Resume work
     IN_PROGRESS --> RESOLVED: Resolve
     RESOLVED --> CLOSED: Confirm fixed / Close ticket
+    RESOLVED --> CLOSED: Close automatically (after 7 quiet days)
     RESOLVED --> IN_PROGRESS: Still broken
     CLOSED --> IN_PROGRESS: Reopen (within 7 days)
     CLOSED --> [*]: after 7 days, terminal
@@ -395,15 +418,21 @@ Every row of the shipped table, in table order:
 | RESOLVED → CLOSED | Confirm fixed | reporter | — | `close_reason = CONFIRMED_FIXED` |
 | RESOLVED → CLOSED | Close ticket | assignee | — | `close_reason = CLOSED_BY_ENGINEER` |
 | RESOLVED → CLOSED | Close ticket | admin | — | `close_reason = ADMIN_CLOSED` |
+| RESOLVED → CLOSED | Close automatically | **system** | — (**guard**: 7 days since the repair or the last public note) | `close_reason = SYSTEM_CLOSED`, audit row with no actor |
 | RESOLVED → IN_PROGRESS | Still broken | reporter, admin | `reason` | `reopen_count += 1`, clears `resolved_at`, writes a REOPENED event |
 | CLOSED → IN_PROGRESS | Reopen | reporter, admin | `reason` (**guard**: within 7 days of `closed_at`) | `reopen_count += 1`, clears `resolved_at` / `closed_at` |
 
-Four details that are easy to miss and are all in the code:
+Five details that are easy to miss and are all in the code:
 
 - **"Who" is an actor, not a role.** `REPORTER` and `ASSIGNEE` are relationships to *this*
   ticket; the same person is a different actor on a different one. A **LEAD engineer counts
   as `ASSIGNEE` on any ticket**, assigned or not, so a team is not stuck when someone is on
   leave.
+- **One actor is nobody.** `SYSTEM` holds exactly one row — the automatic close — and
+  `resolve_actors` takes a `User`, so it can never return it. The move is therefore legal
+  and offered to no one: it never appears in `allowed-transitions` and no button is ever
+  drawn for it, without a single condition outside the table saying so. See
+  [D72](./readme/DECISION-LOG.md).
 - **One user can be several actors** — an admin who reported the ticket is both.
   `ACTOR_PRECEDENCE` (admin → assignee → reporter) picks the row, widest powers first, so
   being the reporter never costs an admin an option. The visible consequence: an admin
@@ -524,7 +553,7 @@ added to the roster — so every breakdown-by-group chart shows a taxonomy with 
 it until the world is rebuilt. The script is local-only; Aurora is not publicly
 accessible and is unreachable from a laptop by design.
 
-[docs/DEMO-SCRIPT.md](./docs/DEMO-SCRIPT.md) is a 5-minute walkthrough built on this
+[readme/DEMO-SCRIPT.md](./readme/DEMO-SCRIPT.md) is a 5-minute walkthrough built on this
 dataset.
 
 ### 6. Troubleshooting
@@ -562,18 +591,23 @@ npx playwright install chromium   # once
 npm run test:e2e                  # or npm run test:e2e:ui
 ```
 
-### Results, as of S1
+### Results, as of S7
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Backend unit + integration | `pytest` | **825 passing** |
+| Backend unit + integration | `pytest` | **1,009 passing**, [1 known failure](#known-gaps) |
 | Backend lint + format | `ruff check` / `ruff format --check` | clean |
-| Frontend component + hook | `npm test` (Vitest, 33 files) | **312 passing** |
+| Frontend component + hook | `npm test` (Vitest, 51 files) | **511 passing** |
 | Frontend lint + types + build | `npm run lint` / `typecheck` / `build` | clean (ESLint, `tsc -b`, `vite build`) |
-| End-to-end | `npm run test:e2e` | **82 passing**, 10 deliberate viewport skips, across 6 spec files and 2 viewports (1440×900, 375×812) |
+| End-to-end | `npm run test:e2e` | **96 passing**, 10 deliberate viewport skips, across 8 spec files and 2 viewports (1440×900, 375×812) |
 | Accessibility | part of `npm run test:e2e` | axe-core at WCAG 2.1 AA over every screen, at both viewports, with dialogs and drawers open |
 
-The backend suite takes about five to six minutes, most of it bcrypt at cost 12.
+**`npm run typecheck`, not `tsc --noEmit`.** The root `tsconfig.json` is solution-style —
+`"files": []` plus three project references — so `tsc --noEmit` type-checks nothing and
+exits 0. Every drift S7 introduced was invisible to it and caught immediately by
+`tsc -b`, which is what `typecheck` and `build` run.
+
+The backend suite takes about ten minutes, most of it bcrypt at cost 12.
 [`.github/workflows/ci.actions.yml`](./.github/workflows/ci.actions.yml) runs the backend
 job (PostgreSQL 17 service container → ruff → pytest) and the frontend job (eslint → tsc →
 vitest → vite build) on every push and pull request.
@@ -640,29 +674,45 @@ Stated plainly, because the rubric asks for coverage figures this project does n
    distribution, the refresh cookie's attributes and path, timestamp serialisation,
    full-text search on Aurora, the lockout and its 429, JSON logs in CloudWatch, and the
    focus ring against the production CSS. Every one is marked individually, with what was
-   observed, in [docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md).
-5. **Four admin screens have no component tests.** Vitest covers 33 files, none of them
-   under `features/facilities`, `features/categories`, `features/users` or
-   `features/engineers` (beyond `sortForAssignment`). Their APIs are covered by backend
-   integration tests and their happy paths are walked by hand; the screens themselves are
-   the thinnest-tested part of the frontend.
-6. **No visual-regression tests, and no test for the CloudFront Function itself.**
+   observed, in [readme/DEPLOYMENT-CHECKLIST.md](./readme/DEPLOYMENT-CHECKLIST.md).
+5. **One backend test fails, and it is not a regression.**
+   `test_every_status_and_priority_appears_and_no_single_one_dominates` in
+   `tests/integration/test_seed_demo.py` asserts that the small spec the tests use
+   produces all eight category groups; it produces seven. Confirmed by stashing the S7
+   work and re-running on an unmodified tree — it has been red since R6 widened the
+   category tree, and fixing it means changing the seed's distribution, which is the
+   owner's call rather than a test repair. Everything else passes.
+6. **Three admin screens have no component tests.** None of the Vitest files sit under
+   `features/facilities`, `features/categories` or `features/users`. Their APIs are
+   covered by backend integration tests and their happy paths are walked by hand; the
+   screens themselves are the thinnest-tested part of the frontend. `features/engineers`
+   is no longer among them — S7 added tests for the detail page's rating and the reviews
+   screen.
+7. **The notification inbox has an axe `list` violation that its own test cannot see.**
+   `<Divider component="li">` renders `role="separator"`, which axe's `list` rule rejects
+   as a direct child of a `<ul>` even though the element is an `<li>`. The accessibility
+   spec scans that screen and passes, because it manufactures exactly **one**
+   notification — and the divider is only rendered between rows. A real inbox has two
+   dozen. Found while looking at the screen during S7, reported rather than fixed: it is
+   unrelated to that work, and widening a phase to sweep up what it happens to notice is
+   how unrelated changes end up in a diff.
+8. **No visual-regression tests, and no test for the CloudFront Function itself.**
    Accessibility *is* now covered — axe-core at WCAG 2.1 AA over every screen at both
    viewports, plus keyboard tests for the focus order, the dialogs and the drawer — but
    nothing has been checked with an actual screen reader. The semantics are asserted;
-   how they sound is not. See [D22 and D23](./docs/DECISION-LOG.md).
-7. **`GET /incidents` cannot filter on `resolved_at`**, so one dashboard tile
+   how they sound is not. See [D22 and D23](./readme/DECISION-LOG.md).
+9. **`GET /incidents` cannot filter on `resolved_at`**, so one dashboard tile
    ("Resolved in the period") deliberately has no drill-down link — see
-   [D14 §3](./docs/DECISION-LOG.md).
-8. **Only one pytest run per database at a time.** The suite drops and recreates
+   [D14 §3](./readme/DECISION-LOG.md).
+10. **Only one pytest run per database at a time.** The suite drops and recreates
    `acme_incidents_test` with `WITH (FORCE)`; a second concurrent run kills the first one's
    connections. Give each run its own `POSTGRES_TEST_NAME`.
 
 ## Trade-offs and decisions
 
-Thirty-nine decisions are recorded with their alternatives in
-[docs/DECISION-LOG.md](./docs/DECISION-LOG.md); four infrastructure changes in
-[docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md). The ones a reviewer is most likely to
+Sixty-nine decisions are recorded with their alternatives in
+[readme/DECISION-LOG.md](./readme/DECISION-LOG.md); four infrastructure changes in
+[readme/INFRA-CHANGES.md](./readme/INFRA-CHANGES.md). The ones a reviewer is most likely to
 ask about:
 
 **The workflow is data, not code.** A frozen tuple of `Transition` rows, with the endpoint
@@ -671,7 +721,7 @@ cannot read a route handler and know what a button does. The benefit is that the
 cannot drift between the API and the UI, and that the tests parametrise over the table, so
 an untested row is impossible.
 
-**Who gets a notification is a table, not four `if`s** ([D26](./docs/DECISION-LOG.md)).
+**Who gets a notification is a table, not four `if`s** ([D26](./readme/DECISION-LOG.md)).
 Four services create notifications; without a table each would carry its own copy of "and
 also tell the reporter, unless they did it", and the fifth trigger added later would be
 the one that forgets. `backend/v1/app/notifications.py` holds four rows of data, each
@@ -682,7 +732,7 @@ beside the audience it protects rather than at the call site. Both properties we
 rather than trusted: deleting either from the rule module fails nine of the forty-five
 unit tests.
 
-**Polling was not a preference** ([D30](./docs/DECISION-LOG.md)). The unread badge asks
+**Polling was not a preference** ([D30](./readme/DECISION-LOG.md)). The unread badge asks
 the server every thirty seconds because a Lambda Function URL cannot hold a connection
 open — there was no websocket to reject. So the polled route is one scalar query answered
 by an index-only scan (measured: 3–4 shared buffers, ~0.1 ms, `Heap Fetches: 0` against a
@@ -690,7 +740,7 @@ by an index-only scan (measured: 3–4 shared buffers, ~0.1 ms, `Heap Fetches: 0
 tab is unfocused — which also stops an abandoned tab keeping a `min_capacity = 0` Aurora
 awake.
 
-**The login lockout counts addresses that have no account** ([D19](./docs/DECISION-LOG.md)).
+**The login lockout counts addresses that have no account** ([D19](./readme/DECISION-LOG.md)).
 Ten failures per email per fifteen minutes, counted in a table because a Lambda container
 shares no memory with the next one, and counted for *any* address — with no foreign key to
 `users`, so that stays possible. A lockout that only applied to real accounts would answer
@@ -700,14 +750,14 @@ alternative, keying on the client IP, would make the lockout bypassable rather t
 merely annoying, because the Function URL is publicly reachable.
 
 **Accessibility was checked twice, by machine and by hand, and the hand found the one that
-mattered** ([D23](./docs/DECISION-LOG.md)). axe-core went green over an application whose
+mattered** ([D23](./readme/DECISION-LOG.md)). axe-core went green over an application whose
 focus ring was defined in the theme and rendered on nothing — Material UI's `ButtonBase`
 sets `outline: 0` in a class, which ties with a bare `:focus-visible` and wins on
 injection order. It was found by tabbing to a card and looking at the screenshot. axe
 checks that controls have names, not that a keyboard user can see where they are.
 
-**Current-state reports are not window-scoped; period reports are** ([D5](./docs/DECISION-LOG.md),
-[D7](./docs/DECISION-LOG.md) → **[D9](./docs/DECISION-LOG.md)**). The original rule was
+**Current-state reports are not window-scoped; period reports are** ([D5](./readme/DECISION-LOG.md),
+[D7](./readme/DECISION-LOG.md) → **[D9](./readme/DECISION-LOG.md)**). The original rule was
 elegant — every report's `from`/`to` filters `created_at` — and both entries flagged, in
 writing, the case that would break it. It broke exactly there: a ticket blocked 90 days ago
 and still blocked is the single row a blocked-work queue exists to show, and it was missing
@@ -715,13 +765,13 @@ from the default 30-day view. D9 reversed it for two endpoints
 (`/reports/blocked-escalated`, `/reports/me`), which now refuse `from`/`to` outright rather
 than accepting a period and ignoring it. The rule is now "the tense of the business
 question decides", enforced by two different dependencies and visible in the response
-(`window` vs `scope`). That reversal then exposed [D10](./docs/DECISION-LOG.md) and
-[D11](./docs/DECISION-LOG.md): `is_escalated` is lowered only by an admin clearing it, so
+(`window` vs `scope`). That reversal then exposed [D10](./readme/DECISION-LOG.md) and
+[D11](./readme/DECISION-LOG.md): `is_escalated` is lowered only by an admin clearing it, so
 present-tense reads of the flag also need a status filter — the 30-day window had been
 hiding that for months of imaginary history.
 
 **One filter bar, two kinds of number, and the dashboard says which is which**
-([D14 §1](./docs/DECISION-LOG.md)). Because of D9 the date range genuinely cannot reach two
+([D14 §1](./readme/DECISION-LOG.md)). Because of D9 the date range genuinely cannot reach two
 of the eight reports. The alternatives were to send the dates anyway and let the API ignore
 them (relabelling a live figure with a period — the exact defect D9 fixed, one layer up), or
 to drop the live widgets (removing the two panels an admin opens the screen to act on).
@@ -730,7 +780,7 @@ Instead the page has two headed sections, and the period heading reads its dates
 period and blocked · 11" are both on screen, and neither is a lie.
 
 **Where the label and the number disagreed, the label changed**
-([D14](./docs/DECISION-LOG.md) §§3–5). The brief asks for "average" response times; the
+([D14](./readme/DECISION-LOG.md) §§3–5). The brief asks for "average" response times; the
 endpoint computes a median (one ticket left over a long weekend should not move the
 headline), so the tiles say median. The brief asks an engineer's home for "Resolved this
 week"; no endpoint an engineer may call can answer it without either undoing D9 or opening
@@ -746,7 +796,7 @@ Material-UI-9-compatible release is a beta; the activity feed is built from `Box
 (`features/incidents/ActivityTimeline.tsx`). Both are documented at the top of the file
 that made the choice.
 
-**Demo data is generated as a timeline, not back-filled** ([D12](./docs/DECISION-LOG.md)).
+**Demo data is generated as a timeline, not back-filled** ([D12](./readme/DECISION-LOG.md)).
 Picking a status and then inventing timestamps for it produces tickets reported 80 days ago
 that are still OPEN for no reason — every report is fine and a human reading the list sees
 a world that could not exist. Instead each incident is given a full intended path with a
@@ -754,7 +804,7 @@ drawn duration per hop, and the walk stops at `now`; status falls out of age. Th
 that the status mix cannot be dialled directly.
 
 **The four `infra/` edits, and why they are the only ones**
-([docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md)). The participant IAM role cannot create a
+([readme/INFRA-CHANGES.md](./readme/INFRA-CHANGES.md)). The participant IAM role cannot create a
 VPC, subnets or an API Gateway, so this project deliberately authors no infrastructure. The
 one change with no workaround: the scaffold maps **every** 404 to a 200 serving
 `/index.html`, distribution-wide, which would rewrite the API's "incident not found" into
@@ -768,7 +818,7 @@ measured at **994 kB raw against 309 kB gzipped** on the deployed bundle.
 
 **Stacked branches, nothing merged to `main`.** Each phase branches off the previous one
 and waits for review, so `main` stays a known-good state and rejecting a phase rebases the
-ones above it rather than requiring a revert ([D3](./docs/DECISION-LOG.md)).
+ones above it rather than requiring a revert ([D3](./readme/DECISION-LOG.md)).
 
 ## Known limitations
 
@@ -782,9 +832,9 @@ sit on spinners; that is the database waking, not a fault.
 
 **The deployment is verified in part, not in full.** 30 of the 68 cloud-only checks now
 carry an observation; 36 do not. See [Testing → Known gaps](#known-gaps) and
-[docs/DEPLOYMENT-CHECKLIST.md](./docs/DEPLOYMENT-CHECKLIST.md), where every item is marked
-with what was seen. [D1](./docs/DECISION-LOG.md) records the choice to build the rest of M8
-before credentials existed; [D39](./docs/DECISION-LOG.md) records what deploying then
+[readme/DEPLOYMENT-CHECKLIST.md](./readme/DEPLOYMENT-CHECKLIST.md), where every item is marked
+with what was seen. [D1](./readme/DECISION-LOG.md) records the choice to build the rest of M8
+before credentials existed; [D39](./readme/DECISION-LOG.md) records what deploying then
 proved, and the two defects it found that nothing else could have.
 
 **The deployed database carries published credentials.** 37 demo accounts share one
@@ -795,7 +845,7 @@ credentials themselves.
 
 Scope decisions, all deliberate. The ones that are **decided and simply not done** —
 the escalation chain, automatic BUSY, the preferences table, and what is left of the
-feedback work — are collected in [docs/TODO.md](./docs/TODO.md) with what to settle
+feedback work — are collected in [readme/TODO.md](./readme/TODO.md) with what to settle
 before starting each.
 
 Scope decisions, all deliberate:
@@ -828,13 +878,13 @@ Scope decisions, all deliberate:
   ACU. The sweep is not scoped to the page being listed, so one visit by anybody brings
   the whole estate current; the only way a ticket stays open past its deadline is for
   nobody to use the system at all. `close_stale` is an ops action for the cases where
-  that matters. See [D72](./docs/DECISION-LOG.md).
+  that matters. See [D72](./readme/DECISION-LOG.md).
 - **A rating is visible to fewer people than a note.** Employees rate a repair out of
   five with a required comment; the engineer it is about, any lead and any admin can read
   it, and a colleague at the same level cannot — not even on a ticket they are working.
   Engineers *do* see one another's scores, which was the owner's call: the number is a
   fact about somebody's work, the sentences are not. Reviews cannot be deleted or
-  moderated, deliberately; see [docs/TODO.md](./docs/TODO.md) for what to settle first.
+  moderated, deliberately; see [readme/TODO.md](./readme/TODO.md) for what to settle first.
 - **An engineer cannot ask another engineer for help.** A junior who is stuck marks a
   ticket BLOCKED, which tells the reporter something is in the way but routes the ticket
   to nobody. An escalation chain — junior to senior to lead — was specified and not
@@ -856,7 +906,7 @@ Scope decisions, all deliberate:
   `incident_events` and `incident_notes` — what is not there is which of them anybody
   **read**, so a backfill would report a read rate of 0% over invented rows. A fresh
   environment gets demo notifications from `seed_demo`; an existing one accumulates real
-  ones from use. See [D31](./docs/DECISION-LOG.md).
+  ones from use. See [D31](./readme/DECISION-LOG.md).
 - **The unread badge does not announce itself.** There is no live region on the bell: a
   polite announcement every thirty seconds, on every screen, would interrupt whatever a
   screen-reader user was reading. The count is in the control's accessible name instead,
@@ -867,7 +917,7 @@ Scope decisions, all deliberate:
   deliberately. Keying on the client address instead would make the lockout *bypassable*,
   because the Lambda Function URL is publicly reachable and `X-Forwarded-For` is therefore
   attacker-controlled. The window is short, clears itself, and needs no administrator to
-  undo. See [D19](./docs/DECISION-LOG.md).
+  undo. See [D19](./readme/DECISION-LOG.md).
 - **The 404 page returns HTTP 200.** CloudFront rewrites extension-less paths to
   `/index.html` so deep links survive a reload, so the server cannot know a path is not a
   route — only the router can, and by then the response has been sent. What the user is
@@ -879,7 +929,7 @@ Scope decisions, all deliberate:
   screenshotted — but nobody has listened to NVDA, JAWS or VoiceOver read the application.
   The semantics are asserted; how they sound is not.
 - **Single region, no custom domain, no WAF, no CDN cache tuning beyond the defaults**;
-  CloudFront compression is proposed but not applied ([INFRA-CHANGES §4](./docs/INFRA-CHANGES.md)).
+  CloudFront compression is proposed but not applied ([INFRA-CHANGES §4](./readme/INFRA-CHANGES.md)).
 - **Aurora Serverless v2 runs at `min_capacity = 0`** and takes roughly 15 seconds to wake.
   The first request after an idle period may look like a hang. Local development has no
   equivalent, so this is the behaviour most likely to surprise on a first cloud demo.
@@ -898,8 +948,10 @@ the Citi coding-workshop scaffold. That template is not ours and is not claimed 
 | --- | --- |
 | `infra/` Terraform, `bin/` deploy scripts, `data/`, `backend/_examples/` | `backend/v1/`, `frontend/src/`, `frontend/e2e/`, the four `docs/*.md` we wrote, `CLAUDE.md` |
 | `docs/README.md` and the role guides (`full-stack.md`, `validation.md`, …) | `.github/workflows/ci.actions.yml` (lint-and-test) |
-| The three security workflows (Bandit, `npm audit`, Checkov) | Three commented edits to `infra/` — [docs/INFRA-CHANGES.md](./docs/INFRA-CHANGES.md) |
+| The three security workflows (Bandit, `npm audit`, Checkov) | Three commented edits to `infra/` — [readme/INFRA-CHANGES.md](./readme/INFRA-CHANGES.md) |
 
+Everything written for this submission lives in **[`readme/`](./readme/)** — see
+[readme/README.md](./readme/README.md) for what each document is and which to read first.
 The workshop's own instructions live in [docs/README.md](./docs/README.md) and the role
 guides beside it; the grading criteria this project was built against are in
 [docs/full-stack.md](./docs/full-stack.md).

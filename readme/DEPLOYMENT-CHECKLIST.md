@@ -294,7 +294,7 @@ pick up the `infra/cloudfront.tf` change.
 >
 > **What this means for a demonstration:** load the deployed page **about a minute
 > before** anybody is watching. That is the entire mitigation and it is free.
-> `docs/DEMO-SCRIPT.md` § "Demonstrating from the deployed URL" carries the instruction.
+> `readme/DEMO-SCRIPT.md` § "Demonstrating from the deployed URL" carries the instruction.
 >
 > **The alternative, deliberately not taken:** raising `min_capacity` from 0 to 0.5 would
 > remove the wait, but it bills continuously on a **shared sandbox account** and deviates
@@ -1621,7 +1621,7 @@ but worth knowing. ❌ "Could not load these tickets" means the retry failed too
 > run against Aurora, and this suite **creates accounts and tickets in whatever database
 > it is pointed at** and leaves the tickets behind. Running it would put `e2e.*` accounts
 > and extra tickets into the same database a demonstration reads from — which is exactly
-> what happened locally to `acme_demo` (see `docs/DEMO-SCRIPT.md`, "318 incidents, not
+> what happened locally to `acme_demo` (see `readme/DEMO-SCRIPT.md`, "318 incidents, not
 > 300"). Decide whether you want that before typing the command, because there is no way
 > back short of dropping and re-seeding.
 >
@@ -1929,7 +1929,7 @@ accounts cannot be told apart from real ones by anything except their names.
 > **The advice below is inverted.** This item said "deliberately not runnable against
 > Aurora" and "prefer demoing against a local database". Both are now out of date: the
 > deployed app has the same world as the local one, and the deployed URL is a first-class
-> way to demonstrate it. `docs/DEMO-SCRIPT.md` carries both routes.
+> way to demonstrate it. `readme/DEMO-SCRIPT.md` carries both routes.
 >
 > ⚠️ **The reset half was not done and is not planned.** This item's original option was
 > "run it, and reset the database afterwards". The data is staying. That is a deliberate
@@ -2067,7 +2067,7 @@ hashed asset next to `index.html` in S3, requested at runtime by the already-loa
 be swallowed by the SPA rewrite.
 
 `infra/cloudfront.tf`'s CloudFront Function rewrites **extension-less** paths to
-`/index.html` (see `docs/INFRA-CHANGES.md`). A `.js` file has an extension, so it should
+`/index.html` (see `readme/INFRA-CHANGES.md`). A `.js` file has an extension, so it should
 pass straight through — but that rule has never been exercised by a request the *browser*
 makes on its own rather than one typed into the address bar.
 
@@ -2304,7 +2304,7 @@ start from something the browser can see.
 
 **Why it needs the cloud.** A 429 with a `Retry-After` header has two things in front of
 it that do not exist locally: CloudFront, which has its own opinions about error
-responses, and the `custom_error_response` mapping that `docs/INFRA-CHANGES.md` item 1
+responses, and the `custom_error_response` mapping that `readme/INFRA-CHANGES.md` item 1
 replaced. A distribution that rewrote a 429 the way the scaffold rewrote 404s would turn
 the lockout into an HTML page.
 
@@ -2381,7 +2381,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "$CLOUDFRONT_URL/api/v1/definitely-not"
 
 The first is 200 **by design** and the page then says "Page not found" — see
 [D21](DECISION-LOG.md#d21--an-unknown-url-gets-a-page-not-a-redirect). The second must
-stay a real 404: that is the rubric line `docs/INFRA-CHANGES.md` item 1 exists to protect,
+stay a real 404: that is the rubric line `readme/INFRA-CHANGES.md` item 1 exists to protect,
 and it is worth re-checking here because it is the one thing that would silently regress.
 
 Then open `$CLOUDFRONT_URL/definitely-not-a-route` in a browser, signed in, and confirm

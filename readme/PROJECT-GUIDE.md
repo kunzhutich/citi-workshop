@@ -24,8 +24,8 @@ is shaped that way, what was rejected, and what bit us. It is a chronology, so a
 section describes code that later phases changed; Part I is the current account, and wins
 where the two disagree.
 
-[docs/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
-[docs/DECISION-LOG.md](DECISION-LOG.md) records the calls made without the owner present;
+[readme/BUILD-PLAN.md](BUILD-PLAN.md) says what each phase builds;
+[readme/DECISION-LOG.md](DECISION-LOG.md) records the calls made without the owner present;
 [CLAUDE.md](../CLAUDE.md) holds the scaffold constraints that are not negotiable.
 Where a decision was *forced* by the scaffold or the AWS IAM boundary rather than
 freely chosen, this guide says so explicitly — that distinction is invisible in finished
@@ -67,7 +67,7 @@ notifications) are the stretch phases that followed, **R1**–**R7** the redesig
 **S4** (similar-ticket suggestions) the last stretch item from the build plan, and
 **S7** (feedback) the first the owner specified from scratch. The
 [review guide](REVIEW-GUIDE.md) is the worklist for looking at what was built, and
-[docs/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
+[readme/TODO.md](TODO.md) the short list of what is decided and deliberately not done.*
 
 **The system in numbers, as it finally stands:** 14 tables over 8 Alembic revisions ·
 51 paths / 73 operations under `/api/v1` on one Lambda · 8 reports · 12 workflow
@@ -173,7 +173,7 @@ runs under. In finished code these are invisible, so they are collected here.
 | **Migrations cannot run from a laptop** | Aurora is `publicly_accessible = false` | `function.py` dispatches on a non-HTTP event shape to `app/services/ops.py`. Direct invoke is IAM-protected and is not routed by CloudFront, so `migrate`, `seed_admin` and `seed_demo` exist without a public maintenance endpoint or a second Lambda. |
 | **A cold request can take ~15 seconds** | Aurora Serverless v2 runs at `min_capacity = 0.0` and sleeps when idle | `postgres_connect_timeout` defaults to 30 s, the engine uses `pool_pre_ping=True`, and the browser's query client retries once. A hung first request after a quiet period is usually this, not a bug. |
 | **Connection details arrive as env vars** | `infra/locals.tf` injects `IS_LOCAL`, `POSTGRES_*` and `JWT_SECRET` | There is no `DATABASE_URL` and no `docker-compose.yml`. `app/config.py` builds the SQLAlchemy URL from the parts and appends `sslmode=require` when not local. |
-| **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `docs/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
+| **CloudFront's 404 handling had to be replaced** | the scaffold mapped every 404 to `200 /index.html`, distribution-wide, including the API | Replaced with a CloudFront Function on the default behaviour only. Without this the API cannot return a real 404. See `readme/INFRA-CHANGES.md` item 1 — the one change with no workaround. |
 | **No memory is shared between requests** *(found in S6)* | a Lambda container handles one invocation and the next request may land on a different container | The failed-login counter cannot be an in-process dict, which is how such a thing is usually written. It is the `login_attempts` table — a database row per email address, self-cleaning on the failure path because a sweeper would have nowhere to run against an Aurora that sleeps at `min_capacity = 0`. See §2.10 and D19. |
 | **The server cannot push** *(found in S1)* | a Lambda Function URL cannot hold a connection open, so there is no websocket and no SSE | The unread badge **polls**: one integer every 30 seconds, stopping while the tab is unfocused. This was never a websocket-versus-polling argument — there was nothing to argue with. What it forces instead is that the polled route must be *cheap*, which is why `unread-count` is an index-only scan answered from `ix_notifications_user_id_read_at` with `Heap Fetches: 0`. See D30. |
 
@@ -1330,7 +1330,7 @@ that each step makes the next one obvious.
 
 **First, 20 minutes — the constraints, so nothing later looks arbitrary.**
 1. `CLAUDE.md` — the scaffold's hard rules. Read §1.4 above alongside it.
-2. `docs/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
+2. `readme/INFRA-CHANGES.md` — the three Terraform edits and why each was unavoidable.
 
 **Then, 30 minutes — the shape of the domain.**
 3. `backend/v1/app/models/enums.py` — twelve enums, and the whole vocabulary of the system
@@ -1364,7 +1364,7 @@ that each step makes the next one obvious.
 
 **Finally, 30 minutes — the parts that are their own world.**
 13. `backend/v1/app/repositories/reports.py` module docstring, then `_window_clauses` and
-    `_scope_clauses` — and `docs/DECISION-LOG.md` D9, D10, D11, which are the best worked
+    `_scope_clauses` — and `readme/DECISION-LOG.md` D9, D10, D11, which are the best worked
     example in the repository of a rule being got wrong, exposed, and fixed twice.
 14. `backend/v1/app/seed/demo.py` docstring — only if you are going to change the demo data.
 
@@ -1403,7 +1403,7 @@ current.
 | **ACU (Aurora Capacity Unit)** | Aurora's unit of provisioned capacity (roughly 2 GiB of memory plus matching CPU). Ours has `min_capacity = 0.0`, so it sleeps when idle and takes about 15 seconds to wake — the cause of a slow first request. |
 | **STS credentials** | Short-lived AWS credentials issued by Security Token Service. `./bin/setup-participant.sh` refreshes them into `ENVIRONMENT.config`, which is gitignored and must never be committed or echoed. |
 | **IAM boundary** | The policy (`infra/policy.tftpl`) capping what the deploy role may do — here, most resources only on ARNs matching `coding-workshop*`, with no VPC, API Gateway, EKS or DocumentDB rights. |
-| **Terraform / `terraform apply`** | The infrastructure-as-code tool the scaffold uses. We author none of it; we edited three provided files (see `docs/INFRA-CHANGES.md`). |
+| **Terraform / `terraform apply`** | The infrastructure-as-code tool the scaffold uses. We author none of it; we edited three provided files (see `readme/INFRA-CHANGES.md`). |
 
 ### 6.2 PostgreSQL
 
@@ -2060,7 +2060,7 @@ do what.
 
 **Everything in this phase was verified against local PostgreSQL only** — AWS credentials
 did not exist yet. What that leaves unproven is recorded, item by item with the exact
-command to run, in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). Read that
+command to run, in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md). Read that
 before the first cloud deploy.
 
 ### 1. What was built
@@ -2323,7 +2323,7 @@ Never use `get_authenticated_user` outside `/auth` — it skips the password-cha
 
 **Add an ops action.** `def _op_name(event) -> dict`, register it in `ACTIONS`, add a
 test in `tests/integration/test_ops_actions.py`, and add a checklist entry in
-`docs/DEPLOYMENT-CHECKLIST.md` for whatever about it can only be proven in the cloud.
+`readme/DEPLOYMENT-CHECKLIST.md` for whatever about it can only be proven in the cloud.
 
 **Change the category tree.** Edit `CATEGORY_GROUPS` in `app/seed/categories.py`, then
 re-run `migrate`. Additions appear; renames create a *new* row and leave the old one, so
@@ -2478,7 +2478,7 @@ building them twice.
 **Everything here was verified against local PostgreSQL only**, as in M2: through the
 294-test suite, and once end to end over HTTP against a throwaway database with a real
 uvicorn server. What remains unproven in the cloud is in
-[docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+[readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section also covers two carry-overs from M2 that were fixed first.
 
@@ -2947,7 +2947,7 @@ Still no frontend; the React shell arrives in M5. **Everything here was verified
 local PostgreSQL only** — through the 605-test suite, and once end to end over HTTP
 against the real development database, walking one ticket from report through pick-up,
 block, escalate, clear, resolve, confirm and reopen with three accounts. What remains
-unproven in the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+unproven in the cloud is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section starts with a carry-over from M2 that had to be fixed before any of it
 would work.
@@ -3854,7 +3854,7 @@ waiting on M6.
 **Verified against local PostgreSQL only.** 112 frontend tests, 606 backend tests, and
 one end-to-end pass over HTTP through the Vite dev proxy against a scratch database —
 register, login, the forced password change, and logout. What still needs the cloud is
-in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 This section starts, as M3 and M4 did, with a defect in an earlier phase that this
 phase's verification uncovered.
@@ -4666,7 +4666,7 @@ Playwright, and the first thing it found was a defect that only exists in a brow
 
 **Verified against local PostgreSQL only.** 211 frontend tests (up from 112), 609
 backend tests (up from 606), and 12 Playwright tests across two viewports, all passing.
-What still needs the cloud is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+What still needs the cloud is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 ### 0. Two carry-overs, both the same shape
 
@@ -5685,7 +5685,7 @@ tested against a fixture world small enough to check by hand.
 
 **Verified against local PostgreSQL only.** 665 backend tests (up from 609), ruff check
 and ruff format clean. No AWS credentials exist, so nothing here has met Aurora; what
-that leaves unproven is in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
+that leaves unproven is in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md).
 
 ### 1. What was built
 
@@ -6103,7 +6103,7 @@ ACME. Pass 3 is the three dashboard screens, and appends its own section below.
 **Verified against local PostgreSQL only.** 683 backend tests (up from 666), ruff check
 and ruff format clean. A full default seed takes **0.9 seconds** and writes 300 incidents,
 ~1,800 events and ~500 notes. What that leaves unproven in the cloud is items 7.5 to 7.8
-in [docs/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
+in [readme/DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md) — chiefly that the production
 guard's `IS_LOCAL` really arrives on the deployed Lambda.
 
 ### 1. What was built
@@ -6114,7 +6114,7 @@ guard's `IS_LOCAL` really arrives on the deployed Lambda.
 | `app/services/ops.py` | `_op_seed_demo` — the environment guard, the payload overrides, and the registry entry beside `migrate` and `seed_admin`. |
 | `tests/integration/test_seed_demo.py` | 13 tests against a 60-incident spec. Shape, not values. |
 | `tests/unit/test_ops.py` | 4 more: the registry, the production refusal, and payload validation. No database needed for any of them. |
-| `docs/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
+| `readme/DEPLOYMENT-CHECKLIST.md` | Items 7.5–7.8. |
 
 It is invoked exactly as `migrate` and `seed_admin` are — a direct Lambda invoke, or the
 same handler called locally:
@@ -6879,7 +6879,7 @@ columns on a desktop and one on a phone without a breakpoint per count.
 
 M8 in BUILD-PLAN section 15 is "final deploy, README, guide, demo script". No AWS
 credentials exist for this build, so the deploy half cannot run and is not attempted;
-[D1](DECISION-LOG.md) records that choice and `docs/DEPLOYMENT-CHECKLIST.md` holds every
+[D1](DECISION-LOG.md) records that choice and `readme/DEPLOYMENT-CHECKLIST.md` holds every
 step that needs the cloud, with its command and its expected output. This phase is the
 other half: the documents a reviewer, and later you, will actually read.
 
@@ -6900,9 +6900,9 @@ that can be re-queried. Section 6 lists what that cost and where it nearly went 
 | File | Responsibility |
 | --- | --- |
 | [README.md](../README.md) | Rewritten end to end, 281 lines → ~615. The repository's front door for someone with fifteen minutes and no context. |
-| [docs/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
-| [docs/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
-| [docs/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
+| [readme/DEMO-SCRIPT.md](DEMO-SCRIPT.md) | A five-minute walkthrough of one ticket across all three personas, written to be read aloud while clicking. New file. |
+| [readme/DECISION-LOG.md](DECISION-LOG.md) | D15–D18 appended: what survives from the upstream template, why no coverage figure is published, why the demo runs on one database, and the two demo details that were nearly got wrong. |
+| [readme/BUILD-STATUS.md](BUILD-STATUS.md) | Position moved to M8; what is done and what is deliberately left. |
 | **[Part I](#part-i--the-system-as-a-whole) of this guide** | The front section BUILD-PLAN §15 asks for: system overview, the data model as a narrative, the complete rule-to-file map, one full end-to-end trace, a reading order, and the merged glossary. ~1,330 lines, written last and checked against the code rather than against the phase sections. |
 | This section | The M8 entry in this guide. |
 
@@ -7022,12 +7022,12 @@ is, how it is built, who may do what, how to run it, what is tested, what was tr
 and what is missing — and links out rather than expanding. Nothing else is required
 reading, which is the constraint the rewrite was designed against.
 
-**Someone about to demo it.** `docs/DEMO-SCRIPT.md` — setup section first, hours before;
+**Someone about to demo it.** `readme/DEMO-SCRIPT.md` — setup section first, hours before;
 then the walkthrough. It links back to the README only for installation.
 
 **You, later, changing something.** This guide, at the phase that built the thing you are
-changing; then `docs/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
-scaffold constraints that are not negotiable; then `docs/DEPLOYMENT-CHECKLIST.md` before
+changing; then `readme/DECISION-LOG.md` for why it is that way; then `CLAUDE.md` for the
+scaffold constraints that are not negotiable; then `readme/DEPLOYMENT-CHECKLIST.md` before
 anything reaches AWS.
 
 Tracing one claim end to end, which is the property the rewrite was trying to buy — the
@@ -7055,15 +7055,15 @@ The documentation map — which file answers which question, so no question has 
 | Question | Document |
 | --- | --- |
 | What is this, how do I run it, what is tested, what is missing? | `README.md` |
-| How do I show it to someone in five minutes? | `docs/DEMO-SCRIPT.md` |
-| How does the whole system fit together, and where does rule X live? | `docs/PROJECT-GUIDE.md` [Part I](#part-i--the-system-as-a-whole) |
-| What was built in each phase, and why is it shaped this way? | `docs/PROJECT-GUIDE.md` [Part II](#part-ii--the-build-phase-by-phase) |
-| Why was *this* call made, and what was rejected? | `docs/DECISION-LOG.md` (D1–D18) |
+| How do I show it to someone in five minutes? | `readme/DEMO-SCRIPT.md` |
+| How does the whole system fit together, and where does rule X live? | `readme/PROJECT-GUIDE.md` [Part I](#part-i--the-system-as-a-whole) |
+| What was built in each phase, and why is it shaped this way? | `readme/PROJECT-GUIDE.md` [Part II](#part-ii--the-build-phase-by-phase) |
+| Why was *this* call made, and what was rejected? | `readme/DECISION-LOG.md` (D1–D18) |
 | What does the scaffold force on us? | `CLAUDE.md` |
-| What was the plan, and what does each phase have to prove? | `docs/BUILD-PLAN.md` |
-| Where has the build got to? | `docs/BUILD-STATUS.md` |
-| What must be checked the first time credentials exist? | `docs/DEPLOYMENT-CHECKLIST.md` |
-| What did we change in the provided Terraform, and why? | `docs/INFRA-CHANGES.md` |
+| What was the plan, and what does each phase have to prove? | `readme/BUILD-PLAN.md` |
+| Where has the build got to? | `readme/BUILD-STATUS.md` |
+| What must be checked the first time credentials exist? | `readme/DEPLOYMENT-CHECKLIST.md` |
+| What did we change in the provided Terraform, and why? | `readme/INFRA-CHANGES.md` |
 | What is this project graded on? | `docs/full-stack.md` (the scaffold's, not ours) |
 
 Facts that live in more than one document, and which copy wins:
@@ -7074,7 +7074,7 @@ Facts that live in more than one document, and which copy wins:
 | Test counts | the suites themselves | README, BUILD-STATUS, this guide |
 | Demo logins | the `users` table in `acme_demo` | DEMO-SCRIPT, BUILD-STATUS, D13 |
 | Which `infra/` files changed | `git diff` against upstream `4b54f45` | INFRA-CHANGES, CLAUDE.md |
-| The API surface | the running OpenAPI document | README (45 paths / 65 operations), BUILD-PLAN §9 |
+| The API surface | the running OpenAPI document | README (51 paths / 73 operations), BUILD-PLAN §9 |
 | Where a business rule lives | the code | this guide's [Part I §3](#3-the-complete-rule-to-file-map) map, **and** the eleven per-phase §4 maps it merges (M1–S1; M8's own §4 maps documents, not rules). Part I is the one to keep current; a per-phase map is a record of what was true at that phase. |
 
 ### 5. How to change it
@@ -7084,7 +7084,7 @@ three documentation edits: the transition table in `README.md`, the state diagra
 if the new row adds an edge, and BUILD-PLAN §6 if you want the plan to stay honest. The
 frontend needs nothing.
 
-**You added or changed an endpoint.** The README quotes "45 paths / 65 operations"; re-derive
+**You added or changed an endpoint.** The README quotes "51 paths / 73 operations"; re-derive
 it rather than adjusting it by hand:
 
 ```sh
@@ -7099,7 +7099,7 @@ print(len(spec), 'paths', ops, 'operations')"
 finds three routes and no endpoints. Read the OpenAPI document instead.)
 
 **The test numbers moved.** They appear in `README.md` (twice — the summary table at the
-top and the results table), `docs/BUILD-STATUS.md` and this guide's phase headers. Change
+top and the results table), `readme/BUILD-STATUS.md` and this guide's phase headers. Change
 all of them in one commit or they will disagree within a day.
 
 **You want the demo data fresh.** `seed_demo` will not top up or refresh:
@@ -7119,7 +7119,7 @@ history is 90 days ending at seed time, so a dashboard opened weeks later shows 
 "Reported in this period" section under the default 30-day window, and looks broken when it
 is merely old.
 
-**Credentials arrived and you are deploying.** `docs/DEPLOYMENT-CHECKLIST.md` top to
+**Credentials arrived and you are deploying.** `readme/DEPLOYMENT-CHECKLIST.md` top to
 bottom, then update the README's status paragraph, the "Deployed (AWS) — designed and
 configured, not yet verified" heading, and known-limitation item 4. Those three are written
 to be changed together on that day.
@@ -7995,7 +7995,7 @@ one looks fine in a screenshot.
 
 ## Phase R1 — The redesign brief, section 1: the four bugs
 
-*[`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
+*[`readme/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md) is the owner's list of changes
 after using the built application, grouped by the order they want them done. Section 1
 is "things that are wrong now", and this is that section and nothing else — no theme,
 no shared components, no new features. Four reported bugs, which turned out to be
@@ -8200,7 +8200,7 @@ not an in-app absolute path.
 
 ## Phase R2 — The redesign brief, section 2: the theme
 
-*Section 2 of [`docs/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
+*Section 2 of [`readme/UI-REDESIGN-BRIEF.md`](UI-REDESIGN-BRIEF.md): a cream page, a
 brown primary, and a third colour to be proposed. It is one palette and no layout, and
 it lands before the per-screen work because it touches every screen. The brief's own
 warning — that two things validated against the old palette will break quietly — turned

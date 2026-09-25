@@ -31,7 +31,7 @@ assumptions"; *Testing* — "test artifacts (commands, results, and known gaps) 
 documented clearly."
 
 **Chosen.** Do M8 without the deploy, then stretch features. The deploy step and
-its verification move to `docs/DEPLOYMENT-CHECKLIST.md` for when credentials
+its verification move to `readme/DEPLOYMENT-CHECKLIST.md` for when credentials
 arrive.
 
 **Why.** Skipping M8 wholesale would forfeit marks under two of the five
@@ -1083,7 +1083,7 @@ wrong.
 
 **The HTTP status really is 200, and that is not a bug we can fix here.**
 CloudFront rewrites every extension-less path to `/index.html` so that deep
-links survive a reload (`docs/INFRA-CHANGES.md` item 1), which means the server
+links survive a reload (`readme/INFRA-CHANGES.md` item 1), which means the server
 cannot know the path is not a route. Only the router knows, and by then the
 response has been sent. A genuine 404 needs server-side rendering, which this
 architecture deliberately does not have. What the user is told is accurate; the
@@ -1771,7 +1771,7 @@ demonstration of a notification feature than pre-seeded rows anyway.
 something new would interrupt whatever a screen-reader user was reading, every
 thirty seconds, on every screen. The count is in the control's accessible name
 instead, so it is available on demand rather than pushed. The cost is real and
-is recorded in `docs/DEPLOYMENT-CHECKLIST.md`: such a user learns of a
+is recorded in `readme/DEPLOYMENT-CHECKLIST.md`: such a user learns of a
 notification when they next reach the bell, not when it arrives.
 
 **What looking at the screen found.** One defect, and no test would have caught
@@ -1918,14 +1918,14 @@ another option on that one query.
 ## D34 — The demo's two deactivated employees do not exist
 
 **Found during the final documentation pass**, while writing
-`docs/REVIEW-GUIDE.md`'s worklist for the admin screens. Recorded rather than
+`readme/REVIEW-GUIDE.md`'s worklist for the admin screens. Recorded rather than
 fixed, because that pass changes no application code.
 
 **The claim.** `seed_demo` sets out to leave two employee accounts inactive.
 `app/seed/demo.py` says so in a comment, in the words that explain why: *"Two
 people have left. A users screen where everyone is active never shows the
 deactivated state, and the reports still count their old tickets, which is the
-behaviour worth demonstrating."* Both `docs/DEMO-SCRIPT.md` and the README
+behaviour worth demonstrating."* Both `readme/DEMO-SCRIPT.md` and the README
 repeated it.
 
 **What actually happens.** Nothing. The loop is
@@ -1965,7 +1965,7 @@ thing, so they cannot drift again. Worth a test that asserts **two inactive
 employees**, since the absence of one is why this lasted.
 
 **Consequence for a reviewer.** Deactivate an employee by hand before judging
-the Users screen's deactivated state. `docs/REVIEW-GUIDE.md` pass 1 says so.
+the Users screen's deactivated state. `readme/REVIEW-GUIDE.md` pass 1 says so.
 
 **Reversible.** Not applicable — nothing was changed.
 
@@ -2055,7 +2055,7 @@ is now set on the API behaviours and the default behaviour. CloudFront defaults
 it off. The React bundle is 976 kB raw against 301 kB gzipped, paid on every cold
 visit; JSON API responses gzip well too.
 
-This was recorded in `docs/INFRA-CHANGES.md` as proposed-not-applied pending that
+This was recorded in `readme/INFRA-CHANGES.md` as proposed-not-applied pending that
 approval. It is now the fourth change to the provided Terraform.
 
 ## D38 — Correcting D36: the login loop was a redirect, not a cache
@@ -2467,7 +2467,7 @@ Three characters of scope creep, and the alternative is a section of work
 verified by a suite that cannot start.
 
 **What it says about the claim "82 e2e pass".** That number is in
-`docs/PROJECT-GUIDE.md`, `docs/BUILD-STATUS.md` and the README. It was true when
+`readme/PROJECT-GUIDE.md`, `readme/BUILD-STATUS.md` and the README. It was true when
 it was written and stopped being true when the picker landed, and nothing
 noticed, because nobody ran the suite again. A test suite reports on the code
 only as often as it is run.

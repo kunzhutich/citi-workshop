@@ -16,7 +16,7 @@ import type {
  * **Two kinds of report, and the difference is load-bearing.** Six of them
  * cover a *period* and take `from`/`to`; two describe the *present* and do not
  * accept those parameters at all. The split is decision D9 in
- * `docs/DECISION-LOG.md`, and it is expressed here in the types rather than
+ * `readme/DECISION-LOG.md`, and it is expressed here in the types rather than
  * left to each caller to remember:
  *
  * * a period report takes {@link ReportPeriodParams} and answers with a
